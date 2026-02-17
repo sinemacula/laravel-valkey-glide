@@ -1,0 +1,78 @@
+{
+    "name": "sinemacula/laravel-valkey-glide",
+    "type": "library",
+    "description": "Laravel Redis driver and adapter for Valkey GLIDE (ext-valkey_glide).",
+    "keywords": [
+        "laravel",
+        "redis",
+        "valkey",
+        "glide"
+    ],
+    "license": "Apache-2.0",
+    "authors": [
+        {
+            "name": "Ben Carey",
+            "email": "bdmc@sinemacula.co.uk"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "illuminate/redis": "^11.0 || ^12.0"
+    },
+    "suggest": {
+        "ext-valkey_glide": "Required when using the valkey-glide Redis client in runtime environments."
+    },
+    "require-dev": {
+        "brianium/paratest": "^7.8",
+        "friendsofphp/php-cs-fixer": "^3.85",
+        "orchestra/testbench": "^9.0 || ^10.0",
+        "phpstan/extension-installer": "^1.4",
+        "phpstan/phpdoc-parser": "^2.2",
+        "phpstan/phpstan": "^2.1",
+        "phpstan/phpstan-deprecation-rules": "^2.0",
+        "phpstan/phpstan-phpunit": "^2.0",
+        "phpstan/phpstan-strict-rules": "^2.0",
+        "phpunit/phpunit": "^11.5.3",
+        "slevomat/coding-standard": "^8.20",
+        "squizlabs/php_codesniffer": "^3.13"
+    },
+    "autoload": {
+        "psr-4": {
+            "SineMacula\\Valkey\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "check": [
+            "qlty check"
+        ],
+        "format": [
+            "qlty fmt"
+        ],
+        "test": [
+            "@php vendor/bin/paratest $@"
+        ],
+        "test-coverage": [
+            "@php vendor/bin/paratest --coverage-clover=clover.xml"
+        ]
+    },
+    "scripts-descriptions": {
+        "check": "Run static analysis and lint checks via qlty.",
+        "format": "Format codebase using qlty.",
+        "test": "Run the PHPUnit test suite in parallel using Paratest.",
+        "test-coverage": "Shortcut to run Paratest with Clover coverage output to clover.xml."
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true,
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true,
+            "phpstan/extension-installer": true
+        }
+    }
+}
