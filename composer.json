@@ -43,8 +43,12 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "Tests\\": "tests/"
-        }
+            "Tests\\": "tests/",
+            "SineMacula\\Valkey\\Stubs\\": "stubs/"
+        },
+        "files": [
+            "stubs/register_aliases.php"
+        ]
     },
     "scripts": {
         "check": [
