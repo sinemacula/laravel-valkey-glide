@@ -111,52 +111,13 @@ jobs:
                         cargo install cbindgen --locked
                     fi
 
-                    cbindgen --version
-
             -   name: Install Valkey GLIDE extension
                 run: |
                     set -euo pipefail
+                    pie_bin="$(command -v pie)"
 
-                    if ! pie install --make-parallel-jobs 1 "valkey-io/valkey-glide-php:${VALKEY_GLIDE_VERSION}"; then
-                        log_file="$(ls -t /tmp/pie_make_output_* 2>/dev/null | head -n 1 || true)"
-
-                        echo '=== PIE debug context ==='
-                        php -v
-                        php-config --version
-                        php-config --includes
-                        command -v pkg-config || true
-                        command -v protoc || true
-                        protoc --version || true
-                        command -v protoc-c || true
-                        protoc-c --version || true
-                        command -v cbindgen || true
-                        cbindgen --version || true
-                        pkg-config --modversion libprotobuf-c || true
-                        pkg-config --modversion protobuf-c || true
-                        pkg-config --modversion openssl || true
-                        dpkg -l | grep -E 'protobuf|ssl|clang|rust|cargo|cmake' || true
-
-                        if [ -n "${log_file}" ]; then
-                            echo "Using log file: ${log_file}"
-                            cp "${log_file}" pie_make_output.log
-                            echo '=== PIE make output (last 300 lines) ==='
-                            tail -n 300 "${log_file}"
-                        fi
-
-                        exit 1
-                    fi
-
+                    sudo env "HOME=${HOME}" "PATH=${PATH}" "${pie_bin}" install --no-interaction --make-parallel-jobs 1 "valkey-io/valkey-glide-php:${VALKEY_GLIDE_VERSION}"
                     php -m | grep -i '^valkey_glide$'
-
-            -   name: Upload PIE debug artifact
-                if: ${{ failure() }}
-                uses: actions/upload-artifact@v4
-                with:
-                    name: pie-debug-php-${{ matrix.php }}
-                    path: |
-                        pie_make_output.log
-                        /tmp/pie_make_output_*
-                    if-no-files-found: ignore
 
             -   name: Cache vendor
                 uses: actions/cache@v4
