@@ -23,6 +23,10 @@ parameters:
 	stubFiles:
 		- %currentWorkingDirectory%/stubs/ValkeyGlide.php
 
+	excludePaths:
+		analyse:
+			- %currentWorkingDirectory%/stubs/*
+
 	checkMissingCallableSignature: true
 	checkMissingVarTagTypehint: true
 	checkUninitializedProperties: true

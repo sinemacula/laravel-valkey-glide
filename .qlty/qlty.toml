@@ -38,7 +38,6 @@ exclude_patterns = [
     "**/target/**",
     "**/templates/**",
     "**/testdata/**",
-    "**/stubs/**",
     "**/vendor/**"
 ]
 
@@ -112,3 +111,7 @@ name = "yamllint"
 name = "phpstan"
 version = "2.1.38"
 package_file = "composer.json"
+
+[[exclude]]
+plugins = ["phpstan", "php-cs-fixer", "php-codesniffer", "radarlint-php"]
+file_patterns = ["stubs/**"]

@@ -1,5 +1,6 @@
 model = "gpt-5.3-codex"
 sandbox_mode = "workspace-write"
+web_search = "live"
 
 [[skills.config]]
 path = "/.agents/skills/php-attribution/SKILL.md"
