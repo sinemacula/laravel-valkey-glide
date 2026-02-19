@@ -66,17 +66,16 @@ jobs:
                     php-version: ${{ matrix.php }}
                     extensions: dom
                     coverage: pcov
-                    tools: composer, pie
+                    tools: composer, pie, protoc
 
             -   name: Install system dependencies
                 run: |
-                    sudo apt-get update
-                    sudo apt-get install -y --no-install-recommends libprotobuf-c-dev
-
-            -   name: Install Valkey GLIDE extension
-                run: |
-                    pie install "valkey-io/valkey-glide-php:${VALKEY_GLIDE_VERSION}"
-                    php -m | grep -i '^valkey_glide$'
+                    sudo apt-get update -qq
+                    sudo apt-get install -y --no-install-recommends \
+                        libprotobuf-c-dev \
+                        protobuf-c-compiler \
+                        rustc \
+                        cargo
 
             -   name: Cache Composer cache
                 uses: actions/cache@v4
@@ -84,6 +83,32 @@ jobs:
                     path: ~/.composer/cache
                     key: composer-cache-${{ runner.os }}-${{ matrix.php }}-${{ hashFiles('**/composer.lock') }}
                     restore-keys: composer-cache-${{ runner.os }}-
+
+            -   name: Cache PIE
+                uses: actions/cache@v4
+                with:
+                    path: |
+                        ~/.config/pie
+                        ~/.cache/pie
+                    key: pie-cache-${{ runner.os }}-${{ matrix.php }}-${{ env.VALKEY_GLIDE_VERSION }}
+                    restore-keys: pie-cache-${{ runner.os }}-${{ matrix.php }}-
+
+            -   name: Cache Cargo
+                uses: actions/cache@v4
+                with:
+                    path: |
+                        ~/.cargo/registry
+                        ~/.cargo/git
+                    key: cargo-cache-${{ runner.os }}-${{ matrix.php }}-${{ env.VALKEY_GLIDE_VERSION }}
+                    restore-keys: cargo-cache-${{ runner.os }}-${{ matrix.php }}-
+
+            -   name: Install Valkey GLIDE extension
+                run: |
+                    set -euo pipefail
+                    protoc --version
+                    cargo --version
+                    pie install "valkey-io/valkey-glide-php:${VALKEY_GLIDE_VERSION}"
+                    php -m | grep -i '^valkey_glide$'
 
             -   name: Cache vendor
                 uses: actions/cache@v4
