@@ -1,0 +1,34 @@
+parameters:
+	level: 8
+
+	ignoreErrors:
+		- identifier: argument.type
+		- identifier: ternary.shortNotAllowed
+		- identifier: booleanAnd.leftNotBoolean
+		- identifier: booleanNot.exprNotBoolean
+		- identifier: if.condNotBoolean
+		- identifier: ternary.condNotBoolean
+		- identifier: empty.notAllowed
+		- identifier: staticMethod.alreadyNarrowedType
+		- identifier: offsetAccess.nonOffsetAccessible
+
+	scanDirectories:
+		- %currentWorkingDirectory%/src
+		- %currentWorkingDirectory%/tests
+
+	paths:
+		- src
+		- tests
+
+	stubFiles:
+		- %currentWorkingDirectory%/stubs/ValkeyGlide.php
+
+	excludePaths:
+		analyse:
+			- %currentWorkingDirectory%/stubs/*
+
+	checkMissingCallableSignature: true
+	checkMissingVarTagTypehint: true
+	checkUninitializedProperties: true
+	inferPrivatePropertyTypeFromConstructor: false
+	reportUnmatchedIgnoredErrors: true
