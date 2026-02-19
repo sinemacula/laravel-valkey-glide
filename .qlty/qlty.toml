@@ -113,5 +113,5 @@ version = "2.1.38"
 package_file = "composer.json"
 
 [[exclude]]
-plugins = ["phpstan", "php-cs-fixer", "php-codesniffer", "radarlint-php"]
+plugins = ["php-cs-fixer", "php-codesniffer", "radarlint-php"]
 file_patterns = ["stubs/**"]
