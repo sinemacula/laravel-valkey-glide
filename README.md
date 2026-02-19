@@ -52,7 +52,7 @@ Install dependencies:
 composer install
 ```
 
-Run checks and tests:
+Run checks and default tests:
 
 ```sh
 composer check -- --all --no-cache --fix
@@ -61,11 +61,32 @@ composer test-coverage
 composer format
 ```
 
+## Testing
+
+Default test runs are deterministic and do not require a local Redis/Valkey server:
+
+```sh
+composer test
+```
+
+Live extension tests are opt-in and intended for CI or explicit local validation:
+
+```sh
+VALKEY_GLIDE_LIVE_TESTS=1 composer test-live
+```
+
+Optional live network checks require environment configuration:
+
+- `VALKEY_GLIDE_TEST_HOST`
+- `VALKEY_GLIDE_TEST_PORT`
+- `VALKEY_GLIDE_TEST_TLS`
+- `VALKEY_GLIDE_TEST_USERNAME`
+- `VALKEY_GLIDE_TEST_PASSWORD`
+
 ## Notes
 
-- Redis key prefixing (`prefix`) is currently not supported by `ext-valkey_glide`.
-- If a non-empty `prefix` is configured, connection setup will fail with a clear exception.
-- Empty or unset `prefix` values continue as normal.
+- Prefix compatibility is applied in the Laravel connection wrapper for supported command families.
+- Live tests are excluded from `composer test` by default.
 
 ## Contributing
 
