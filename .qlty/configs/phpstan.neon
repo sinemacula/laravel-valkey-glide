@@ -20,6 +20,9 @@ parameters:
 		- src
 		- tests
 
+	stubFiles:
+		- %currentWorkingDirectory%/stubs/ValkeyGlide.php
+
 	checkMissingCallableSignature: true
 	checkMissingVarTagTypehint: true
 	checkUninitializedProperties: true
