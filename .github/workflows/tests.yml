@@ -31,7 +31,7 @@ jobs:
     # ==========================================================================
     tests:
         name: Test / PHP ${{ matrix.php }}
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-latest-large
 
         env:
             VALKEY_GLIDE_VERSION: 1.0.0
@@ -64,18 +64,15 @@ jobs:
                 uses: shivammathur/setup-php@v2
                 with:
                     php-version: ${{ matrix.php }}
-                    extensions: dom
+                    extensions: dom, bcmath
                     coverage: pcov
-                    tools: composer, pie, protoc
+                    tools: composer, pie
 
             -   name: Install system dependencies
                 run: |
                     sudo apt-get update -qq
                     sudo apt-get install -y --no-install-recommends \
-                        libprotobuf-c-dev \
-                        protobuf-c-compiler \
-                        rustc \
-                        cargo
+                        libprotobuf-c-dev
 
             -   name: Cache Composer cache
                 uses: actions/cache@v4
@@ -93,22 +90,43 @@ jobs:
                     key: pie-cache-${{ runner.os }}-${{ matrix.php }}-${{ env.VALKEY_GLIDE_VERSION }}
                     restore-keys: pie-cache-${{ runner.os }}-${{ matrix.php }}-
 
-            -   name: Cache Cargo
-                uses: actions/cache@v4
-                with:
-                    path: |
-                        ~/.cargo/registry
-                        ~/.cargo/git
-                    key: cargo-cache-${{ runner.os }}-${{ matrix.php }}-${{ env.VALKEY_GLIDE_VERSION }}
-                    restore-keys: cargo-cache-${{ runner.os }}-${{ matrix.php }}-
-
             -   name: Install Valkey GLIDE extension
                 run: |
                     set -euo pipefail
-                    protoc --version
-                    cargo --version
-                    pie install "valkey-io/valkey-glide-php:${VALKEY_GLIDE_VERSION}"
+
+                    if ! pie install --make-parallel-jobs 1 "valkey-io/valkey-glide-php:${VALKEY_GLIDE_VERSION}"; then
+                        log_file="$(ls -t /tmp/pie_make_output_* 2>/dev/null | head -n 1 || true)"
+
+                        echo '=== PIE debug context ==='
+                        php -v
+                        php-config --version
+                        php-config --includes
+                        command -v pkg-config || true
+                        pkg-config --modversion protobuf-c || true
+                        pkg-config --modversion openssl || true
+                        dpkg -l | grep -E 'protobuf|ssl|clang|rust|cargo|cmake' || true
+
+                        if [ -n "${log_file}" ]; then
+                            echo "Using log file: ${log_file}"
+                            cp "${log_file}" pie_make_output.log
+                            echo '=== PIE make output (last 300 lines) ==='
+                            tail -n 300 "${log_file}"
+                        fi
+
+                        exit 1
+                    fi
+
                     php -m | grep -i '^valkey_glide$'
+
+            -   name: Upload PIE debug artifact
+                if: ${{ failure() }}
+                uses: actions/upload-artifact@v4
+                with:
+                    name: pie-debug-php-${{ matrix.php }}
+                    path: |
+                        pie_make_output.log
+                        /tmp/pie_make_output_*
+                    if-no-files-found: ignore
 
             -   name: Cache vendor
                 uses: actions/cache@v4
