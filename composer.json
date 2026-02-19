@@ -57,21 +57,21 @@
             "qlty fmt"
         ],
         "test": [
-            "@php vendor/bin/paratest --exclude-group live $@"
+            "@php vendor/bin/paratest --exclude-group external $@"
         ],
-        "test-live": [
-            "@php vendor/bin/phpunit --testsuite Live --group live --do-not-cache-result"
+        "test-external": [
+            "@php vendor/bin/phpunit --testsuite External --group external --do-not-cache-result"
         ],
         "test-coverage": [
-            "@php vendor/bin/paratest --exclude-group live --coverage-clover=clover.xml"
+            "@php vendor/bin/paratest --exclude-group external --coverage-clover=clover.xml"
         ]
     },
     "scripts-descriptions": {
         "check": "Run static analysis and lint checks via qlty.",
         "format": "Format codebase using qlty.",
-        "test": "Run the default PHPUnit test suites in parallel using Paratest (excluding live tests).",
-        "test-live": "Run live extension tests (requires VALKEY_GLIDE_LIVE_TESTS=1 and ext-valkey_glide).",
-        "test-coverage": "Shortcut to run Paratest coverage for default suites (excluding live tests)."
+        "test": "Run the default PHPUnit test suites in parallel using Paratest (excluding external tests).",
+        "test-external": "Run external extension tests (requires ext-valkey_glide and Redis/Valkey connectivity).",
+        "test-coverage": "Shortcut to run Paratest coverage for default suites (excluding external tests)."
     },
     "config": {
         "optimize-autoloader": true,

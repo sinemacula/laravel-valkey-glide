@@ -6,11 +6,19 @@ Laravel Valkey GLIDE is Sine Macula's Laravel integration package for Valkey GLI
 It provides a Laravel-native Redis driver/adapter focused on resilience during managed infrastructure events where
 transient disconnects and reconnects are expected.
 
+Current implementation includes:
+
+- Service provider registration for the `valkey-glide` Redis client
+- Connector + connection wiring for Laravel Redis
+- Config normalization from Laravel arrays to GLIDE connect arguments
+- Connection wrapper behavior for command dispatch, prefixing, and safe transient retry
+- External integration tests that validate extension-backed behavior against a real Redis/Valkey server
+
 This repository is intended to remain:
 
 - Laravel-specific
 - Integration-focused
-- Minimal, explicit, and backwards-compatible
+- Minimal and explicit
 
 ## Namespace Structure
 
@@ -22,10 +30,11 @@ This repository is intended to remain:
 
 The package currently centers around:
 
-- Service provider registration for a custom Laravel Redis client (for example `valkey-glide`)
+- Service provider registration for a custom Laravel Redis client (`valkey-glide`)
 - Laravel Redis connector and connection wiring for Valkey GLIDE
 - Configuration mapping from Laravel Redis arrays to Valkey GLIDE connection options
-- Adapter/compatibility surface needed to work with Laravel's Redis abstractions
+- Compatibility behavior in the connection wrapper (command dispatch, events, key prefix handling)
+- Safe retry-once behavior for idempotent commands on transient transport failures
 - Compatibility for Laravel cache, queue, session, and direct Redis usage through the configured client
 
 This package is an integration layer. It must not become a generic Valkey client, an infrastructure provisioning tool,
@@ -179,16 +188,17 @@ Manual approval is required for:
 - Run lint/static analysis without auto-fix: `composer check`
 - Format code: `composer format`
 - Run tests: `composer test`
+- Run external integration tests: `composer test-external`
 - Run tests with coverage: `composer test-coverage`
-- Run a single test file: `vendor/bin/phpunit tests/Feature/ValkeyGlideConnectorTest.php`
+- Run a single test file: `vendor/bin/phpunit tests/Unit/Connectors/ValkeyGlideConnectorTest.php`
 - Run a single test method:
-  `vendor/bin/phpunit --filter testConnectorBuildsClientFromConfig tests/Feature/ValkeyGlideConnectorTest.php`
+  `vendor/bin/phpunit --filter connectBuildsConnectionAndPassesNormalizedConnectArguments tests/Unit/Connectors/ValkeyGlideConnectorTest.php`
 
 ## Tests & Quality
 
-- Use `composer test` (parallel PHPUnit via Paratest)
+- Use `composer test` (parallel PHPUnit via Paratest) for deterministic local checks
+- Use `composer test-external` for opt-in extension + real Redis/Valkey validation
 - Test connector behavior, config mapping, adapter compatibility, and contract stability
-- Do not assert behavior of real external systems
 - If code is not easily testable, propose refactoring before adding tests
 
 ### Test Writing

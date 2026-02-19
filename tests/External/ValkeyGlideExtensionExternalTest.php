@@ -2,7 +2,7 @@
 
 declare(strict_types = 1);
 
-namespace Tests\Live;
+namespace Tests\External;
 
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\Group;
@@ -10,7 +10,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Live extension checks for CI and explicit local opt-in.
+ * External extension checks for CI and explicit local opt-in.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -18,62 +18,56 @@ use PHPUnit\Framework\TestCase;
  * @internal
  */
 #[CoversNothing]
-#[Group('live')]
-final class ValkeyGlideExtensionLiveTest extends TestCase
+#[Group('external')]
+final class ValkeyGlideExtensionExternalTest extends TestCase
 {
-    /** @var string Environment flag required to enable live tests. */
-    private const string LIVE_TEST_FLAG = 'VALKEY_GLIDE_LIVE_TESTS';
-
     /**
-     * Verify the extension class is available when live tests are enabled.
+     * Verify the extension class is available when external tests are enabled.
      *
      * @return void
      */
     #[Test]
     public function extensionClassIsAvailable(): void
     {
-        $this->skipUnlessLiveEnabled();
+        $this->skipUnlessExtensionLoaded();
 
         self::assertTrue(class_exists(\ValkeyGlide::class));
     }
 
     /**
-     * Verify the extension client can be instantiated when live tests run.
+     * Verify the extension client can be instantiated when external tests run.
      *
      * @return void
      */
     #[Test]
     public function extensionClientCanBeInstantiated(): void
     {
-        $this->skipUnlessLiveEnabled();
+        $this->skipUnlessExtensionLoaded();
 
         self::assertInstanceOf(\ValkeyGlide::class, new \ValkeyGlide);
     }
 
     /**
-     * Verify a minimal connect/close roundtrip when host config is provided.
+     * Verify a minimal connect and close roundtrip using resolved host config.
      *
      * @return void
      */
     #[Test]
-    public function extensionCanConnectAndCloseWhenHostIsConfigured(): void
+    public function extensionCanConnectAndCloseWithResolvedHostConfig(): void
     {
-        $this->skipUnlessLiveEnabled();
+        $this->skipUnlessExtensionLoaded();
 
         $host = getenv('VALKEY_GLIDE_TEST_HOST');
-
-        if (!is_string($host) || $host === '') {
-            self::markTestSkipped('Set VALKEY_GLIDE_TEST_HOST to run network live tests.');
-        }
-
         $port = getenv('VALKEY_GLIDE_TEST_PORT');
+
+        $resolved_host = is_string($host) && $host !== '' ? $host : '127.0.0.1';
 
         $client = new \ValkeyGlide;
 
         $connected = $client->connect(
             addresses  : [
                 [
-                    'host' => $host,
+                    'host' => $resolved_host,
                     'port' => is_numeric($port) ? (int) $port : 6379,
                 ],
             ],
@@ -86,18 +80,14 @@ final class ValkeyGlideExtensionLiveTest extends TestCase
     }
 
     /**
-     * Skip the current test unless live gating is fully enabled.
+     * Skip the current test unless the extension is loaded.
      *
      * @return void
      */
-    private function skipUnlessLiveEnabled(): void
+    private function skipUnlessExtensionLoaded(): void
     {
-        if (getenv(self::LIVE_TEST_FLAG) !== '1') {
-            self::markTestSkipped(self::LIVE_TEST_FLAG . '=1 is required to run live tests.');
-        }
-
         if (!extension_loaded('valkey_glide')) {
-            self::markTestSkipped('Live tests require ext-valkey_glide to be loaded.');
+            self::markTestSkipped('External tests require ext-valkey_glide to be loaded.');
         }
     }
 

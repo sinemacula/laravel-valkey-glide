@@ -2,7 +2,7 @@
 
 declare(strict_types = 1);
 
-namespace Tests\Live;
+namespace Tests\External;
 
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Group;
@@ -12,7 +12,7 @@ use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use SineMacula\Valkey\Connectors\ValkeyGlideConnector;
 
 /**
- * Redis-backed live integration checks for connector and connection behavior.
+ * Redis-backed external integration checks for connector and connection behavior.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -21,14 +21,17 @@ use SineMacula\Valkey\Connectors\ValkeyGlideConnector;
  */
 #[CoversClass(ValkeyGlideConnector::class)]
 #[CoversClass(ValkeyGlideConnection::class)]
-#[Group('live')]
-final class ValkeyGlideRedisIntegrationLiveTest extends TestCase
+#[Group('external')]
+final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
 {
-    /** @var string Environment flag required to enable live tests. */
-    private const string LIVE_TEST_FLAG = 'VALKEY_GLIDE_LIVE_TESTS';
+    /** @var int Default Redis database index for baseline assertions. */
+    private const int DEFAULT_DATABASE = 0;
+
+    /** @var int Secondary Redis database index for database routing checks. */
+    private const int SECONDARY_DATABASE = 1;
 
     /**
-     * Verify the connector can establish a live connection and execute PING.
+     * Verify the connector can establish an external connection and execute PING.
      *
      * @return void
      *
@@ -37,7 +40,7 @@ final class ValkeyGlideRedisIntegrationLiveTest extends TestCase
     #[Test]
     public function connectorConnectsAndPingSucceeds(): void
     {
-        $connection = $this->connectLive();
+        $connection = $this->connectExternal();
 
         $result = $connection->command('ping');
 
@@ -47,7 +50,7 @@ final class ValkeyGlideRedisIntegrationLiveTest extends TestCase
     }
 
     /**
-     * Verify set/get roundtrip works through the Laravel connection wrapper.
+     * Verify set and get roundtrip works through the Laravel connection wrapper.
      *
      * @return void
      *
@@ -56,7 +59,7 @@ final class ValkeyGlideRedisIntegrationLiveTest extends TestCase
     #[Test]
     public function connectionSetGetRoundtripSucceeds(): void
     {
-        $connection = $this->connectLive();
+        $connection = $this->connectExternal();
         $key        = $this->uniqueKey('roundtrip');
 
         $connection->command('set', [$key, 'value-a']);
@@ -80,7 +83,7 @@ final class ValkeyGlideRedisIntegrationLiveTest extends TestCase
         $prefix     = 'lvkglide:test:';
         $plain_key  = $this->uniqueKey('prefixed');
         $prefixed   = $prefix . $plain_key;
-        $connection = $this->connectLive(['prefix' => $prefix]);
+        $connection = $this->connectExternal(['prefix' => $prefix]);
 
         $connection->command('set', [$plain_key, 'value-b']);
 
@@ -92,14 +95,80 @@ final class ValkeyGlideRedisIntegrationLiveTest extends TestCase
     }
 
     /**
-     * Create a live connector-backed connection or skip when unavailable.
+     * Verify raw command execution works through the connection wrapper.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectionExecuteRawSupportsDirectCommands(): void
+    {
+        $connection = $this->connectExternal();
+
+        $result = $connection->executeRaw(['PING']);
+
+        self::assertContains($result, [true, 'PONG', 'pong']);
+
+        $connection->disconnect();
+    }
+
+    /**
+     * Verify database selection in connector config routes data to that database.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectorDatabaseConfigRoutesCommandsToExpectedDatabase(): void
+    {
+        $key = $this->uniqueKey('database-routing');
+
+        $secondary_connection = $this->connectExternal(['database' => self::SECONDARY_DATABASE]);
+        $default_connection   = $this->connectExternal(['database' => self::DEFAULT_DATABASE]);
+
+        $secondary_connection->command('set', [$key, 'db-one']);
+
+        self::assertContains($default_connection->command('get', [$key]), [null, false]);
+        self::assertSame('db-one', $secondary_connection->command('get', [$key]));
+
+        $secondary_connection->command('del', [$key]);
+        $secondary_connection->disconnect();
+        $default_connection->disconnect();
+    }
+
+    /**
+     * Verify idempotent commands succeed after explicit disconnect.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectionRecoversAfterManualDisconnectForIdempotentCommand(): void
+    {
+        $connection = $this->connectExternal();
+        $key        = $this->uniqueKey('reconnect');
+
+        $connection->command('set', [$key, 'value-reconnect']);
+        $connection->disconnect();
+
+        self::assertSame('value-reconnect', $connection->command('get', [$key]));
+
+        $connection->command('del', [$key]);
+        $connection->disconnect();
+    }
+
+    /**
+     * Create an external connector-backed connection or skip when unavailable.
      *
      * @param  array<array-key, mixed>  $overrides
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
      */
-    private function connectLive(array $overrides = []): ValkeyGlideConnection
+    private function connectExternal(array $overrides = []): ValkeyGlideConnection
     {
-        $this->skipUnlessLiveEnabled();
+        $this->skipUnlessExtensionLoaded();
 
         $connector = new ValkeyGlideConnector;
 
@@ -131,28 +200,24 @@ final class ValkeyGlideRedisIntegrationLiveTest extends TestCase
         try {
             return $connector->connect($config, []);
         } catch (\Throwable $exception) {
-            self::markTestSkipped('Unable to establish live Redis connection: ' . $exception->getMessage());
+            self::markTestSkipped('Unable to establish external Redis connection: ' . $exception->getMessage());
         }
     }
 
     /**
-     * Skip the current test unless live gating is fully enabled.
+     * Skip the current test unless the extension is loaded.
      *
      * @return void
      */
-    private function skipUnlessLiveEnabled(): void
+    private function skipUnlessExtensionLoaded(): void
     {
-        if (getenv(self::LIVE_TEST_FLAG) !== '1') {
-            self::markTestSkipped(self::LIVE_TEST_FLAG . '=1 is required to run live tests.');
-        }
-
         if (!extension_loaded('valkey_glide')) {
-            self::markTestSkipped('Live tests require ext-valkey_glide to be loaded.');
+            self::markTestSkipped('External tests require ext-valkey_glide to be loaded.');
         }
     }
 
     /**
-     * Build a unique key name for live test isolation.
+     * Build a unique key name for external test isolation.
      *
      * @param  string  $suffix
      * @return string
