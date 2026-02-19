@@ -91,6 +91,27 @@ jobs:
                     key: pie-cache-${{ runner.os }}-${{ matrix.php }}-${{ env.VALKEY_GLIDE_VERSION }}
                     restore-keys: pie-cache-${{ runner.os }}-${{ matrix.php }}-
 
+            -   name: Cache Cargo
+                uses: actions/cache@v4
+                with:
+                    path: |
+                        ~/.cargo/bin
+                        ~/.cargo/registry
+                        ~/.cargo/git
+                    key: cargo-cache-${{ runner.os }}-${{ matrix.php }}-cbindgen
+                    restore-keys: cargo-cache-${{ runner.os }}-${{ matrix.php }}-
+
+            -   name: Install cbindgen
+                run: |
+                    set -euo pipefail
+                    echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+
+                    if ! command -v cbindgen >/dev/null 2>&1; then
+                        cargo install cbindgen --locked
+                    fi
+
+                    cbindgen --version
+
             -   name: Install Valkey GLIDE extension
                 run: |
                     set -euo pipefail
@@ -105,6 +126,8 @@ jobs:
                         command -v pkg-config || true
                         command -v protoc || true
                         protoc --version || true
+                        command -v cbindgen || true
+                        cbindgen --version || true
                         pkg-config --modversion protobuf-c || true
                         pkg-config --modversion openssl || true
                         dpkg -l | grep -E 'protobuf|ssl|clang|rust|cargo|cmake' || true
