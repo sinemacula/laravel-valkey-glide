@@ -73,7 +73,8 @@ jobs:
                     sudo apt-get update -qq
                     sudo apt-get install -y --no-install-recommends \
                         libprotobuf-c-dev \
-                        protobuf-compiler
+                        protobuf-compiler \
+                        protobuf-c-compiler
 
             -   name: Cache Composer cache
                 uses: actions/cache@v4
@@ -126,8 +127,11 @@ jobs:
                         command -v pkg-config || true
                         command -v protoc || true
                         protoc --version || true
+                        command -v protoc-c || true
+                        protoc-c --version || true
                         command -v cbindgen || true
                         cbindgen --version || true
+                        pkg-config --modversion libprotobuf-c || true
                         pkg-config --modversion protobuf-c || true
                         pkg-config --modversion openssl || true
                         dpkg -l | grep -E 'protobuf|ssl|clang|rust|cargo|cmake' || true
