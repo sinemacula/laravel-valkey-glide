@@ -34,6 +34,11 @@
         <exclude name="PSR12.Classes.ClassInstantiation.MissingParentheses"/>
     </rule>
 
+    <rule ref="PSR12.Files.DeclareStatement">
+        <exclude name="PSR12.Files.DeclareStatement.SpaceFoundAfterDirective"/>
+        <exclude name="PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue"/>
+    </rule>
+
     <rule ref="Squiz.Functions.MultiLineFunctionDeclaration">
         <exclude name="Squiz.Functions.MultiLineFunctionDeclaration.EmptyLine"/>
         <exclude name="Squiz.Functions.MultiLineFunctionDeclaration.BraceOnSameLine"/>

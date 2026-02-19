@@ -1,15 +1,12 @@
 <?php
 
-// phpcs:disable PSR12.Files.DeclareStatement.SpaceFoundAfterDirective,PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue
 declare(strict_types = 1);
-// phpcs:enable PSR12.Files.DeclareStatement.SpaceFoundAfterDirective,PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue
 
 namespace SineMacula\Valkey\Connections;
 
 use Illuminate\Redis\Connections\Connection;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Redis\Events\CommandFailed;
-use SineMacula\Valkey\Support\CommandPrefixer;
 
 /**
  * Laravel Redis connection adapter backed by the Valkey GLIDE client.
@@ -51,6 +48,108 @@ final class ValkeyGlideConnection extends Connection
         'ZRANGEBYSCORE',
         'ZRANK',
         'ZSCORE',
+    ];
+
+    /** @var array<int, string> Commands with a single key argument at index 0. */
+    private const array SINGLE_KEY_COMMANDS = [
+        'APPEND',
+        'DECR',
+        'DECRBY',
+        'DEL',
+        'DUMP',
+        'EXISTS',
+        'EXPIRE',
+        'EXPIREAT',
+        'GET',
+        'GETBIT',
+        'GETDEL',
+        'GETEX',
+        'GETRANGE',
+        'GETSET',
+        'HDEL',
+        'HEXISTS',
+        'HGET',
+        'HGETALL',
+        'HINCRBY',
+        'HINCRBYFLOAT',
+        'HKEYS',
+        'HLEN',
+        'HMGET',
+        'HSET',
+        'HSETNX',
+        'HSTRLEN',
+        'HVALS',
+        'INCR',
+        'INCRBY',
+        'INCRBYFLOAT',
+        'LINDEX',
+        'LINSERT',
+        'LLEN',
+        'LPOP',
+        'LPOS',
+        'LPUSH',
+        'LPUSHX',
+        'LRANGE',
+        'LREM',
+        'LSET',
+        'LTRIM',
+        'MGET',
+        'MOVE',
+        'PERSIST',
+        'PEXPIRE',
+        'PEXPIREAT',
+        'PTTL',
+        'RPOP',
+        'RPUSH',
+        'RPUSHX',
+        'SADD',
+        'SCARD',
+        'SDIFF',
+        'SET',
+        'SETBIT',
+        'SETEX',
+        'SETNX',
+        'SETRANGE',
+        'SISMEMBER',
+        'SMEMBERS',
+        'SPOP',
+        'SREM',
+        'STRLEN',
+        'TTL',
+        'TYPE',
+        'ZADD',
+        'ZCARD',
+        'ZCOUNT',
+        'ZINCRBY',
+        'ZRANGE',
+        'ZRANGEBYSCORE',
+        'ZRANK',
+        'ZREM',
+        'ZSCORE',
+    ];
+
+    /** @var array<int, string> Commands where every argument is a key. */
+    private const array ALL_KEY_COMMANDS = [
+        'DEL',
+        'MGET',
+        'MSET',
+        'MSETNX',
+        'SDIFF',
+        'SINTER',
+        'SUNION',
+        'TOUCH',
+        'UNLINK',
+    ];
+
+    /** @var array<int, string> Commands with key arguments at indexes 0 and 1. */
+    private const array DOUBLE_KEY_COMMANDS = [
+        'BITOP',
+        'BRPOPLPUSH',
+        'COPY',
+        'RENAME',
+        'RENAMENX',
+        'RPOPLPUSH',
+        'SMOVE',
     ];
 
     /** @var array<int, string> Error fragments treated as transient transport faults. */
@@ -130,59 +229,26 @@ final class ValkeyGlideConnection extends Connection
     public function command(mixed $method, array $parameters = []): mixed
     {
         $normalized_method     = $this->normalizeCommandMethod($method);
-        $normalized_parameters = CommandPrefixer::apply($this->prefix, $normalized_method, $parameters);
-        $attempt               = 0;
+        $normalized_parameters = $this->normalizeCommandParameters(
+            $normalized_method,
+            $parameters,
+        );
 
-        while (true) {
-            $start = microtime(true);
-
-            try {
-                $result = call_user_func_array([$this->glideClient, $normalized_method], $normalized_parameters);
-            } catch (\Throwable $exception) {
-                if ($attempt === 0 && $this->shouldRetryCommand($normalized_method, $exception) && $this->reconnectClient()) {
-                    $attempt++;
-                    $this->sleepBeforeRetry();
-
-                    continue;
-                }
-
-                $this->events?->dispatch(
-                    new CommandFailed(
-                        $normalized_method,
-                        $this->parseParametersForEvent($normalized_parameters),
-                        $exception,
-                        $this,
-                    ),
-                );
-
-                throw $exception;
-            }
-
-            $time = round((microtime(true) - $start) * 1000, 2);
-
-            $this->events?->dispatch(
-                new CommandExecuted(
-                    $normalized_method,
-                    $this->parseParametersForEvent($normalized_parameters),
-                    $time,
-                    $this,
-                ),
-            );
-
-            return $result;
-        }
+        return $this->executeCommandWithRetry(
+            $normalized_method,
+            $normalized_parameters,
+        );
     }
 
     /**
      * Subscribe to channels and normalize callback payload arguments.
      *
      * @param  mixed  $channels
-     * @param  \Closure  $callback
+     * @param  \Closure(mixed, mixed): void  $callback
      * @param  mixed  $method
-     *
-     * @phpstan-param \Closure(mixed ...$arguments): mixed $callback
-     *
      * @return void
+     *
+     * @phpstan-ignore method.childParameterType
      */
     #[\Override]
     public function createSubscription(mixed $channels, \Closure $callback, mixed $method = 'subscribe'): void
@@ -222,15 +288,122 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Execute a normalized command with one retry for transient failures.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    private function executeCommandWithRetry(string $method, array $parameters): mixed
+    {
+        $attempt = 0;
+
+        while (true) {
+            $started_at = microtime(true);
+
+            try {
+                $result = $this->invokeCommand($method, $parameters);
+            } catch (\Throwable $exception) {
+                if ($this->shouldRetryAttempt($attempt, $method, $exception)) {
+                    $attempt++;
+                    $this->sleepBeforeRetry();
+
+                    continue;
+                }
+
+                $this->dispatchCommandFailedEvent($method, $parameters, $exception);
+
+                throw $exception;
+            }
+
+            $this->dispatchCommandExecutedEvent($method, $parameters, $started_at);
+
+            return $result;
+        }
+    }
+
+    /**
+     * Invoke a command on the underlying GLIDE client.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return mixed
+     */
+    private function invokeCommand(string $method, array $parameters): mixed
+    {
+        return call_user_func_array([$this->glideClient, $method], $parameters);
+    }
+
+    /**
+     * Determine whether the current attempt should be retried.
+     *
+     * @param  int  $attempt
+     * @param  string  $method
+     * @param  \Throwable  $exception
+     * @return bool
+     */
+    private function shouldRetryAttempt(int $attempt, string $method, \Throwable $exception): bool
+    {
+        if ($attempt > 0) {
+            return false;
+        }
+
+        if (!$this->shouldRetryCommand($method, $exception)) {
+            return false;
+        }
+
+        return $this->reconnectClient();
+    }
+
+    /**
+     * Dispatch a command failed event.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @param  \Throwable  $exception
+     * @return void
+     */
+    private function dispatchCommandFailedEvent(string $method, array $parameters, \Throwable $exception): void
+    {
+        $this->events?->dispatch(
+            new CommandFailed(
+                $method,
+                $this->parseParametersForEvent($parameters),
+                $exception,
+                $this,
+            ),
+        );
+    }
+
+    /**
+     * Dispatch a command executed event.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @param  float  $started_at
+     * @return void
+     */
+    private function dispatchCommandExecutedEvent(string $method, array $parameters, float $started_at): void
+    {
+        $execution_time_ms = round((microtime(true) - $started_at) * 1000, 2);
+
+        $this->events?->dispatch(
+            new CommandExecuted(
+                $method,
+                $this->parseParametersForEvent($parameters),
+                $execution_time_ms,
+                $this,
+            ),
+        );
+    }
+
+    /**
      * Wrap subscription callbacks to always receive ($message, $channel).
      *
-     * @param  \Closure  $callback
-     *
-     * @phpstan-param \Closure(mixed ...$arguments): mixed $callback
-     *
-     * @return \Closure
-     *
-     * @phpstan-return \Closure(mixed ...$arguments): void
+     * @param  \Closure(mixed, mixed): void  $callback
+     * @return \Closure(mixed...): void
      */
     private function newMessageHandler(\Closure $callback): \Closure
     {
@@ -258,6 +431,121 @@ final class ValkeyGlideConnection extends Connection
         $this->glideClient = ($this->connector)();
 
         return true;
+    }
+
+    /**
+     * Normalize command parameters and apply configured key prefix when needed.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return array<array-key, mixed>
+     */
+    private function normalizeCommandParameters(string $method, array $parameters): array
+    {
+        if ($this->prefix === '' || $parameters === []) {
+            return $parameters;
+        }
+
+        $normalized_method = strtoupper($method);
+
+        if ($normalized_method === 'EVAL' || $normalized_method === 'EVALSHA') {
+            return $this->prefixEvalKeys($parameters);
+        }
+
+        return match (true) {
+            in_array($normalized_method, self::ALL_KEY_COMMANDS, true)    => $this->prefixAllParameters($parameters),
+            in_array($normalized_method, self::DOUBLE_KEY_COMMANDS, true) => $this->prefixParameterAt(
+                $this->prefixParameterAt($parameters, 0),
+                1,
+            ),
+            in_array($normalized_method, self::SINGLE_KEY_COMMANDS, true) => $this->prefixParameterAt($parameters, 0),
+            default                                                       => $parameters,
+        };
+    }
+
+    /**
+     * Prefix a parameter at a specific index when it can be represented as a key.
+     *
+     * @param  array<array-key, mixed>  $parameters
+     * @param  int  $index
+     * @return array<array-key, mixed>
+     */
+    private function prefixParameterAt(array $parameters, int $index): array
+    {
+        if (!array_key_exists($index, $parameters)) {
+            return $parameters;
+        }
+
+        $prefixed_value = $this->prefixValue($parameters[$index]);
+
+        if ($prefixed_value === null) {
+            return $parameters;
+        }
+
+        $parameters[$index] = $prefixed_value;
+
+        return $parameters;
+    }
+
+    /**
+     * Prefix every parameter value that can be represented as a key.
+     *
+     * @param  array<array-key, mixed>  $parameters
+     * @return array<array-key, mixed>
+     */
+    private function prefixAllParameters(array $parameters): array
+    {
+        foreach ($parameters as $index => $parameter) {
+            $prefixed_value = $this->prefixValue($parameter);
+
+            if ($prefixed_value !== null) {
+                $parameters[$index] = $prefixed_value;
+            }
+        }
+
+        return $parameters;
+    }
+
+    /**
+     * Prefix EVAL and EVALSHA key parameters.
+     *
+     * @param  array<array-key, mixed>  $parameters
+     * @return array<array-key, mixed>
+     */
+    private function prefixEvalKeys(array $parameters): array
+    {
+        if (!array_key_exists(1, $parameters)) {
+            return $parameters;
+        }
+
+        $key_count = $this->normalizeNonNegativeInt($parameters[1]);
+
+        if ($key_count === null || $key_count <= 0) {
+            return $parameters;
+        }
+
+        for ($offset = 0; $offset < $key_count; $offset++) {
+            $parameters = $this->prefixParameterAt($parameters, $offset + 2);
+        }
+
+        return $parameters;
+    }
+
+    /**
+     * Prefix a key-like value when possible.
+     *
+     * @param  mixed  $value
+     * @return string|null
+     */
+    private function prefixValue(mixed $value): ?string
+    {
+        if (!is_scalar($value) && !$value instanceof \Stringable) {
+            return null;
+        }
+
+        $normalized_value = (string) $value;
+
+        return $this->prefix . $normalized_value;
     }
 
     /**
@@ -330,29 +618,23 @@ final class ValkeyGlideConnection extends Connection
      */
     private function normalizeNonNegativeInt(mixed $value): ?int
     {
+        $normalized = null;
+
         if (is_int($value)) {
-            return $value >= 0 ? $value : null;
-        }
-
-        if (is_float($value)) {
+            $normalized = $value;
+        } elseif (is_float($value)) {
             $normalized = (int) $value;
-
-            return $normalized >= 0 ? $normalized : null;
-        }
-
-        if (is_string($value) && is_numeric($value)) {
+        } elseif (is_string($value) && is_numeric($value)) {
             $normalized = (int) $value;
-
-            return $normalized >= 0 ? $normalized : null;
-        }
-
-        if ($value instanceof \Stringable && is_numeric((string) $value)) {
+        } elseif ($value instanceof \Stringable && is_numeric((string) $value)) {
             $normalized = (int) (string) $value;
-
-            return $normalized >= 0 ? $normalized : null;
         }
 
-        return null;
+        if ($normalized === null || $normalized < 0) {
+            return null;
+        }
+
+        return $normalized;
     }
 
     /**

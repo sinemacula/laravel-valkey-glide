@@ -1,8 +1,6 @@
 <?php
 
-// phpcs:disable PSR12.Files.DeclareStatement.SpaceFoundAfterDirective,PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue
 declare(strict_types = 1);
-// phpcs:enable PSR12.Files.DeclareStatement.SpaceFoundAfterDirective,PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue
 
 namespace SineMacula\Valkey\Connectors;
 

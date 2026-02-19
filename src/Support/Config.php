@@ -1,8 +1,6 @@
 <?php
 
-// phpcs:disable PSR12.Files.DeclareStatement.SpaceFoundAfterDirective,PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue
 declare(strict_types = 1);
-// phpcs:enable PSR12.Files.DeclareStatement.SpaceFoundAfterDirective,PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue
 
 namespace SineMacula\Valkey\Support;
 
@@ -186,18 +184,14 @@ final class Config
             return null;
         }
 
-        $username = $config['username'] ?? null;
+        $username    = $config['username'] ?? null;
+        $credentials = ['password' => $password];
 
         if (is_string($username) && $username !== '') {
-            return [
-                'username' => $username,
-                'password' => $password,
-            ];
+            $credentials['username'] = $username;
         }
 
-        return [
-            'password' => $password,
-        ];
+        return $credentials;
     }
 
     /**
@@ -385,28 +379,14 @@ final class Config
      */
     private static function normalizeNonNegativeInt(mixed $value): ?int
     {
-        if (is_int($value)) {
-            return $value >= 0 ? $value : null;
-        }
+        $normalized = match (true) {
+            is_int($value)                                               => $value,
+            is_float($value)                                             => (int) $value,
+            is_string($value)             && is_numeric($value)          => (int) $value,
+            $value instanceof \Stringable && is_numeric((string) $value) => (int) (string) $value,
+            default                                                      => null,
+        };
 
-        if (is_float($value)) {
-            $normalized = (int) $value;
-
-            return $normalized >= 0 ? $normalized : null;
-        }
-
-        if (is_string($value) && is_numeric($value)) {
-            $normalized = (int) $value;
-
-            return $normalized >= 0 ? $normalized : null;
-        }
-
-        if ($value instanceof \Stringable && is_numeric((string) $value)) {
-            $normalized = (int) (string) $value;
-
-            return $normalized >= 0 ? $normalized : null;
-        }
-
-        return null;
+        return $normalized !== null && $normalized >= 0 ? $normalized : null;
     }
 }
