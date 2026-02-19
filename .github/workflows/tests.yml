@@ -68,6 +68,11 @@ jobs:
                     coverage: pcov
                     tools: composer, pie
 
+            -   name: Install system dependencies
+                run: |
+                    sudo apt-get update
+                    sudo apt-get install -y --no-install-recommends libprotobuf-c-dev
+
             -   name: Install Valkey GLIDE extension
                 run: |
                     pie install "valkey-io/valkey-glide-php:${VALKEY_GLIDE_VERSION}"
