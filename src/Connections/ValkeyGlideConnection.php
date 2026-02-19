@@ -1,26 +1,29 @@
 <?php
 
+// phpcs:disable PSR12.Files.DeclareStatement.SpaceFoundAfterDirective,PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue
 declare(strict_types = 1);
+// phpcs:enable PSR12.Files.DeclareStatement.SpaceFoundAfterDirective,PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue
 
 namespace SineMacula\Valkey\Connections;
 
-use Illuminate\Contracts\Redis\Connection as ConnectionContract;
 use Illuminate\Redis\Connections\Connection;
+use Illuminate\Redis\Events\CommandExecuted;
+use Illuminate\Redis\Events\CommandFailed;
+use SineMacula\Valkey\Support\CommandPrefixer;
 
 /**
  * Laravel Redis connection adapter backed by the Valkey GLIDE client.
- *
- * This wrapper keeps Laravel's Redis connection contract while adding a narrow
- * retry path for idempotent read commands on transient transport failures.
  *
  * @mixin \ValkeyGlide
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
+ *
+ * @SuppressWarnings("php:S1448")
  */
-final class ValkeyGlideConnection extends Connection implements ConnectionContract
+final class ValkeyGlideConnection extends Connection
 {
-    /** @var array<int, string> */
+    /** @var array<int, string> Commands safe to retry exactly once. */
     private const array IDEMPOTENT_RETRYABLE_COMMANDS = [
         'ECHO',
         'EXISTS',
@@ -50,7 +53,7 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
         'ZSCORE',
     ];
 
-    /** @var array<int, string> */
+    /** @var array<int, string> Error fragments treated as transient transport faults. */
     private const array TRANSIENT_ERROR_FRAGMENTS = [
         'connection reset by peer',
         'connection closed',
@@ -64,38 +67,41 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
         'read error on connection',
         'error while reading',
         'went away',
-        'readonly',
         'temporarily unavailable',
     ];
 
-    /** @var \ValkeyGlide */
+    /** @var \ValkeyGlide Active GLIDE client instance. */
     protected \ValkeyGlide $glideClient;
 
-    /** @var (callable(): \ValkeyGlide)|null */
-    protected $connector;
+    /** @var (\Closure(): \ValkeyGlide)|null Reconnection client factory. */
+    protected ?\Closure $connector;
 
-    /** @var array<string, mixed> */
+    /** @var array<string, mixed> Connection-level configuration. */
     protected array $config;
 
-    /** @var callable(int, int): int */
-    private $randomIntGenerator;
+    /** @var string Optional key prefix applied for command compatibility. */
+    private string $prefix;
 
-    /** @var callable(int): void */
-    private $sleepCallback;
+    /** @var \Closure(int, int): int Random integer generator callback. */
+    private \Closure $randomIntGenerator;
+
+    /** @var \Closure(int): void Sleep callback. */
+    private \Closure $sleepCallback;
 
     /**
      * Create a new Valkey GLIDE Laravel connection wrapper.
      *
      * @param  \ValkeyGlide  $client
-     * @param  (callable(): \ValkeyGlide)|null  $connector
+     * @param  (\Closure(): \ValkeyGlide)|null  $connector
      * @param  array<string, mixed>  $config
      * @return void
      */
-    public function __construct(\ValkeyGlide $client, ?callable $connector = null, array $config = [])
+    public function __construct(\ValkeyGlide $client, ?\Closure $connector = null, array $config = [])
     {
         $this->glideClient        = $client;
         $this->connector          = $connector;
         $this->config             = $config;
+        $this->prefix             = $this->resolvePrefix($config['prefix'] ?? null);
         $this->randomIntGenerator = $this->resolveRandomIntGenerator($config['random_int'] ?? null);
         $this->sleepCallback      = $this->resolveSleepCallback($config['sleep'] ?? null);
     }
@@ -114,57 +120,81 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
     /**
      * Execute a Redis command with one safe retry on transient disconnects.
      *
-     * @param  mixed|string  $method
+     * @param  mixed  $method
      * @param  array<array-key, mixed>  $parameters
      * @return mixed
      *
      * @throws \Throwable
      */
     #[\Override]
-    public function command($method, array $parameters = [])
+    public function command(mixed $method, array $parameters = []): mixed
     {
-        $normalized_method = $this->normalizeCommandMethod($method);
+        $normalized_method     = $this->normalizeCommandMethod($method);
+        $normalized_parameters = CommandPrefixer::apply($this->prefix, $normalized_method, $parameters);
+        $attempt               = 0;
 
-        try {
-            return $this->runClientCommand($normalized_method, $parameters);
-        } catch (\Throwable $exception) {
+        while (true) {
+            $start = microtime(true);
 
-            if (!$this->shouldRetryCommand($method, $exception) || !$this->reconnectClient()) {
+            try {
+                $result = call_user_func_array([$this->glideClient, $normalized_method], $normalized_parameters);
+            } catch (\Throwable $exception) {
+                if ($attempt === 0 && $this->shouldRetryCommand($normalized_method, $exception) && $this->reconnectClient()) {
+                    $attempt++;
+                    $this->sleepBeforeRetry();
+
+                    continue;
+                }
+
+                $this->events?->dispatch(
+                    new CommandFailed(
+                        $normalized_method,
+                        $this->parseParametersForEvent($normalized_parameters),
+                        $exception,
+                        $this,
+                    ),
+                );
+
                 throw $exception;
             }
 
-            $this->sleepBeforeRetry();
+            $time = round((microtime(true) - $start) * 1000, 2);
 
-            return $this->runClientCommand($normalized_method, $parameters);
+            $this->events?->dispatch(
+                new CommandExecuted(
+                    $normalized_method,
+                    $this->parseParametersForEvent($normalized_parameters),
+                    $time,
+                    $this,
+                ),
+            );
+
+            return $result;
         }
     }
 
     /**
-     * Subscribe to channels and normalize message callback arguments.
+     * Subscribe to channels and normalize callback payload arguments.
      *
-     * @param  array<array-key, mixed>|string  $channels
-     * @param  mixed  $callback
-     * @param  mixed|string  $method
+     * @param  mixed  $channels
+     * @param  \Closure  $callback
+     * @param  mixed  $method
+     *
+     * @phpstan-param \Closure(mixed ...$arguments): mixed $callback
+     *
      * @return void
      */
     #[\Override]
-    public function createSubscription($channels, mixed $callback, $method = 'subscribe'): void
+    public function createSubscription(mixed $channels, \Closure $callback, mixed $method = 'subscribe'): void
     {
-        if (!$callback instanceof \Closure) {
-            throw new \InvalidArgumentException(sprintf('Unsupported subscription callback type [%s].', get_debug_type($callback)));
-        }
+        $normalized_channels = $this->normalizeSubscriptionChannels($channels);
+        $normalized_method   = $this->normalizeSubscriptionMethod($method);
+        $handler             = $this->newMessageHandler($callback);
 
-        if (!is_string($method)) {
-            throw new \InvalidArgumentException(sprintf('Unsupported subscription method type [%s].', get_debug_type($method)));
-        }
-
-        $channels = $this->normalizeSubscriptionChannels($channels);
-        $handler  = $this->newMessageHandler($callback);
-
-        match (strtolower($method)) {
-            'subscribe'  => $this->glideClient->subscribe($channels, $handler),
-            'psubscribe' => $this->glideClient->psubscribe($channels, $handler),
-            default      => throw new \InvalidArgumentException(sprintf('Unsupported subscription method [%s].', $method)),
+        match ($normalized_method) {
+            'subscribe'  => $this->glideClient->subscribe($normalized_channels, $handler),
+            'psubscribe' => $this->glideClient->psubscribe($normalized_channels, $handler),
+            default      => throw new \InvalidArgumentException(sprintf('Unsupported subscription method [%s].', $normalized_method)),
         };
     }
 
@@ -173,6 +203,8 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
      *
      * @param  array<array-key, mixed>  $parameters
      * @return mixed
+     *
+     * @throws \Throwable
      */
     public function executeRaw(array $parameters): mixed
     {
@@ -190,17 +222,23 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
     }
 
     /**
-     * Wrap a subscription callback to receive ($message, $channel) regardless
-     * of how many arguments the underlying driver passes.
+     * Wrap subscription callbacks to always receive ($message, $channel).
      *
      * @param  \Closure  $callback
+     *
+     * @phpstan-param \Closure(mixed ...$arguments): mixed $callback
+     *
      * @return \Closure
+     *
+     * @phpstan-return \Closure(mixed ...$arguments): void
      */
     private function newMessageHandler(\Closure $callback): \Closure
     {
         return static function (mixed ...$arguments) use ($callback): void {
-            $message = $arguments[array_key_last($arguments)]     ?? null;
-            $channel = $arguments[array_key_last($arguments) - 1] ?? null;
+            $argument_count = count($arguments);
+
+            $message = $argument_count >= 1 ? $arguments[$argument_count - 1] : null;
+            $channel = $argument_count >= 2 ? $arguments[$argument_count - 2] : null;
 
             $callback($message, $channel);
         };
@@ -217,41 +255,43 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
             return false;
         }
 
-        $client            = ($this->connector)();
-        $this->glideClient = $client;
+        $this->glideClient = ($this->connector)();
 
         return true;
     }
 
     /**
-     * Execute a command against the GLIDE client using dynamic dispatch.
-     *
-     * @param  string  $method
-     * @param  array<array-key, mixed>  $parameters
-     * @return mixed
-     */
-    private function runClientCommand(string $method, array $parameters): mixed
-    {
-        return call_user_func_array([$this->glideClient, $method], $parameters);
-    }
-
-    /**
-     * Normalize the command method name to a non-empty string.
+     * Normalize command method names to non-empty strings.
      *
      * @param  mixed  $method
      * @return string
      */
     private function normalizeCommandMethod(mixed $method): string
     {
-        if (is_string($method) && $method !== '') {
-            return $method;
-        }
+        $normalized_method = $this->normalizeNonEmptyStringable($method);
 
-        if ((is_int($method) || is_float($method) || is_bool($method) || $method instanceof \Stringable) && (string) $method !== '') {
-            return (string) $method;
+        if ($normalized_method !== null) {
+            return $normalized_method;
         }
 
         throw new \InvalidArgumentException(sprintf('Unsupported command method type [%s].', get_debug_type($method)));
+    }
+
+    /**
+     * Normalize subscription method names to non-empty lowercase strings.
+     *
+     * @param  mixed  $method
+     * @return string
+     */
+    private function normalizeSubscriptionMethod(mixed $method): string
+    {
+        $normalized_method = $this->normalizeNonEmptyStringable($method);
+
+        if ($normalized_method !== null) {
+            return strtolower($normalized_method);
+        }
+
+        throw new \InvalidArgumentException(sprintf('Unsupported subscription method type [%s].', get_debug_type($method)));
     }
 
     /**
@@ -261,65 +301,85 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
      */
     private function sleepBeforeRetry(): void
     {
-        $delay_milliseconds = $this->retryDelayMilliseconds();
+        $base_delay = $this->normalizeNonNegativeInt($this->config['retry_delay_ms'] ?? null)  ?? 25;
+        $max_jitter = $this->normalizeNonNegativeInt($this->config['retry_jitter_ms'] ?? null) ?? 15;
 
-        if ($delay_milliseconds <= 0) {
+        if ($max_jitter > 0) {
+            $random_int = $this->randomIntGenerator;
+
+            try {
+                $base_delay += $random_int(0, $max_jitter);
+            } catch (\Throwable) {
+                $base_delay = max(0, $base_delay);
+            }
+        }
+
+        if ($base_delay <= 0) {
             return;
         }
 
         $sleep_callback = $this->sleepCallback;
-        $sleep_callback($delay_milliseconds * 1000);
+        $sleep_callback($base_delay * 1000);
     }
 
     /**
-     * Resolve retry delay from config with optional jitter.
-     *
-     * @return int
-     */
-    private function retryDelayMilliseconds(): int
-    {
-        $base_delay = $this->normalizeIntConfig($this->config['retry_delay_ms'] ?? null, 25);
-        $max_jitter = $this->normalizeIntConfig($this->config['retry_jitter_ms'] ?? null, 15);
-
-        if ($max_jitter === 0) {
-            return $base_delay;
-        }
-
-        $random_int = $this->randomIntGenerator;
-
-        try {
-            return $base_delay + $random_int(0, $max_jitter);
-        } catch (\Throwable) {
-            return $base_delay;
-        }
-    }
-
-    /**
-     * Normalize mixed config values into non-negative integers.
+     * Normalize mixed values into non-negative integers or null.
      *
      * @param  mixed  $value
-     * @param  int  $default
-     * @return int
+     * @return int|null
      */
-    private function normalizeIntConfig(mixed $value, int $default): int
+    private function normalizeNonNegativeInt(mixed $value): ?int
     {
         if (is_int($value)) {
-            return max(0, $value);
+            return $value >= 0 ? $value : null;
         }
 
         if (is_float($value)) {
-            return max(0, (int) $value);
+            $normalized = (int) $value;
+
+            return $normalized >= 0 ? $normalized : null;
         }
 
         if (is_string($value) && is_numeric($value)) {
-            return max(0, (int) $value);
+            $normalized = (int) $value;
+
+            return $normalized >= 0 ? $normalized : null;
         }
 
-        return max(0, $default);
+        if ($value instanceof \Stringable && is_numeric((string) $value)) {
+            $normalized = (int) (string) $value;
+
+            return $normalized >= 0 ? $normalized : null;
+        }
+
+        return null;
     }
 
     /**
-     * Determine if the failed command is safe to retry once.
+     * Normalize mixed values into non-empty string values when possible.
+     *
+     * @param  mixed  $value
+     * @return string|null
+     */
+    private function normalizeNonEmptyStringable(mixed $value): ?string
+    {
+        if (is_string($value) && $value !== '') {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value) || is_bool($value) || $value instanceof \Stringable) {
+            $normalized = (string) $value;
+
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Determine if a failed command is safe to retry once.
      *
      * @param  string  $method
      * @param  \Throwable  $exception
@@ -339,7 +399,7 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
     }
 
     /**
-     * Classify whether the exception represents a transient connection issue.
+     * Classify whether an exception is a transient transport failure.
      *
      * @param  \Throwable  $exception
      * @return bool
@@ -360,32 +420,30 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
     /**
      * Normalize channel input to a non-empty list of channel names.
      *
-     * @param  array<array-key, mixed>|string  $channels
+     * @param  mixed  $channels
      * @return array<int, string>
      */
-    private function normalizeSubscriptionChannels(array|string $channels): array
+    private function normalizeSubscriptionChannels(mixed $channels): array
     {
-        $source     = is_array($channels) ? $channels : [$channels];
+        if (is_string($channels)) {
+            $source = [$channels];
+        } elseif (is_array($channels)) {
+            $source = $channels;
+        } else {
+            throw new \InvalidArgumentException(sprintf('Unsupported subscription channel type [%s].', get_debug_type($channels)));
+        }
+
         $normalized = [];
 
         foreach ($source as $channel) {
-
-            if (is_string($channel)) {
-
-                if ($channel !== '') {
-                    $normalized[] = $channel;
-                }
-
+            if (!is_scalar($channel) && !$channel instanceof \Stringable) {
                 continue;
             }
 
-            if (is_int($channel) || is_float($channel) || is_bool($channel) || $channel instanceof \Stringable) {
+            $channel_name = (string) $channel;
 
-                $channel_name = (string) $channel;
-
-                if ($channel_name !== '') {
-                    $normalized[] = $channel_name;
-                }
+            if ($channel_name !== '') {
+                $normalized[] = $channel_name;
             }
         }
 
@@ -397,15 +455,30 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
     }
 
     /**
+     * Resolve the configured key prefix.
+     *
+     * @param  mixed  $prefix
+     * @return string
+     */
+    private function resolvePrefix(mixed $prefix): string
+    {
+        if (!is_scalar($prefix) && !$prefix instanceof \Stringable) {
+            return '';
+        }
+
+        return (string) $prefix;
+    }
+
+    /**
      * Resolve the configured random integer generator callback.
      *
      * @param  mixed  $random_int
-     * @return callable(int, int): int
+     * @return \Closure(int, int): int
      */
-    private function resolveRandomIntGenerator(mixed $random_int): callable
+    private function resolveRandomIntGenerator(mixed $random_int): \Closure
     {
         if (is_callable($random_int)) {
-            return $random_int;
+            return \Closure::fromCallable($random_int);
         }
 
         return static fn (int $min, int $max): int => random_int($min, $max);
@@ -415,12 +488,12 @@ final class ValkeyGlideConnection extends Connection implements ConnectionContra
      * Resolve the configured sleep callback.
      *
      * @param  mixed  $sleep
-     * @return callable(int): void
+     * @return \Closure(int): void
      */
-    private function resolveSleepCallback(mixed $sleep): callable
+    private function resolveSleepCallback(mixed $sleep): \Closure
     {
         if (is_callable($sleep)) {
-            return $sleep;
+            return \Closure::fromCallable($sleep);
         }
 
         return static function (int $microseconds): void {

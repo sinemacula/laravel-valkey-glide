@@ -43,11 +43,10 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "Tests\\": "tests/",
-            "SineMacula\\Valkey\\Stubs\\": "stubs/"
+            "Tests\\": "tests/"
         },
         "files": [
-            "stubs/register_aliases.php"
+            "stubs/ValkeyGlide.php"
         ]
     },
     "scripts": {
@@ -77,6 +76,13 @@
         "allow-plugins": {
             "dealerdirect/phpcodesniffer-composer-installer": true,
             "phpstan/extension-installer": true
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "SineMacula\\Valkey\\ValkeyGlideServiceProvider"
+            ]
         }
     }
 }

@@ -38,6 +38,7 @@ exclude_patterns = [
     "**/target/**",
     "**/templates/**",
     "**/testdata/**",
+    "**/stubs/**",
     "**/vendor/**"
 ]
 

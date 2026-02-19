@@ -1,6 +1,8 @@
 <?php
 
+// phpcs:disable PSR12.Files.DeclareStatement.SpaceFoundAfterDirective,PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue
 declare(strict_types = 1);
+// phpcs:enable PSR12.Files.DeclareStatement.SpaceFoundAfterDirective,PSR12.Files.DeclareStatement.SpaceFoundBeforeDirectiveValue
 
 namespace SineMacula\Valkey\Connectors;
 
@@ -17,48 +19,26 @@ use SineMacula\Valkey\Support\Config;
  */
 final class ValkeyGlideConnector implements ConnectorContract
 {
-    /** @var (callable(): \ValkeyGlide)|null */
-    private $clientFactory;
-
-    /** @var callable(string): bool */
-    private $extensionLoader;
-
-    /** @var callable(string): bool */
-    private $classResolver;
-
-    /** @var callable(object|string, string): bool */
-    private $methodResolver;
-
-    /** @var callable(string): bool */
-    private $constantChecker;
-
-    /** @var callable(string): mixed */
-    private $constantResolver;
-
     /**
-     * @param  (callable(): \ValkeyGlide)|null  $clientFactory
-     * @param  (callable(string): bool)|null  $extensionLoader
-     * @param  (callable(string): bool)|null  $classResolver
-     * @param  (callable(object|string, string): bool)|null  $methodResolver
-     * @param  (callable(string): bool)|null  $constantChecker
-     * @param  (callable(string): mixed)|null  $constantResolver
+     * Create a new connector instance.
+     *
+     * @param  (\Closure(): \ValkeyGlide)|null  $clientFactory
+     * @param  (\Closure(string): bool)|null  $extensionLoader
+     * @param  (\Closure(string): bool)|null  $classResolver
      * @return void
      */
     public function __construct(
-        ?callable $clientFactory = null,
-        ?callable $extensionLoader = null,
-        ?callable $classResolver = null,
-        ?callable $methodResolver = null,
-        ?callable $constantChecker = null,
-        ?callable $constantResolver = null,
-    ) {
-        $this->clientFactory    = $clientFactory;
-        $this->extensionLoader  = $extensionLoader  ?? static fn (string $extension): bool => extension_loaded($extension);
-        $this->classResolver    = $classResolver    ?? static fn (string $class): bool => class_exists($class);
-        $this->methodResolver   = $methodResolver   ?? static fn (object|string $objectOrClass, string $method): bool => method_exists($objectOrClass, $method);
-        $this->constantChecker  = $constantChecker  ?? static fn (string $constant): bool => defined($constant);
-        $this->constantResolver = $constantResolver ?? static fn (string $constant): mixed => constant($constant);
-    }
+
+        /** Factory used to instantiate the Valkey GLIDE client. */
+        private readonly ?\Closure $clientFactory = null,
+
+        /** Callback used to resolve loaded extension state. */
+        private readonly ?\Closure $extensionLoader = null,
+
+        /** Callback used to resolve runtime class availability. */
+        private readonly ?\Closure $classResolver = null,
+
+    ) {}
 
     /**
      * Create a Valkey GLIDE connection for a single configured endpoint.
@@ -81,17 +61,17 @@ final class ValkeyGlideConnector implements ConnectorContract
      * Create a Valkey GLIDE connection for cluster-style configuration.
      *
      * @param  array<array-key, mixed>  $config
-     * @param  array<array-key, mixed>  $cluster_options
+     * @param  array<array-key, mixed>  $clusterOptions
      * @param  array<array-key, mixed>  $options
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
      *
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
     #[\Override]
-    public function connectToCluster(array $config, array $cluster_options, array $options): ValkeyGlideConnection
+    public function connectToCluster(array $config, array $clusterOptions, array $options): ValkeyGlideConnection
     {
-        $seed_node                    = is_array($config[0] ?? null) ? $config[0] : [];
-        $resolved_config              = Config::merge($seed_node, array_merge($options, $cluster_options));
+        $seed_node                    = $this->firstClusterNode($config);
+        $resolved_config              = Config::merge($seed_node, array_merge($options, $clusterOptions));
         $resolved_config['addresses'] = Config::clusterAddresses($config);
 
         return $this->createConnection($resolved_config);
@@ -124,12 +104,13 @@ final class ValkeyGlideConnector implements ConnectorContract
     {
         $this->validateGlideExtension();
 
-        $clientFactory = $this->clientFactory ?? static fn (): \ValkeyGlide => new \ValkeyGlide;
-        $client        = $clientFactory();
+        $client_factory = $this->clientFactory ?? static fn (): \ValkeyGlide => new \ValkeyGlide;
+        $client         = $client_factory();
 
         try {
             $client->connect(...Config::connectArguments($config));
-            $this->configureConnectedClient($client, $config);
+        } catch (ConnectionException $exception) {
+            throw $exception;
         } catch (\Throwable $exception) {
             throw new ConnectionException(sprintf('Unable to establish a Valkey GLIDE connection: %s', $exception->getMessage()), previous: $exception);
         }
@@ -138,86 +119,20 @@ final class ValkeyGlideConnector implements ConnectorContract
     }
 
     /**
-     * Apply post-connect options that Laravel users commonly configure.
+     * Resolve the first valid cluster node from config.
      *
-     * Unsupported options are ignored to keep behavior non-fatal.
-     *
-     * @param  \ValkeyGlide  $client
-     * @param  array<string, mixed>  $config
-     * @return void
+     * @param  array<array-key, mixed>  $config
+     * @return array<array-key, mixed>
      */
-    private function configureConnectedClient(\ValkeyGlide $client, array $config): void
+    private function firstClusterNode(array $config): array
     {
-        $this->selectDatabase($client, $config['database'] ?? null);
-        $this->setClientName($client, $config['name'] ?? null);
-        $this->setPrefix($client, $config['prefix'] ?? null);
-    }
-
-    /**
-     * Select the configured logical database when provided.
-     *
-     * @param  \ValkeyGlide  $client
-     * @param  mixed  $database
-     * @return void
-     */
-    private function selectDatabase(\ValkeyGlide $client, mixed $database): void
-    {
-        if (is_int($database) || is_float($database) || is_string($database)) {
-            $client->select((int) $database);
-            return;
+        foreach ($config as $node) {
+            if (is_array($node)) {
+                return $node;
+            }
         }
 
-        if ($database instanceof \Stringable) {
-            $client->select((int) (string) $database);
-        }
-    }
-
-    /**
-     * Configure the Redis client name when provided.
-     *
-     * @param  \ValkeyGlide  $client
-     * @param  mixed  $name
-     * @return void
-     */
-    private function setClientName(\ValkeyGlide $client, mixed $name): void
-    {
-        if (!is_scalar($name) && !$name instanceof \Stringable) {
-            return;
-        }
-
-        $normalized_name = (string) $name;
-
-        if ($normalized_name === '') {
-            return;
-        }
-
-        $client->client('SETNAME', $normalized_name);
-    }
-
-    /**
-     * Configure key prefixing when option APIs are available.
-     *
-     * @param  \ValkeyGlide  $client
-     * @param  mixed  $prefix
-     * @return void
-     */
-    private function setPrefix(\ValkeyGlide $client, mixed $prefix): void
-    {
-        if (is_int($prefix) || is_float($prefix) || is_bool($prefix) || is_string($prefix)) {
-            $prefix = (string) $prefix;
-        } elseif ($prefix instanceof \Stringable) {
-            $prefix = (string) $prefix;
-        } else {
-            return;
-        }
-
-        $method_resolver  = $this->methodResolver;
-        $constant_checker = $this->constantChecker;
-        $constant_reader  = $this->constantResolver;
-
-        if ($prefix !== '' && $method_resolver($client, 'setOption') && $constant_checker('Redis::OPT_PREFIX')) {
-            call_user_func([$client, 'setOption'], $constant_reader('Redis::OPT_PREFIX'), $prefix);
-        }
+        return [];
     }
 
     /**
@@ -229,13 +144,13 @@ final class ValkeyGlideConnector implements ConnectorContract
      */
     private function validateGlideExtension(): void
     {
-        $extension_loader = $this->extensionLoader;
+        $extension_loader = $this->extensionLoader ?? static fn (string $extension): bool => extension_loaded($extension);
 
         if (!$extension_loader('valkey_glide')) {
             throw new ConnectionException('Valkey GLIDE extension (ext-valkey_glide) is not loaded.');
         }
 
-        $class_resolver = $this->classResolver;
+        $class_resolver = $this->classResolver ?? static fn (string $class): bool => class_exists($class);
 
         if (!$class_resolver(\ValkeyGlide::class)) {
             throw new ConnectionException('Valkey GLIDE extension is loaded but class "ValkeyGlide" is unavailable.');

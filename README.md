@@ -63,8 +63,9 @@ composer format
 
 ## Notes
 
-Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna
-aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+- Redis key prefixing (`prefix`) is currently not supported by `ext-valkey_glide`.
+- If a non-empty `prefix` is configured, connection setup will fail with a clear exception.
+- Empty or unset `prefix` values continue as normal.
 
 ## Contributing
 
