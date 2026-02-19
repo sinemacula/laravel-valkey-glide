@@ -31,6 +31,19 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     private const int SECONDARY_DATABASE = 1;
 
     /**
+     * Ensure extension preconditions are met before each external test.
+     *
+     * @return void
+     */
+    #[\Override]
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->assertExtensionIsLoaded();
+    }
+
+    /**
      * Verify the connector can establish an external connection and execute PING.
      *
      * @return void
@@ -161,15 +174,13 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     }
 
     /**
-     * Create an external connector-backed connection or skip when unavailable.
+     * Create an external connector-backed connection.
      *
      * @param  array<array-key, mixed>  $overrides
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
      */
     private function connectExternal(array $overrides = []): ValkeyGlideConnection
     {
-        $this->skipUnlessExtensionLoaded();
-
         $connector = new ValkeyGlideConnector;
 
         $host = getenv('VALKEY_GLIDE_TEST_HOST');
@@ -197,23 +208,18 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
             $config['username'] = $username;
         }
 
-        try {
-            return $connector->connect($config, []);
-        } catch (\Throwable $exception) {
-            self::markTestSkipped('Unable to establish external Redis connection: ' . $exception->getMessage());
-        }
+        return $connector->connect($config, []);
     }
 
     /**
-     * Skip the current test unless the extension is loaded.
+     * Assert that the Valkey GLIDE extension and class are available.
      *
      * @return void
      */
-    private function skipUnlessExtensionLoaded(): void
+    private function assertExtensionIsLoaded(): void
     {
-        if (!extension_loaded('valkey_glide')) {
-            self::markTestSkipped('External tests require ext-valkey_glide to be loaded.');
-        }
+        self::assertTrue(extension_loaded('valkey_glide'), 'External tests require ext-valkey_glide.');
+        self::assertTrue(class_exists(\ValkeyGlide::class), 'External tests require the ValkeyGlide class.');
     }
 
     /**
