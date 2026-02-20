@@ -145,4 +145,8 @@ Contributions are welcome via GitHub pull requests.
 
 ## Security
 
-If you discover a security issue, report it privately to maintainers rather than opening a public issue first.
+If you discover a security issue, please contact Sine Macula directly rather than opening a public issue.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
