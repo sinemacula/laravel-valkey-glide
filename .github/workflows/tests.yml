@@ -131,6 +131,7 @@ jobs:
                 run: composer install --prefer-dist --no-interaction --no-progress
 
             -   name: PHPUnit
+                if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/master') }}
                 run: composer test
 
             -   name: PHPUnit External
