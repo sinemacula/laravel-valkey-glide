@@ -15,10 +15,6 @@ path = "/.agents/skills/php-documenter/SKILL.md"
 enabled = true
 
 [[skills.config]]
-path = "/.agents/skills/php-data-contract-normalizer/SKILL.md"
-enabled = true
-
-[[skills.config]]
 path = "/.agents/skills/php-naming-normalizer/SKILL.md"
 enabled = true
 

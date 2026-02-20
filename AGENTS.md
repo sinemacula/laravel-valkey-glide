@@ -110,7 +110,6 @@ No discretionary skipping is allowed.
 
 - PHP Test Author: `$php-test-author`
 - PHP Complexity Refactor: `$php-complexity-refactor`
-- PHP Data Contract Normalizer: `$php-data-contract-normalizer`
 - PHP Naming Normalizer: `$php-naming-normalizer`
 - PHP Style Enforcer: `$php-styling`
 - PHP Documenter: `$php-documenter`
@@ -125,22 +124,20 @@ For PHP content, the agent MUST follow this order:
 1. **Self-Review Gate** (mandatory before any PHP skill or quality command)
 2. **PHP Test Author** (when tests are added/updated or new coverage is required)
 3. **PHP Complexity Refactor**
-4. **PHP Data Contract Normalizer** (when DTO or VO files are added/updated)
-5. **PHP Naming Normalizer**
-6. **PHP Style Enforcer**
-7. **PHP Documenter**
-8. **PHP Attribute Enricher**
-9. **PHP Quality Remediator**
-10. **Tests**
+4. **PHP Naming Normalizer**
+5. **PHP Style Enforcer**
+6. **PHP Documenter**
+7. **PHP Attribute Enricher**
+8. **PHP Quality Remediator**
+9. **Tests**
 
 Rules:
 
 - PHP test authoring must use `$php-test-author` and must not replace any existing PHP quality step
-- Self-review must complete before steps 2-9
+- Self-review must complete before steps 2-8
 - If self-review identifies issues, remediation and a repeat self-review are mandatory before continuing
-- DTO or VO contract changes must use `$php-data-contract-normalizer` before naming, style, and documentation
 - Complexity must run before naming, style, or documentation
-- Tests must be run after steps 1-9 when executable PHP files are modified
+- Tests must be run after steps 1-8 when executable PHP files are modified
 - Quality remediation is the final gate; code must not push unless it passes
 - The same sequence applies to PHP snippets in non-code files (for example, Markdown)
 - If only documentation snippets were changed and no executable PHP files were modified, tests may be skipped, but steps
