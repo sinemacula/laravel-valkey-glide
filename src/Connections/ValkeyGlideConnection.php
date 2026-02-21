@@ -217,6 +217,37 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Returns the value of the given key.
+     *
+     * @param  string  $key
+     * @return string|null
+     */
+    public function get(string $key): string|null
+    {
+        /** @var string|false $result */
+        $result = $this->command('get', [$key]);
+
+        return $result !== false ? $result : null;
+    }
+
+    /**
+     * Get the values of all the given keys.
+     *
+     * @param  array<int, string>  $keys
+     * @return array<int, string|null>
+     */
+    public function mget(array $keys): array
+    {
+        /** @var array<int, string|false> $results */
+        $results = $this->command('mget', [$keys]);
+
+        return array_map(
+            static fn (string|false $value): string|null => $value !== false ? $value : null,
+            $results,
+        );
+    }
+
+    /**
      * Execute a Redis command with one safe retry on transient disconnects.
      *
      * @param  mixed  $method

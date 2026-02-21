@@ -51,6 +51,72 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify get returns null when the underlying client returns false (cache miss).
+     *
+     * @return void
+     */
+    #[Test]
+    public function getReturnsFalseAsNull(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('get', false);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertNull($connection->get('missing-key'));
+        self::assertSame([['missing-key']], $client->callsFor('get'));
+    }
+
+    /**
+     * Verify get returns the value when the underlying client returns a string.
+     *
+     * @return void
+     */
+    #[Test]
+    public function getReturnsValueWhenPresent(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('get', 'cached-value');
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame('cached-value', $connection->get('existing-key'));
+        self::assertSame([['existing-key']], $client->callsFor('get'));
+    }
+
+    /**
+     * Verify mget converts false entries to null for missing keys.
+     *
+     * @return void
+     */
+    #[Test]
+    public function mgetReturnsFalseAsNull(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('mget', ['value-a', false, 'value-b']);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(['value-a', null, 'value-b'], $connection->mget(['key-a', 'key-b', 'key-c']));
+    }
+
+    /**
+     * Verify mget returns all values when all keys are present.
+     *
+     * @return void
+     */
+    #[Test]
+    public function mgetReturnsAllValuesWhenPresent(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('mget', ['value-a', 'value-b', 'value-c']);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(['value-a', 'value-b', 'value-c'], $connection->mget(['key-a', 'key-b', 'key-c']));
+    }
+
+    /**
      * Verify command execution delegates to the underlying client.
      *
      * @return void
