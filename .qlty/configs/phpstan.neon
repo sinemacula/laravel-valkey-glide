@@ -20,6 +20,9 @@ parameters:
 		- src
 		- tests
 
+	bootstrapFiles:
+		- %currentWorkingDirectory%/stubs/ValkeyGlide.php
+
 	stubFiles:
 		- %currentWorkingDirectory%/stubs/ValkeyGlide.php
 
