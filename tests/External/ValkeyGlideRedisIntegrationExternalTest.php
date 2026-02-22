@@ -108,6 +108,34 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     }
 
     /**
+     * Verify configured key prefixes are applied when mget is used with key lists.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectionPrefixIsAppliedToMgetKeyLists(): void
+    {
+        $prefix      = 'lvkglide:test:';
+        $first_key   = $this->uniqueKey('prefixed-mget-a');
+        $second_key  = $this->uniqueKey('prefixed-mget-b');
+        $missing_key = $this->uniqueKey('prefixed-mget-missing');
+        $connection  = $this->connectExternal(['prefix' => $prefix]);
+
+        $connection->command('set', [$first_key, 'value-a']);
+        $connection->command('set', [$second_key, 'value-b']);
+
+        self::assertSame(
+            ['value-a', 'value-b', null],
+            $connection->mget([$first_key, $second_key, $missing_key]),
+        );
+
+        $connection->command('del', [$first_key, $second_key, $missing_key]);
+        $connection->disconnect();
+    }
+
+    /**
      * Verify raw command execution works through the connection wrapper.
      *
      * @return void

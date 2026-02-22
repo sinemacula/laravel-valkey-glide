@@ -222,8 +222,9 @@ final class ValkeyGlideConnection extends Connection
      * @param  string  $key
      * @return string|null
      */
-    public function get(string $key): string|null
+    public function get(string $key): ?string
     {
+        /** @var false|string $result */
         $result = $this->command('get', [$key]);
 
         return $result !== false ? $result : null;
@@ -237,10 +238,14 @@ final class ValkeyGlideConnection extends Connection
      */
     public function mget(array $keys): array
     {
-        $results = $this->command('mget', [$keys]);
+        $results = $this->command('mget', [$this->prefixMgetKeys($keys)]);
+
+        if (!is_array($results)) {
+            throw new \UnexpectedValueException(sprintf('Expected array response from mget, received [%s].', get_debug_type($results)));
+        }
 
         return array_map(
-            static fn (string|false $value): string|null => $value !== false ? $value : null,
+            static fn (false|string $value): ?string => $value !== false ? $value : null,
             $results,
         );
     }
@@ -317,6 +322,25 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Prefix MGET keys explicitly because the command accepts a key list array.
+     *
+     * @param  array<int, string>  $keys
+     * @return array<int, string>
+     */
+    private function prefixMgetKeys(array $keys): array
+    {
+        if ($this->prefix === '') {
+            return $keys;
+        }
+
+        foreach ($keys as $index => $key) {
+            $keys[$index] = $this->prefix . $key;
+        }
+
+        return $keys;
+    }
+
+    /**
      * Execute a normalized command with one retry for transient failures.
      *
      * @param  string  $method
@@ -362,7 +386,41 @@ final class ValkeyGlideConnection extends Connection
      */
     private function invokeCommand(string $method, array $parameters): mixed
     {
+        $normalized_method = strtoupper($method);
+
+        if ($this->shouldInvokeAsRawCommand($normalized_method, $parameters)) {
+            return $this->invokeAsRawCommand($normalized_method, $parameters);
+        }
+
         return call_user_func_array([$this->glideClient, $method], $parameters);
+    }
+
+    /**
+     * Determine whether a command must run through rawcommand for compatibility.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return bool
+     */
+    private function shouldInvokeAsRawCommand(string $method, array $parameters): bool
+    {
+        if ($method === 'EVAL' || $method === 'EVALSHA') {
+            return true;
+        }
+
+        return $method === 'SET' && count($parameters) >= 4;
+    }
+
+    /**
+     * Execute a command through rawcommand with Redis protocol arguments.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return mixed
+     */
+    private function invokeAsRawCommand(string $method, array $parameters): mixed
+    {
+        return $this->glideClient->rawcommand($method, ...array_values($parameters));
     }
 
     /**

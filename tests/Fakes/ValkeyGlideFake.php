@@ -194,6 +194,40 @@ final class ValkeyGlideFake extends \ValkeyGlide
     }
 
     /**
+     * Record an mget command invocation and apply configured behavior.
+     *
+     * @param  array<int, string>  $keys
+     * @return array<int, false|string>|false|self
+     */
+    public function mget(array $keys): array|false|self
+    {
+        $this->recordCall('mget', [$keys]);
+
+        $result = $this->resolveBehavior('mget', false);
+
+        if ($result === false || $result instanceof self) {
+            return $result;
+        }
+
+        if (!is_array($result)) {
+            throw new \UnexpectedValueException(sprintf('Configured mget behavior must return array|false|self; received [%s].', get_debug_type($result)));
+        }
+
+        $normalized_result = [];
+
+        foreach ($result as $value) {
+
+            if ($value !== false && !is_string($value)) {
+                throw new \UnexpectedValueException(sprintf('Configured mget array entries must be string|false; received [%s].', get_debug_type($value)));
+            }
+
+            $normalized_result[] = $value;
+        }
+
+        return $normalized_result;
+    }
+
+    /**
      * Record a set command invocation and apply configured behavior.
      *
      * @param  string  $key
@@ -269,6 +303,21 @@ final class ValkeyGlideFake extends \ValkeyGlide
     }
 
     /**
+     * Record a method call for later assertions.
+     *
+     * @param  string  $method
+     * @param  array<int|string, mixed>  $arguments
+     * @return void
+     */
+    private function recordCall(string $method, array $arguments): void
+    {
+        $normalized_method = strtolower($method);
+
+        $this->calls[$normalized_method] ??= [];
+        $this->calls[$normalized_method][] = $arguments;
+    }
+
+    /**
      * Resolve configured behavior for a fake method.
      *
      * @param  string  $method
@@ -290,20 +339,5 @@ final class ValkeyGlideFake extends \ValkeyGlide
         }
 
         return $default;
-    }
-
-    /**
-     * Record a method call for later assertions.
-     *
-     * @param  string  $method
-     * @param  array<int|string, mixed>  $arguments
-     * @return void
-     */
-    private function recordCall(string $method, array $arguments): void
-    {
-        $normalized_method = strtolower($method);
-
-        $this->calls[$normalized_method] ??= [];
-        $this->calls[$normalized_method][] = $arguments;
     }
 }

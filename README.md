@@ -24,7 +24,8 @@ application business code.
 - Connection wrapper extending `Illuminate\Redis\Connections\Connection`
 - Laravel config normalization into GLIDE `connect()` arguments
 - Optional single retry for idempotent commands on transient transport errors
-- Key prefix compatibility for supported command families
+- Key prefix compatibility for supported command families, including key-list handling for `MGET`
+- Laravel compatibility fallback for phpredis-style `SET` and `EVAL` command argument shapes
 - External test lane for extension and real Redis connectivity validation
 
 ## Requirements
@@ -91,6 +92,7 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 - Non-idempotent commands are not retried
 - Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`)
 - `executeRaw()` is supported via `rawcommand`
+- Phpredis-style `SET`/`EVAL` argument shapes are normalized through `rawcommand`
 - `disconnect()` delegates to GLIDE `close()`
 
 ## Prefix Compatibility
@@ -121,6 +123,15 @@ External extension/Redis tests:
 ```sh
 composer test-external
 ```
+
+Current external integration coverage includes:
+
+- extension/client availability and connect/close behavior
+- connector/connection roundtrip behavior and retry semantics
+- command-prefix behavior, including list-style key commands (`MGET`)
+- Laravel cache roundtrip behavior, physical key writes, locks, and TTL edge cases
+- Laravel queue push/pop behavior and physical queue key writes
+- Laravel session roundtrip behavior and physical session key writes
 
 Optional env vars for external tests:
 

@@ -11,8 +11,10 @@ Current implementation includes:
 - Service provider registration for the `valkey-glide` Redis client
 - Connector + connection wiring for Laravel Redis
 - Config normalization from Laravel arrays to GLIDE connect arguments
-- Connection wrapper behavior for command dispatch, prefixing, and safe transient retry
-- External integration tests that validate extension-backed behavior against a real Redis/Valkey server
+- Connection wrapper behavior for command dispatch, prefixing, safe transient retry, and command-shape compatibility
+  fallbacks for Laravel phpredis-style `SET`/`EVAL` usage
+- External integration tests that validate extension-backed behavior against a real Redis/Valkey server, including
+  Laravel cache, queue, and session flows
 
 This repository is intended to remain:
 
@@ -33,9 +35,12 @@ The package currently centers around:
 - Service provider registration for a custom Laravel Redis client (`valkey-glide`)
 - Laravel Redis connector and connection wiring for Valkey GLIDE
 - Configuration mapping from Laravel Redis arrays to Valkey GLIDE connection options
-- Compatibility behavior in the connection wrapper (command dispatch, events, key prefix handling)
+- Compatibility behavior in the connection wrapper (command dispatch, events, key prefix handling, phpredis-style
+  command-shape fallback for `SET`/`EVAL`)
 - Safe retry-once behavior for idempotent commands on transient transport failures
 - Compatibility for Laravel cache, queue, session, and direct Redis usage through the configured client
+- External integration coverage for cache locks (`lock_connection`), cache TTL edge behavior, queue key writes, and
+  session persistence behavior
 
 This package is an integration layer. It must not become a generic Valkey client, an infrastructure provisioning tool,
 or a Laravel fork.
@@ -189,7 +194,12 @@ Manual approval is required for:
 - Run tests with coverage: `composer test-coverage`
 - Run a single test file: `vendor/bin/phpunit tests/Unit/Connectors/ValkeyGlideConnectorTest.php`
 - Run a single test method:
-  `vendor/bin/phpunit --filter connectBuildsConnectionAndPassesNormalizedConnectArguments tests/Unit/Connectors/ValkeyGlideConnectorTest.php`
+
+  ```sh
+  vendor/bin/phpunit \
+    --filter connectBuildsConnectionAndPassesNormalizedConnectArguments \
+    tests/Unit/Connectors/ValkeyGlideConnectorTest.php
+  ```
 
 ## Tests & Quality
 
