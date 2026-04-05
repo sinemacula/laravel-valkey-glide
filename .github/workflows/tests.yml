@@ -102,6 +102,11 @@ jobs:
                     key: cargo-cache-${{ runner.os }}-${{ matrix.php }}-cbindgen
                     restore-keys: cargo-cache-${{ runner.os }}-${{ matrix.php }}-
 
+            -   name: Pin Rust toolchain
+                run: |
+                    rustup toolchain install 1.82.0
+                    rustup default 1.82.0
+
             -   name: Install cbindgen
                 run: |
                     set -euo pipefail
