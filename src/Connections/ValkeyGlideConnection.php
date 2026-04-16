@@ -169,10 +169,10 @@ final class ValkeyGlideConnection extends Connection
         'temporarily unavailable',
     ];
 
-    /** @var \ValkeyGlide Active GLIDE client instance. */
-    protected \ValkeyGlide $glideClient;
+    /** @var \ValkeyGlide|\ValkeyGlideCluster Active GLIDE client instance. */
+    protected \ValkeyGlide|\ValkeyGlideCluster $glideClient;
 
-    /** @var (\Closure(): \ValkeyGlide)|null Reconnection client factory. */
+    /** @var (\Closure(): (\ValkeyGlide|\ValkeyGlideCluster))|null Reconnection client factory. */
     protected ?\Closure $connector;
 
     /** @var array<string, mixed> Connection-level configuration. */
@@ -190,12 +190,12 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Create a new Valkey GLIDE Laravel connection wrapper.
      *
-     * @param  \ValkeyGlide  $client
-     * @param  (\Closure(): \ValkeyGlide)|null  $connector
+     * @param  \ValkeyGlide|\ValkeyGlideCluster  $client
+     * @param  (\Closure(): (\ValkeyGlide|\ValkeyGlideCluster))|null  $connector
      * @param  array<string, mixed>  $config
      * @return void
      */
-    public function __construct(\ValkeyGlide $client, ?\Closure $connector = null, array $config = [])
+    public function __construct(\ValkeyGlide|\ValkeyGlideCluster $client, ?\Closure $connector = null, array $config = [])
     {
         $this->glideClient        = $client;
         $this->connector          = $connector;
@@ -208,10 +208,10 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Get the underlying GLIDE client instance.
      *
-     * @return \ValkeyGlide
+     * @return \ValkeyGlide|\ValkeyGlideCluster
      */
     #[\Override]
-    public function client(): \ValkeyGlide
+    public function client(): \ValkeyGlide|\ValkeyGlideCluster
     {
         return $this->glideClient;
     }

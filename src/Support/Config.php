@@ -386,7 +386,7 @@ final class Config
      * @param  array<string, mixed>  $config
      * @return bool
      */
-    private static function isElastiCacheServerless(array $config): bool
+    public static function isElastiCacheServerless(array $config): bool
     {
         if ((bool) ($config['elasticache_serverless'] ?? false)) {
             return true;

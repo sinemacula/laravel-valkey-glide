@@ -85,7 +85,7 @@ final class ValkeyGlideConnector implements ConnectorContract
      */
     private function createConnection(array $resolved_config): ValkeyGlideConnection
     {
-        $connector = fn (): \ValkeyGlide => $this->createClient($resolved_config);
+        $connector = fn (): \ValkeyGlide|\ValkeyGlideCluster => $this->createClient($resolved_config);
 
         return new ValkeyGlideConnection($connector(), $connector, $resolved_config);
     }
@@ -93,27 +93,39 @@ final class ValkeyGlideConnector implements ConnectorContract
     /**
      * Create and connect the underlying GLIDE client instance.
      *
+     * AWS ElastiCache Serverless requires cluster-protocol clients (it advertises
+     * a two-node static topology and emits MOVED redirects for keyed commands).
+     * The standalone \ValkeyGlide class ignores MOVED and silently drops commands,
+     * so when serverless is detected we instantiate \ValkeyGlideCluster instead,
+     * which takes its args in the constructor and handles cluster redirects
+     * internally.
+     *
      * @param  array<string, mixed>  $config
-     * @return \ValkeyGlide
+     * @return \ValkeyGlide|\ValkeyGlideCluster
      *
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
-    private function createClient(array $config): \ValkeyGlide
+    private function createClient(array $config): \ValkeyGlide|\ValkeyGlideCluster
     {
         $this->validateGlideExtension();
 
-        $client_factory = $this->clientFactory ?? static fn (): \ValkeyGlide => new \ValkeyGlide;
-        $client         = $client_factory();
+        $args = Config::connectArguments($config);
 
         try {
-            $client->connect(...Config::connectArguments($config));
+            if (Config::isElastiCacheServerless($config)) {
+                return new \ValkeyGlideCluster(...$args);
+            }
+
+            $client_factory = $this->clientFactory ?? static fn (): \ValkeyGlide => new \ValkeyGlide;
+            $client         = $client_factory();
+            $client->connect(...$args);
+
+            return $client;
         } catch (ConnectionException $exception) {
             throw $exception;
         } catch (\Throwable $exception) {
             throw new ConnectionException(sprintf('Unable to establish a Valkey GLIDE connection: %s', $exception->getMessage()), previous: $exception);
         }
-
-        return $client;
     }
 
     /**
