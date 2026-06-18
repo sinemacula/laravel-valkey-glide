@@ -50,9 +50,9 @@ final class ValkeyGlideConnector implements ConnectorContract
     #[\Override]
     public function connect(array $config, array $options): ValkeyGlideConnection
     {
-        $resolved_config = Config::merge($config, $options);
+        $resolvedConfig = Config::merge($config, $options);
 
-        return $this->createConnection($resolved_config);
+        return $this->createConnection($resolvedConfig);
     }
 
     /**
@@ -68,26 +68,26 @@ final class ValkeyGlideConnector implements ConnectorContract
     #[\Override]
     public function connectToCluster(array $config, array $clusterOptions, array $options): ValkeyGlideConnection
     {
-        $seed_node                    = $this->firstClusterNode($config);
-        $resolved_config              = Config::merge($seed_node, array_merge($options, $clusterOptions));
-        $resolved_config['addresses'] = Config::clusterAddresses($config);
+        $seedNode                    = $this->firstClusterNode($config);
+        $resolvedConfig              = Config::merge($seedNode, array_merge($options, $clusterOptions));
+        $resolvedConfig['addresses'] = Config::clusterAddresses($config);
 
-        return $this->createConnection($resolved_config);
+        return $this->createConnection($resolvedConfig);
     }
 
     /**
      * Build the Laravel connection wrapper and reconnect callback.
      *
-     * @param  array<string, mixed>  $resolved_config
+     * @param  array<string, mixed>  $resolvedConfig
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
      *
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
-    private function createConnection(array $resolved_config): ValkeyGlideConnection
+    private function createConnection(array $resolvedConfig): ValkeyGlideConnection
     {
-        $connector = fn (): \ValkeyGlide => $this->createClient($resolved_config);
+        $connector = fn (): \ValkeyGlide => $this->createClient($resolvedConfig);
 
-        return new ValkeyGlideConnection($connector(), $connector, $resolved_config);
+        return new ValkeyGlideConnection($connector(), $connector, $resolvedConfig);
     }
 
     /**
@@ -98,12 +98,12 @@ final class ValkeyGlideConnector implements ConnectorContract
      *
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
-    private function createClient(array $config): \ValkeyGlide
+    private function createClient(#[\SensitiveParameter] array $config): \ValkeyGlide
     {
         $this->validateGlideExtension();
 
-        $client_factory = $this->clientFactory ?? static fn (): \ValkeyGlide => new \ValkeyGlide;
-        $client         = $client_factory();
+        $clientFactory = $this->clientFactory ?? static fn (): \ValkeyGlide => new \ValkeyGlide;
+        $client        = $clientFactory();
 
         try {
             $client->connect(...Config::connectArguments($config));
@@ -142,15 +142,15 @@ final class ValkeyGlideConnector implements ConnectorContract
      */
     private function validateGlideExtension(): void
     {
-        $extension_loader = $this->extensionLoader ?? static fn (string $extension): bool => extension_loaded($extension);
+        $extensionLoader = $this->extensionLoader ?? static fn (string $extension): bool => extension_loaded($extension);
 
-        if (!$extension_loader('valkey_glide')) {
+        if (!$extensionLoader('valkey_glide')) {
             throw new ConnectionException('Valkey GLIDE extension (ext-valkey_glide) is not loaded.');
         }
 
-        $class_resolver = $this->classResolver ?? static fn (string $class): bool => class_exists($class);
+        $classResolver = $this->classResolver ?? static fn (string $class): bool => class_exists($class);
 
-        if (!$class_resolver(\ValkeyGlide::class)) {
+        if (!$classResolver(\ValkeyGlide::class)) {
             throw new ConnectionException('Valkey GLIDE extension is loaded but class "ValkeyGlide" is unavailable.');
         }
     }

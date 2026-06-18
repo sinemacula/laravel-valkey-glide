@@ -33,6 +33,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  array<int|string, mixed>  $arguments
      * @return mixed
      */
+    #[\Override]
     public function __call(string $name, array $arguments): mixed
     {
         $this->recordCall($name, $arguments);
@@ -90,6 +91,11 @@ final class ValkeyGlideFake extends \ValkeyGlide
     /**
      * Record a connect invocation and apply configured behavior.
      *
+     * The parameter names are intentionally snake_case to mirror the
+     * ext-valkey_glide signature: the connector spreads the snake_case
+     * connect-argument array as named arguments, so these names are a fixed
+     * API contract and must not be renamed to camelCase.
+     *
      * @param  string|null  $host
      * @param  int|null  $port
      * @param  float|null  $timeout
@@ -110,6 +116,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  mixed  $context
      * @return bool
      */
+    #[\Override]
     public function connect(
         ?string $host = null,
         ?int $port = null,
@@ -159,6 +166,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      *
      * @return bool
      */
+    #[\Override]
     public function close(): bool
     {
         $this->recordCall('close', []);
@@ -173,6 +181,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  mixed  ...$args
      * @return mixed
      */
+    #[\Override]
     public function rawcommand(string $command, mixed ...$args): mixed
     {
         $this->recordCall('rawcommand', [$command, ...$args]);
@@ -186,6 +195,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  string  $key
      * @return mixed
      */
+    #[\Override]
     public function get(string $key): mixed
     {
         $this->recordCall('get', [$key]);
@@ -213,7 +223,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
             throw new \UnexpectedValueException(sprintf('Configured mget behavior must return array|false|self; received [%s].', get_debug_type($result)));
         }
 
-        $normalized_result = [];
+        $normalizedResult = [];
 
         foreach ($result as $value) {
 
@@ -221,10 +231,10 @@ final class ValkeyGlideFake extends \ValkeyGlide
                 throw new \UnexpectedValueException(sprintf('Configured mget array entries must be string|false; received [%s].', get_debug_type($value)));
             }
 
-            $normalized_result[] = $value;
+            $normalizedResult[] = $value;
         }
 
-        return $normalized_result;
+        return $normalizedResult;
     }
 
     /**
@@ -235,6 +245,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  mixed  $options
      * @return bool|self|string
      */
+    #[\Override]
     public function set(string $key, mixed $value, mixed $options = null): bool|self|string
     {
         $this->recordCall('set', [$key, $value, $options]);
@@ -255,6 +266,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  mixed  ...$args
      * @return mixed
      */
+    #[\Override]
     public function client(string $opt, mixed ...$args): mixed
     {
         $this->recordCall('client', [$opt, ...$args]);
@@ -272,6 +284,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      *
      * @return bool
      */
+    #[\Override]
     public function subscribe(array $channels, callable $callback): bool
     {
         $this->recordCall('subscribe', [$channels]);
@@ -292,6 +305,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      *
      * @return bool
      */
+    #[\Override]
     public function psubscribe(array $patterns, callable $callback): bool
     {
         $this->recordCall('psubscribe', [$patterns]);
@@ -311,10 +325,10 @@ final class ValkeyGlideFake extends \ValkeyGlide
      */
     private function recordCall(string $method, array $arguments): void
     {
-        $normalized_method = strtolower($method);
+        $normalizedMethod = strtolower($method);
 
-        $this->calls[$normalized_method] ??= [];
-        $this->calls[$normalized_method][] = $arguments;
+        $this->calls[$normalizedMethod] ??= [];
+        $this->calls[$normalizedMethod][] = $arguments;
     }
 
     /**
@@ -328,14 +342,14 @@ final class ValkeyGlideFake extends \ValkeyGlide
      */
     private function resolveBehavior(string $method, mixed $default): mixed
     {
-        $normalized_method = strtolower($method);
+        $normalizedMethod = strtolower($method);
 
-        if (array_key_exists($normalized_method, $this->exceptions)) {
-            throw $this->exceptions[$normalized_method];
+        if (array_key_exists($normalizedMethod, $this->exceptions)) {
+            throw $this->exceptions[$normalizedMethod];
         }
 
-        if (array_key_exists($normalized_method, $this->returns)) {
-            return $this->returns[$normalized_method];
+        if (array_key_exists($normalizedMethod, $this->returns)) {
+            return $this->returns[$normalizedMethod];
         }
 
         return $default;

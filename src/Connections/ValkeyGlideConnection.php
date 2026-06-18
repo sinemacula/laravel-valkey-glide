@@ -178,14 +178,14 @@ final class ValkeyGlideConnection extends Connection
     /** @var array<string, mixed> Connection-level configuration. */
     protected array $config;
 
-    /** @var string Optional key prefix applied for command compatibility. */
-    private string $prefix;
+    /** @var string Key prefix prepended to command key arguments; an empty string disables prefixing. */
+    private readonly string $prefix;
 
     /** @var \Closure(int, int): int Random integer generator callback. */
-    private \Closure $randomIntGenerator;
+    private readonly \Closure $randomIntGenerator;
 
     /** @var \Closure(int): void Sleep callback. */
-    private \Closure $sleepCallback;
+    private readonly \Closure $sleepCallback;
 
     /**
      * Create a new Valkey GLIDE Laravel connection wrapper.
@@ -221,6 +221,8 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  string  $key
      * @return string|null
+     *
+     * @throws \Throwable
      */
     public function get(string $key): ?string
     {
@@ -235,6 +237,9 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  array<int, string>  $keys
      * @return array<int, string|null>
+     *
+     * @throws \Throwable
+     * @throws \UnexpectedValueException
      */
     public function mget(array $keys): array
     {
@@ -262,15 +267,15 @@ final class ValkeyGlideConnection extends Connection
     #[\Override]
     public function command(mixed $method, array $parameters = []): mixed
     {
-        $normalized_method     = $this->normalizeCommandMethod($method);
-        $normalized_parameters = $this->normalizeCommandParameters(
-            $normalized_method,
+        $normalizedMethod     = $this->normalizeCommandMethod($method);
+        $normalizedParameters = $this->normalizeCommandParameters(
+            $normalizedMethod,
             $parameters,
         );
 
         return $this->executeCommandWithRetry(
-            $normalized_method,
-            $normalized_parameters,
+            $normalizedMethod,
+            $normalizedParameters,
         );
     }
 
@@ -282,19 +287,21 @@ final class ValkeyGlideConnection extends Connection
      * @param  mixed  $method
      * @return void
      *
+     * @throws \InvalidArgumentException
+     *
      * @phpstan-ignore method.childParameterType
      */
     #[\Override]
     public function createSubscription(mixed $channels, \Closure $callback, mixed $method = 'subscribe'): void
     {
-        $normalized_channels = $this->normalizeSubscriptionChannels($channels);
-        $normalized_method   = $this->normalizeSubscriptionMethod($method);
-        $handler             = $this->newMessageHandler($callback);
+        $normalizedChannels = $this->normalizeSubscriptionChannels($channels);
+        $normalizedMethod   = $this->normalizeSubscriptionMethod($method);
+        $handler            = $this->newMessageHandler($callback);
 
-        match ($normalized_method) {
-            'subscribe'  => $this->glideClient->subscribe($normalized_channels, $handler),
-            'psubscribe' => $this->glideClient->psubscribe($normalized_channels, $handler),
-            default      => throw new \InvalidArgumentException(sprintf('Unsupported subscription method [%s].', $normalized_method)),
+        match ($normalizedMethod) {
+            'subscribe'  => $this->glideClient->subscribe($normalizedChannels, $handler),
+            'psubscribe' => $this->glideClient->psubscribe($normalizedChannels, $handler),
+            default      => throw new \InvalidArgumentException(sprintf('Unsupported subscription method [%s].', $normalizedMethod)),
         };
     }
 
@@ -354,7 +361,7 @@ final class ValkeyGlideConnection extends Connection
         $attempt = 0;
 
         while (true) {
-            $started_at = microtime(true);
+            $startedAt = microtime(true);
 
             try {
                 $result = $this->invokeCommand($method, $parameters);
@@ -371,7 +378,7 @@ final class ValkeyGlideConnection extends Connection
                 throw $exception;
             }
 
-            $this->dispatchCommandExecutedEvent($method, $parameters, $started_at);
+            $this->dispatchCommandExecutedEvent($method, $parameters, $startedAt);
 
             return $result;
         }
@@ -383,13 +390,15 @@ final class ValkeyGlideConnection extends Connection
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
      * @return mixed
+     *
+     * @throws \Throwable
      */
     private function invokeCommand(string $method, array $parameters): mixed
     {
-        $normalized_method = strtoupper($method);
+        $normalizedMethod = strtoupper($method);
 
-        if ($this->shouldInvokeAsRawCommand($normalized_method, $parameters)) {
-            return $this->invokeAsRawCommand($normalized_method, $parameters);
+        if ($this->shouldInvokeAsRawCommand($normalizedMethod, $parameters)) {
+            return $this->invokeAsRawCommand($normalizedMethod, $parameters);
         }
 
         return call_user_func_array([$this->glideClient, $method], $parameters);
@@ -469,18 +478,18 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
-     * @param  float  $started_at
+     * @param  float  $startedAt
      * @return void
      */
-    private function dispatchCommandExecutedEvent(string $method, array $parameters, float $started_at): void
+    private function dispatchCommandExecutedEvent(string $method, array $parameters, float $startedAt): void
     {
-        $execution_time_ms = round((microtime(true) - $started_at) * 1000, 2);
+        $executionTimeMs = round((microtime(true) - $startedAt) * 1000, 2);
 
         $this->events?->dispatch(
             new CommandExecuted(
                 $method,
                 $this->parseParametersForEvent($parameters),
-                $execution_time_ms,
+                $executionTimeMs,
                 $this,
             ),
         );
@@ -495,10 +504,10 @@ final class ValkeyGlideConnection extends Connection
     private function newMessageHandler(\Closure $callback): \Closure
     {
         return static function (mixed ...$arguments) use ($callback): void {
-            $argument_count = count($arguments);
+            $argumentCount = count($arguments);
 
-            $message = $argument_count >= 1 ? $arguments[$argument_count - 1] : null;
-            $channel = $argument_count >= 2 ? $arguments[$argument_count - 2] : null;
+            $message = $argumentCount >= 1 ? $arguments[$argumentCount - 1] : null;
+            $channel = $argumentCount >= 2 ? $arguments[$argumentCount - 2] : null;
 
             $callback($message, $channel);
         };
@@ -533,20 +542,20 @@ final class ValkeyGlideConnection extends Connection
             return $parameters;
         }
 
-        $normalized_method = strtoupper($method);
+        $normalizedMethod = strtoupper($method);
 
-        if ($normalized_method === 'EVAL' || $normalized_method === 'EVALSHA') {
+        if ($normalizedMethod === 'EVAL' || $normalizedMethod === 'EVALSHA') {
             return $this->prefixEvalKeys($parameters);
         }
 
         return match (true) {
-            in_array($normalized_method, self::ALL_KEY_COMMANDS, true)    => $this->prefixAllParameters($parameters),
-            in_array($normalized_method, self::DOUBLE_KEY_COMMANDS, true) => $this->prefixParameterAt(
+            in_array($normalizedMethod, self::ALL_KEY_COMMANDS, true)    => $this->prefixAllParameters($parameters),
+            in_array($normalizedMethod, self::DOUBLE_KEY_COMMANDS, true) => $this->prefixParameterAt(
                 $this->prefixParameterAt($parameters, 0),
                 1,
             ),
-            in_array($normalized_method, self::SINGLE_KEY_COMMANDS, true) => $this->prefixParameterAt($parameters, 0),
-            default                                                       => $parameters,
+            in_array($normalizedMethod, self::SINGLE_KEY_COMMANDS, true) => $this->prefixParameterAt($parameters, 0),
+            default                                                      => $parameters,
         };
     }
 
@@ -563,13 +572,13 @@ final class ValkeyGlideConnection extends Connection
             return $parameters;
         }
 
-        $prefixed_value = $this->prefixValue($parameters[$index]);
+        $prefixedValue = $this->prefixValue($parameters[$index]);
 
-        if ($prefixed_value === null) {
+        if ($prefixedValue === null) {
             return $parameters;
         }
 
-        $parameters[$index] = $prefixed_value;
+        $parameters[$index] = $prefixedValue;
 
         return $parameters;
     }
@@ -583,10 +592,10 @@ final class ValkeyGlideConnection extends Connection
     private function prefixAllParameters(array $parameters): array
     {
         foreach ($parameters as $index => $parameter) {
-            $prefixed_value = $this->prefixValue($parameter);
+            $prefixedValue = $this->prefixValue($parameter);
 
-            if ($prefixed_value !== null) {
-                $parameters[$index] = $prefixed_value;
+            if ($prefixedValue !== null) {
+                $parameters[$index] = $prefixedValue;
             }
         }
 
@@ -605,13 +614,13 @@ final class ValkeyGlideConnection extends Connection
             return $parameters;
         }
 
-        $key_count = $this->normalizeNonNegativeInt($parameters[1]);
+        $keyCount = $this->normalizeNonNegativeInt($parameters[1]);
 
-        if ($key_count === null || $key_count <= 0) {
+        if ($keyCount === null || $keyCount <= 0) {
             return $parameters;
         }
 
-        for ($offset = 0; $offset < $key_count; $offset++) {
+        for ($offset = 0; $offset < $keyCount; $offset++) {
             $parameters = $this->prefixParameterAt($parameters, $offset + 2);
         }
 
@@ -630,9 +639,9 @@ final class ValkeyGlideConnection extends Connection
             return null;
         }
 
-        $normalized_value = (string) $value;
+        $normalizedValue = (string) $value;
 
-        return $this->prefix . $normalized_value;
+        return $this->prefix . $normalizedValue;
     }
 
     /**
@@ -640,13 +649,15 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  mixed  $method
      * @return string
+     *
+     * @throws \InvalidArgumentException
      */
     private function normalizeCommandMethod(mixed $method): string
     {
-        $normalized_method = $this->normalizeNonEmptyStringable($method);
+        $normalizedMethod = $this->normalizeNonEmptyStringable($method);
 
-        if ($normalized_method !== null) {
-            return $normalized_method;
+        if ($normalizedMethod !== null) {
+            return $normalizedMethod;
         }
 
         throw new \InvalidArgumentException(sprintf('Unsupported command method type [%s].', get_debug_type($method)));
@@ -657,13 +668,15 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  mixed  $method
      * @return string
+     *
+     * @throws \InvalidArgumentException
      */
     private function normalizeSubscriptionMethod(mixed $method): string
     {
-        $normalized_method = $this->normalizeNonEmptyStringable($method);
+        $normalizedMethod = $this->normalizeNonEmptyStringable($method);
 
-        if ($normalized_method !== null) {
-            return strtolower($normalized_method);
+        if ($normalizedMethod !== null) {
+            return strtolower($normalizedMethod);
         }
 
         throw new \InvalidArgumentException(sprintf('Unsupported subscription method type [%s].', get_debug_type($method)));
@@ -676,25 +689,25 @@ final class ValkeyGlideConnection extends Connection
      */
     private function sleepBeforeRetry(): void
     {
-        $base_delay = $this->normalizeNonNegativeInt($this->config['retry_delay_ms'] ?? null)  ?? 25;
-        $max_jitter = $this->normalizeNonNegativeInt($this->config['retry_jitter_ms'] ?? null) ?? 15;
+        $baseDelay = $this->normalizeNonNegativeInt($this->config['retry_delay_ms'] ?? null)  ?? 25;
+        $maxJitter = $this->normalizeNonNegativeInt($this->config['retry_jitter_ms'] ?? null) ?? 15;
 
-        if ($max_jitter > 0) {
-            $random_int = $this->randomIntGenerator;
+        if ($maxJitter > 0) {
+            $randomInt = $this->randomIntGenerator;
 
             try {
-                $base_delay += $random_int(0, $max_jitter);
+                $baseDelay += $randomInt(0, $maxJitter);
             } catch (\Throwable) {
-                $base_delay = max(0, $base_delay);
+                $baseDelay = max(0, $baseDelay);
             }
         }
 
-        if ($base_delay <= 0) {
+        if ($baseDelay <= 0) {
             return;
         }
 
-        $sleep_callback = $this->sleepCallback;
-        $sleep_callback($base_delay * 1000);
+        $sleepCallback = $this->sleepCallback;
+        $sleepCallback($baseDelay * 1000);
     }
 
     /**
@@ -791,6 +804,8 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  mixed  $channels
      * @return array<int, string>
+     *
+     * @throws \InvalidArgumentException
      */
     private function normalizeSubscriptionChannels(mixed $channels): array
     {
@@ -809,10 +824,10 @@ final class ValkeyGlideConnection extends Connection
                 continue;
             }
 
-            $channel_name = (string) $channel;
+            $channelName = (string) $channel;
 
-            if ($channel_name !== '') {
-                $normalized[] = $channel_name;
+            if ($channelName !== '') {
+                $normalized[] = $channelName;
             }
         }
 
@@ -841,13 +856,13 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Resolve the configured random integer generator callback.
      *
-     * @param  mixed  $random_int
+     * @param  mixed  $randomInt
      * @return \Closure(int, int): int
      */
-    private function resolveRandomIntGenerator(mixed $random_int): \Closure
+    private function resolveRandomIntGenerator(mixed $randomInt): \Closure
     {
-        if (is_callable($random_int)) {
-            return \Closure::fromCallable($random_int);
+        if (is_callable($randomInt)) {
+            return \Closure::fromCallable($randomInt);
         }
 
         return static fn (int $min, int $max): int => random_int($min, $max);

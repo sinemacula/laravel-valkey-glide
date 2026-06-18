@@ -56,21 +56,21 @@ final class ValkeyGlideLaravelSessionExternalTest extends TestCase
     #[Test]
     public function sessionDataRoundtripSucceedsWithRedisDriver(): void
     {
-        $session_id    = $this->newSessionId();
-        $session_store = $this->freshSessionStore();
+        $sessionId    = $this->newSessionId();
+        $sessionStore = $this->freshSessionStore();
 
-        $session_store->setId($session_id);
-        self::assertTrue($session_store->start());
-        $session_store->put('external-test-key', 'external-test-value');
-        $session_store->save();
+        $sessionStore->setId($sessionId);
+        self::assertTrue($sessionStore->start());
+        $sessionStore->put('external-test-key', 'external-test-value');
+        $sessionStore->save();
 
-        $reloaded_store = $this->freshSessionStore();
-        $reloaded_store->setId($session_id);
-        self::assertTrue($reloaded_store->start());
-        self::assertSame('external-test-value', $reloaded_store->get('external-test-key'));
-        $reloaded_store->save();
+        $reloadedStore = $this->freshSessionStore();
+        $reloadedStore->setId($sessionId);
+        self::assertTrue($reloadedStore->start());
+        self::assertSame('external-test-value', $reloadedStore->get('external-test-key'));
+        $reloadedStore->save();
 
-        $this->redisCacheStore()->forget($session_id);
+        $this->redisCacheStore()->forget($sessionId);
     }
 
     /**
@@ -81,21 +81,21 @@ final class ValkeyGlideLaravelSessionExternalTest extends TestCase
     #[Test]
     public function sessionWritesExpectedPhysicalRedisKey(): void
     {
-        $session_id    = $this->newSessionId();
-        $session_store = $this->freshSessionStore();
-        $connection    = $this->redisConnection();
-        $physical_key  = self::REDIS_CONNECTION_PREFIX . self::CACHE_STORE_PREFIX . $session_id;
-        $non_prefixed  = self::CACHE_STORE_PREFIX . $session_id;
+        $sessionId    = $this->newSessionId();
+        $sessionStore = $this->freshSessionStore();
+        $connection   = $this->redisConnection();
+        $physicalKey  = self::REDIS_CONNECTION_PREFIX . self::CACHE_STORE_PREFIX . $sessionId;
+        $nonPrefixed  = self::CACHE_STORE_PREFIX . $sessionId;
 
-        $session_store->setId($session_id);
-        self::assertTrue($session_store->start());
-        $session_store->put('session-key', 'session-value');
-        $session_store->save();
+        $sessionStore->setId($sessionId);
+        self::assertTrue($sessionStore->start());
+        $sessionStore->put('session-key', 'session-value');
+        $sessionStore->save();
 
-        self::assertNotFalse($connection->client()->get($physical_key));
-        self::assertFalse($connection->client()->get($non_prefixed));
+        self::assertNotFalse($connection->client()->get($physicalKey));
+        self::assertFalse($connection->client()->get($nonPrefixed));
 
-        $this->redisCacheStore()->forget($session_id);
+        $this->redisCacheStore()->forget($sessionId);
     }
 
     /**
@@ -112,8 +112,8 @@ final class ValkeyGlideLaravelSessionExternalTest extends TestCase
         $host = getenv('VALKEY_GLIDE_TEST_HOST');
         $port = getenv('VALKEY_GLIDE_TEST_PORT');
 
-        /** @var array<string, mixed> $redis_default */
-        $redis_default = [
+        /** @var array<string, mixed> $redisDefault */
+        $redisDefault = [
             'host'   => is_string($host) && $host !== '' ? $host : '127.0.0.1',
             'port'   => is_string($port) && is_numeric($port) ? (int) $port : 6379,
             'tls'    => $this->resolveBooleanEnv('VALKEY_GLIDE_TEST_TLS', false),
@@ -123,16 +123,16 @@ final class ValkeyGlideLaravelSessionExternalTest extends TestCase
         $password = getenv('VALKEY_GLIDE_TEST_PASSWORD');
 
         if (is_string($password) && $password !== '') {
-            $redis_default['password'] = $password;
+            $redisDefault['password'] = $password;
         }
 
         $username = getenv('VALKEY_GLIDE_TEST_USERNAME');
 
         if (is_string($username) && $username !== '') {
-            $redis_default['username'] = $username;
+            $redisDefault['username'] = $username;
         }
 
-        $app['config']->set('database.redis.default', $redis_default);
+        $app['config']->set('database.redis.default', $redisDefault);
         $app['config']->set('database.redis.options', []);
         $app['config']->set('cache.default', 'redis');
         $app['config']->set('cache.stores.redis', [
@@ -184,13 +184,13 @@ final class ValkeyGlideLaravelSessionExternalTest extends TestCase
         $manager = $this->app->make(SessionManager::class);
         $manager->forgetDrivers();
 
-        $session_store = $manager->driver();
+        $sessionStore = $manager->driver();
 
-        if ($session_store instanceof Store) {
-            return $session_store;
+        if ($sessionStore instanceof Store) {
+            return $sessionStore;
         }
 
-        throw new \UnexpectedValueException(sprintf('Expected session store to be [%s], received [%s].', Store::class, get_debug_type($session_store)));
+        throw new \UnexpectedValueException(sprintf('Expected session store to be [%s], received [%s].', Store::class, get_debug_type($sessionStore)));
     }
 
     /**
@@ -200,13 +200,13 @@ final class ValkeyGlideLaravelSessionExternalTest extends TestCase
      */
     private function redisCacheStore(): Repository
     {
-        $cache_store = Cache::store('redis');
+        $cacheStore = Cache::store('redis');
 
-        if ($cache_store instanceof Repository) {
-            return $cache_store;
+        if ($cacheStore instanceof Repository) {
+            return $cacheStore;
         }
 
-        throw new \UnexpectedValueException(sprintf('Expected redis cache store to be [%s], received [%s].', Repository::class, get_debug_type($cache_store)));
+        throw new \UnexpectedValueException(sprintf('Expected redis cache store to be [%s], received [%s].', Repository::class, get_debug_type($cacheStore)));
     }
 
     /**

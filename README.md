@@ -2,6 +2,7 @@
 
 [![Latest Stable Version](https://img.shields.io/packagist/v/sinemacula/laravel-valkey-glide.svg)](https://packagist.org/packages/sinemacula/laravel-valkey-glide)
 [![Build Status](https://github.com/sinemacula/laravel-valkey-glide/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/sinemacula/laravel-valkey-glide/actions/workflows/tests.yml)
+[![Quality Gates](https://github.com/sinemacula/laravel-valkey-glide/actions/workflows/quality-gates.yml/badge.svg?branch=master)](https://github.com/sinemacula/laravel-valkey-glide/actions/workflows/quality-gates.yml)
 [![Maintainability](https://qlty.sh/gh/sinemacula/projects/laravel-valkey-glide/maintainability.svg)](https://qlty.sh/gh/sinemacula/projects/laravel-valkey-glide/maintainability)
 [![Code Coverage](https://qlty.sh/gh/sinemacula/projects/laravel-valkey-glide/coverage.svg)](https://qlty.sh/gh/sinemacula/projects/laravel-valkey-glide/coverage)
 [![Total Downloads](https://img.shields.io/packagist/dt/sinemacula/laravel-valkey-glide.svg)](https://packagist.org/packages/sinemacula/laravel-valkey-glide)
@@ -106,25 +107,20 @@ Prefixing is handled in the connection wrapper for supported command families:
 
 ## Testing
 
-Default tests (deterministic, no local Redis required):
+The default suite is deterministic and requires no local Redis server:
 
 ```sh
 composer test
 ```
 
-Coverage report:
+The external suite exercises the real `ext-valkey_glide` extension against a live Valkey/Redis server. It is excluded
+from the default run and must be invoked explicitly:
 
 ```sh
-composer test-coverage
+composer test:external
 ```
 
-External extension/Redis tests:
-
-```sh
-composer test-external
-```
-
-Current external integration coverage includes:
+External integration coverage includes:
 
 - extension/client availability and connect/close behavior
 - connector/connection roundtrip behavior and retry semantics
@@ -133,7 +129,7 @@ Current external integration coverage includes:
 - Laravel queue push/pop behavior and physical queue key writes
 - Laravel session roundtrip behavior and physical session key writes
 
-Optional env vars for external tests:
+The external suite reads connection details from optional environment variables:
 
 - `VALKEY_GLIDE_TEST_HOST`
 - `VALKEY_GLIDE_TEST_PORT`
@@ -141,22 +137,35 @@ Optional env vars for external tests:
 - `VALKEY_GLIDE_TEST_USERNAME`
 - `VALKEY_GLIDE_TEST_PASSWORD`
 
-## Development
+All available Composer scripts:
 
 ```sh
-composer install
-composer format
-composer check -- --all --no-cache --fix
-composer test
+composer test                # PHPUnit suite in parallel via Paratest (excludes external)
+composer test:external       # external suite against a live Valkey/Redis server
+composer test:coverage       # suite with Clover coverage output
+composer test:mutation       # Infection mutation gate (min MSI 90)
+composer test:mutation:full  # full mutation suite without thresholds
+composer check               # static analysis and lint via qlty
+composer format              # format via qlty
+composer smells              # duplication / complexity smells via qlty
+composer bench               # PHPBench suite over the command / config hot paths
+composer bench:ci            # PHPBench with CI artifact dump
+composer bench:smoke         # single-rev pass to verify every subject runs
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a list of notable changes.
 
 ## Contributing
 
-Contributions are welcome via GitHub pull requests.
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on branching, commits, code
+quality, and pull requests.
 
 ## Security
 
-If you discover a security issue, please contact Sine Macula directly rather than opening a public issue.
+If you discover a security vulnerability, please report it responsibly. See [SECURITY.md](SECURITY.md) for the
+disclosure policy and contact details.
 
 ## License
 

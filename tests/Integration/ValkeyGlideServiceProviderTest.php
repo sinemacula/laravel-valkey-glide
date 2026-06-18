@@ -48,11 +48,11 @@ final class ValkeyGlideServiceProviderTest extends TestCase
             ],
         ));
 
-        $resolved_manager = $app->make(RedisManager::class);
+        $resolvedManager = $app->make(RedisManager::class);
 
         $resolver = \Closure::bind(
             fn (): mixed => $this->connector(),
-            $resolved_manager,
+            $resolvedManager,
             RedisManager::class,
         );
 

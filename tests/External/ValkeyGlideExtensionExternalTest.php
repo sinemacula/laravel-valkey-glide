@@ -67,14 +67,14 @@ final class ValkeyGlideExtensionExternalTest extends TestCase
         $host = getenv('VALKEY_GLIDE_TEST_HOST');
         $port = getenv('VALKEY_GLIDE_TEST_PORT');
 
-        $resolved_host = is_string($host) && $host !== '' ? $host : '127.0.0.1';
+        $resolvedHost = is_string($host) && $host !== '' ? $host : '127.0.0.1';
 
         $client = new \ValkeyGlide;
 
         $connected = $client->connect(
             addresses  : [
                 [
-                    'host' => $resolved_host,
+                    'host' => $resolvedHost,
                     'port' => is_numeric($port) ? (int) $port : 6379,
                 ],
             ],

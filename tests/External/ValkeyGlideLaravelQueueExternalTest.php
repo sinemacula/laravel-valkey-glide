@@ -68,24 +68,24 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
     #[Test]
     public function queuePushPopRoundtripSucceeds(): void
     {
-        $queue_name = $this->uniqueQueueName('roundtrip');
-        $queue      = $this->redisQueueConnection();
-        $payload    = $this->queuePayload();
+        $queueName = $this->uniqueQueueName('roundtrip');
+        $queue     = $this->redisQueueConnection();
+        $payload   = $this->queuePayload();
 
-        $queued_id = $queue->pushRaw($payload, $queue_name);
+        $queuedId = $queue->pushRaw($payload, $queueName);
 
-        self::assertIsString($queued_id);
-        self::assertSame(1, $queue->size($queue_name));
+        self::assertIsString($queuedId);
+        self::assertSame(1, $queue->size($queueName));
 
-        $job = $queue->pop($queue_name);
+        $job = $queue->pop($queueName);
 
         self::assertInstanceOf(RedisJob::class, $job);
         self::assertSame($payload, $job->getRawBody());
 
         $job->delete();
 
-        self::assertSame(0, $queue->size($queue_name));
-        $queue->clear($queue_name);
+        self::assertSame(0, $queue->size($queueName));
+        $queue->clear($queueName);
     }
 
     /**
@@ -96,29 +96,29 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
     #[Test]
     public function queuePushWritesExpectedPhysicalRedisKey(): void
     {
-        $queue_name   = $this->uniqueQueueName('physical-key');
-        $queue        = $this->redisQueueConnection();
-        $connection   = $this->redisConnection();
-        $physical_key = self::REDIS_CONNECTION_PREFIX . 'queues:' . $queue_name;
-        $logical_key  = 'queues:' . $queue_name;
+        $queueName   = $this->uniqueQueueName('physical-key');
+        $queue       = $this->redisQueueConnection();
+        $connection  = $this->redisConnection();
+        $physicalKey = self::REDIS_CONNECTION_PREFIX . 'queues:' . $queueName;
+        $logicalKey  = 'queues:' . $queueName;
 
-        $queue->pushRaw($this->queuePayload(), $queue_name);
+        $queue->pushRaw($this->queuePayload(), $queueName);
 
         self::assertGreaterThan(
             0,
             $this->normalizeIntegerResponse(
-                $connection->client()->rawcommand('LLEN', $physical_key),
+                $connection->client()->rawcommand('LLEN', $physicalKey),
             ),
         );
 
         self::assertSame(
             0,
             $this->normalizeIntegerResponse(
-                $connection->client()->rawcommand('LLEN', $logical_key),
+                $connection->client()->rawcommand('LLEN', $logicalKey),
             ),
         );
 
-        $queue->clear($queue_name);
+        $queue->clear($queueName);
     }
 
     /**
@@ -135,8 +135,8 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
         $host = getenv('VALKEY_GLIDE_TEST_HOST');
         $port = getenv('VALKEY_GLIDE_TEST_PORT');
 
-        /** @var array<string, mixed> $redis_default */
-        $redis_default = [
+        /** @var array<string, mixed> $redisDefault */
+        $redisDefault = [
             'host'   => is_string($host) && $host !== '' ? $host : '127.0.0.1',
             'port'   => is_string($port) && is_numeric($port) ? (int) $port : 6379,
             'tls'    => $this->resolveBooleanEnv('VALKEY_GLIDE_TEST_TLS', false),
@@ -146,16 +146,16 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
         $password = getenv('VALKEY_GLIDE_TEST_PASSWORD');
 
         if (is_string($password) && $password !== '') {
-            $redis_default['password'] = $password;
+            $redisDefault['password'] = $password;
         }
 
         $username = getenv('VALKEY_GLIDE_TEST_USERNAME');
 
         if (is_string($username) && $username !== '') {
-            $redis_default['username'] = $username;
+            $redisDefault['username'] = $username;
         }
 
-        $app['config']->set('database.redis.default', $redis_default);
+        $app['config']->set('database.redis.default', $redisDefault);
         $app['config']->set('database.redis.options', []);
         $app['config']->set('queue.default', 'redis');
         $app['config']->set('queue.connections.redis', [

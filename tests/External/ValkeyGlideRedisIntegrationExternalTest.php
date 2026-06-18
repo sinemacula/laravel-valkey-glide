@@ -94,16 +94,16 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     public function connectionPrefixIsAppliedToKeyCommands(): void
     {
         $prefix     = 'lvkglide:test:';
-        $plain_key  = $this->uniqueKey('prefixed');
-        $prefixed   = $prefix . $plain_key;
+        $plainKey   = $this->uniqueKey('prefixed');
+        $prefixed   = $prefix . $plainKey;
         $connection = $this->connectExternal(['prefix' => $prefix]);
 
-        $connection->command('set', [$plain_key, 'value-b']);
+        $connection->command('set', [$plainKey, 'value-b']);
 
         self::assertSame('value-b', $connection->client()->get($prefixed));
-        self::assertSame('value-b', $connection->command('get', [$plain_key]));
+        self::assertSame('value-b', $connection->command('get', [$plainKey]));
 
-        $connection->command('del', [$plain_key]);
+        $connection->command('del', [$plainKey]);
         $connection->disconnect();
     }
 
@@ -117,21 +117,21 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     #[Test]
     public function connectionPrefixIsAppliedToMgetKeyLists(): void
     {
-        $prefix      = 'lvkglide:test:';
-        $first_key   = $this->uniqueKey('prefixed-mget-a');
-        $second_key  = $this->uniqueKey('prefixed-mget-b');
-        $missing_key = $this->uniqueKey('prefixed-mget-missing');
-        $connection  = $this->connectExternal(['prefix' => $prefix]);
+        $prefix     = 'lvkglide:test:';
+        $firstKey   = $this->uniqueKey('prefixed-mget-a');
+        $secondKey  = $this->uniqueKey('prefixed-mget-b');
+        $missingKey = $this->uniqueKey('prefixed-mget-missing');
+        $connection = $this->connectExternal(['prefix' => $prefix]);
 
-        $connection->command('set', [$first_key, 'value-a']);
-        $connection->command('set', [$second_key, 'value-b']);
+        $connection->command('set', [$firstKey, 'value-a']);
+        $connection->command('set', [$secondKey, 'value-b']);
 
         self::assertSame(
             ['value-a', 'value-b', null],
-            $connection->mget([$first_key, $second_key, $missing_key]),
+            $connection->mget([$firstKey, $secondKey, $missingKey]),
         );
 
-        $connection->command('del', [$first_key, $second_key, $missing_key]);
+        $connection->command('del', [$firstKey, $secondKey, $missingKey]);
         $connection->disconnect();
     }
 
@@ -166,17 +166,17 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     {
         $key = $this->uniqueKey('database-routing');
 
-        $secondary_connection = $this->connectExternal(['database' => self::SECONDARY_DATABASE]);
-        $default_connection   = $this->connectExternal(['database' => self::DEFAULT_DATABASE]);
+        $secondaryConnection = $this->connectExternal(['database' => self::SECONDARY_DATABASE]);
+        $defaultConnection   = $this->connectExternal(['database' => self::DEFAULT_DATABASE]);
 
-        $secondary_connection->command('set', [$key, 'db-one']);
+        $secondaryConnection->command('set', [$key, 'db-one']);
 
-        self::assertContains($default_connection->command('get', [$key]), [null, false]);
-        self::assertSame('db-one', $secondary_connection->command('get', [$key]));
+        self::assertContains($defaultConnection->command('get', [$key]), [null, false]);
+        self::assertSame('db-one', $secondaryConnection->command('get', [$key]));
 
-        $secondary_connection->command('del', [$key]);
-        $secondary_connection->disconnect();
-        $default_connection->disconnect();
+        $secondaryConnection->command('del', [$key]);
+        $secondaryConnection->disconnect();
+        $defaultConnection->disconnect();
     }
 
     /**

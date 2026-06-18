@@ -1,37 +1,22 @@
 parameters:
-	level: 8
+    level: 8
 
-	ignoreErrors:
-		- identifier: argument.type
-		- identifier: ternary.shortNotAllowed
-		- identifier: booleanAnd.leftNotBoolean
-		- identifier: booleanNot.exprNotBoolean
-		- identifier: if.condNotBoolean
-		- identifier: ternary.condNotBoolean
-		- identifier: empty.notAllowed
-		- identifier: staticMethod.alreadyNarrowedType
-		- identifier: offsetAccess.nonOffsetAccessible
+    scanDirectories:
+        - %currentWorkingDirectory%/src
+        - %currentWorkingDirectory%/benchmarks
+        - %currentWorkingDirectory%/tests
 
-	scanDirectories:
-		- %currentWorkingDirectory%/src
-		- %currentWorkingDirectory%/tests
+    paths:
+        - src
+        - benchmarks
+        - tests
 
-	paths:
-		- src
-		- tests
+    bootstrapFiles:
+        - %currentWorkingDirectory%/stubs/ValkeyGlide.php
 
-	bootstrapFiles:
-		- %currentWorkingDirectory%/stubs/ValkeyGlide.php
+    stubFiles:
+        - %currentWorkingDirectory%/stubs/ValkeyGlide.php
 
-	stubFiles:
-		- %currentWorkingDirectory%/stubs/ValkeyGlide.php
-
-	excludePaths:
-		analyse:
-			- %currentWorkingDirectory%/stubs/*
-
-	checkMissingCallableSignature: true
-	checkMissingVarTagTypehint: true
-	checkUninitializedProperties: true
-	inferPrivatePropertyTypeFromConstructor: false
-	reportUnmatchedIgnoredErrors: true
+    excludePaths:
+        analyse:
+            - %currentWorkingDirectory%/stubs/*
