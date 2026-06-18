@@ -48,7 +48,7 @@ final class Config
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>
      */
-    public static function connectArguments(array $config): array
+    public static function connectArguments(#[\SensitiveParameter] array $config): array
     {
         $arguments = [
             'addresses' => self::addresses($config),
@@ -170,7 +170,7 @@ final class Config
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>|null
      */
-    private static function credentials(array $config): ?array
+    private static function credentials(#[\SensitiveParameter] array $config): ?array
     {
         $iamCredentials = self::iamCredentials($config);
 
@@ -211,7 +211,7 @@ final class Config
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>|null
      */
-    private static function iamCredentials(array $config): ?array
+    private static function iamCredentials(#[\SensitiveParameter] array $config): ?array
     {
         if (!self::hasIam($config)) {
             return null;
@@ -292,7 +292,7 @@ final class Config
     }
 
     /**
-     * Check if an array looks like a redis node definition.
+     * Determine whether the array shape resembles a host/port node definition.
      *
      * @param  array<string, mixed>  $value
      * @return bool

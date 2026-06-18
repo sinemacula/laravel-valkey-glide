@@ -178,14 +178,14 @@ final class ValkeyGlideConnection extends Connection
     /** @var array<string, mixed> Connection-level configuration. */
     protected array $config;
 
-    /** @var string Optional key prefix applied for command compatibility. */
-    private string $prefix;
+    /** @var string Key prefix prepended to command key arguments; an empty string disables prefixing. */
+    private readonly string $prefix;
 
     /** @var \Closure(int, int): int Random integer generator callback. */
-    private \Closure $randomIntGenerator;
+    private readonly \Closure $randomIntGenerator;
 
     /** @var \Closure(int): void Sleep callback. */
-    private \Closure $sleepCallback;
+    private readonly \Closure $sleepCallback;
 
     /**
      * Create a new Valkey GLIDE Laravel connection wrapper.
@@ -221,6 +221,8 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  string  $key
      * @return string|null
+     *
+     * @throws \Throwable
      */
     public function get(string $key): ?string
     {
@@ -235,6 +237,9 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  array<int, string>  $keys
      * @return array<int, string|null>
+     *
+     * @throws \Throwable
+     * @throws \UnexpectedValueException
      */
     public function mget(array $keys): array
     {
@@ -281,6 +286,8 @@ final class ValkeyGlideConnection extends Connection
      * @param  \Closure(mixed, mixed): void  $callback
      * @param  mixed  $method
      * @return void
+     *
+     * @throws \InvalidArgumentException
      *
      * @phpstan-ignore method.childParameterType
      */
@@ -383,6 +390,8 @@ final class ValkeyGlideConnection extends Connection
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
      * @return mixed
+     *
+     * @throws \Throwable
      */
     private function invokeCommand(string $method, array $parameters): mixed
     {
@@ -640,6 +649,8 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  mixed  $method
      * @return string
+     *
+     * @throws \InvalidArgumentException
      */
     private function normalizeCommandMethod(mixed $method): string
     {
@@ -657,6 +668,8 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  mixed  $method
      * @return string
+     *
+     * @throws \InvalidArgumentException
      */
     private function normalizeSubscriptionMethod(mixed $method): string
     {
@@ -791,6 +804,8 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  mixed  $channels
      * @return array<int, string>
+     *
+     * @throws \InvalidArgumentException
      */
     private function normalizeSubscriptionChannels(mixed $channels): array
     {

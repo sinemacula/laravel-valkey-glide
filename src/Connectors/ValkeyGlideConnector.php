@@ -98,7 +98,7 @@ final class ValkeyGlideConnector implements ConnectorContract
      *
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
-    private function createClient(array $config): \ValkeyGlide
+    private function createClient(#[\SensitiveParameter] array $config): \ValkeyGlide
     {
         $this->validateGlideExtension();
 

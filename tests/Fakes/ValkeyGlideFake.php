@@ -33,6 +33,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  array<int|string, mixed>  $arguments
      * @return mixed
      */
+    #[\Override]
     public function __call(string $name, array $arguments): mixed
     {
         $this->recordCall($name, $arguments);
@@ -115,6 +116,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  mixed  $context
      * @return bool
      */
+    #[\Override]
     public function connect(
         ?string $host = null,
         ?int $port = null,
@@ -164,6 +166,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      *
      * @return bool
      */
+    #[\Override]
     public function close(): bool
     {
         $this->recordCall('close', []);
@@ -178,6 +181,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  mixed  ...$args
      * @return mixed
      */
+    #[\Override]
     public function rawcommand(string $command, mixed ...$args): mixed
     {
         $this->recordCall('rawcommand', [$command, ...$args]);
@@ -191,6 +195,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  string  $key
      * @return mixed
      */
+    #[\Override]
     public function get(string $key): mixed
     {
         $this->recordCall('get', [$key]);
@@ -240,6 +245,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  mixed  $options
      * @return bool|self|string
      */
+    #[\Override]
     public function set(string $key, mixed $value, mixed $options = null): bool|self|string
     {
         $this->recordCall('set', [$key, $value, $options]);
@@ -260,6 +266,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  mixed  ...$args
      * @return mixed
      */
+    #[\Override]
     public function client(string $opt, mixed ...$args): mixed
     {
         $this->recordCall('client', [$opt, ...$args]);
@@ -277,6 +284,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      *
      * @return bool
      */
+    #[\Override]
     public function subscribe(array $channels, callable $callback): bool
     {
         $this->recordCall('subscribe', [$channels]);
@@ -297,6 +305,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      *
      * @return bool
      */
+    #[\Override]
     public function psubscribe(array $patterns, callable $callback): bool
     {
         $this->recordCall('psubscribe', [$patterns]);

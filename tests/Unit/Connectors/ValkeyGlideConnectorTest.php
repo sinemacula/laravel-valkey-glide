@@ -275,7 +275,8 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
-     * Verify domain connection exceptions are rethrown without a wrapping cause.
+     * Verify domain connection exceptions are rethrown without a wrapping
+     * cause.
      *
      * @return void
      */
@@ -341,7 +342,8 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
-     * Verify a leading scalar cluster entry is skipped to seed the next array node.
+     * Verify a leading scalar cluster entry is skipped to seed the next array
+     * node.
      *
      * @return void
      */

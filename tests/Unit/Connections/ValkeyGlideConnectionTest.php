@@ -11,6 +11,7 @@ use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use Stringable;
 use Tests\Fakes\ValkeyGlideFake;
 
 /**
@@ -51,7 +52,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify get returns null when the underlying client returns false (cache miss).
+     * Verify get returns null when the underlying client returns false
+     * (cache miss).
      *
      * @return void
      */
@@ -408,10 +410,12 @@ final class ValkeyGlideConnectionTest extends TestCase
             ],
         );
 
-        $this->expectException(\RuntimeException::class);
-        $connection->command('set', ['key', 'value']);
-
-        self::assertCount(0, $secondClient->callsFor('set'));
+        try {
+            $connection->command('set', ['key', 'value']);
+            self::fail('Expected a runtime exception for the non-idempotent command.');
+        } catch (\RuntimeException) {
+            self::assertCount(0, $secondClient->callsFor('set'));
+        }
     }
 
     /**
@@ -645,12 +649,13 @@ final class ValkeyGlideConnectionTest extends TestCase
             ],
         );
 
-        $this->expectException(\RuntimeException::class);
-
-        $connection->command('get', ['retry-key']);
-
-        self::assertCount(1, $firstClient->callsFor('get'));
-        self::assertCount(1, $secondClient->callsFor('get'));
+        try {
+            $connection->command('get', ['retry-key']);
+            self::fail('Expected a runtime exception after the retry also failed.');
+        } catch (\RuntimeException) {
+            self::assertCount(1, $firstClient->callsFor('get'));
+            self::assertCount(1, $secondClient->callsFor('get'));
+        }
     }
 
     /**
@@ -1650,27 +1655,6 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Build a connection that fails once transiently then succeeds on retry.
-     *
-     * @param  array<string, mixed>  $config
-     * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
-     */
-    private function buildRetryConnection(array $config): ValkeyGlideConnection
-    {
-        $firstClient = new ValkeyGlideFake;
-        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
-
-        $secondClient = new ValkeyGlideFake;
-        $secondClient->willReturn('get', 'ok');
-
-        return new ValkeyGlideConnection(
-            $firstClient,
-            static fn (): \ValkeyGlide => $secondClient,
-            $config,
-        );
-    }
-
-    /**
      * Invoke private normalizeCommandParameters for deterministic prefix tests.
      *
      * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
@@ -1740,5 +1724,26 @@ final class ValkeyGlideConnectionTest extends TestCase
         );
 
         return $reconnector();
+    }
+
+    /**
+     * Build a connection that fails once transiently then succeeds on retry.
+     *
+     * @param  array<string, mixed>  $config
+     * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
+     */
+    private function buildRetryConnection(array $config): ValkeyGlideConnection
+    {
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
+
+        return new ValkeyGlideConnection(
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
+            $config,
+        );
     }
 }
