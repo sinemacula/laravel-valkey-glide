@@ -148,6 +148,9 @@ composer test:mutation:full  # full mutation suite without thresholds
 composer check               # static analysis and lint via qlty
 composer format              # format via qlty
 composer smells              # duplication / complexity smells via qlty
+composer bench               # PHPBench suite over the command / config hot paths
+composer bench:ci            # PHPBench with CI artifact dump
+composer bench:smoke         # single-rev pass to verify every subject runs
 ```
 
 ## Changelog

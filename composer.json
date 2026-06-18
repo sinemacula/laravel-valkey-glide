@@ -26,6 +26,7 @@
         "brianium/paratest": "^7.20",
         "friendsofphp/php-cs-fixer": "^3.94",
         "infection/infection": "^0.33.2",
+        "phpbench/phpbench": "^1.6.1",
         "phpstan/extension-installer": "^1.4",
         "phpstan/phpdoc-parser": "^2.3",
         "phpstan/phpstan": "^2.1",
@@ -45,6 +46,7 @@
     },
     "autoload-dev": {
         "psr-4": {
+            "Benchmarks\\": "benchmarks/",
             "Tests\\": "tests/"
         },
         "files": [
@@ -75,6 +77,16 @@
         ],
         "test:mutation:full": [
             "@php vendor/bin/infection --configuration=infection.full.json5 --test-framework-options=\"--exclude-group external --do-not-fail-on-warning --do-not-fail-on-phpunit-warning\" --only-covering-test-cases"
+        ],
+        "bench": [
+            "@php vendor/bin/phpbench run benchmarks --config=phpbench.json --progress=plain --report=aggregate"
+        ],
+        "bench:ci": [
+            "@php -r \"is_dir('build') || mkdir('build', 0777, true);\"",
+            "@php vendor/bin/phpbench run benchmarks --config=phpbench.json --progress=plain --report=aggregate --dump-file=build/phpbench.xml"
+        ],
+        "bench:smoke": [
+            "@php vendor/bin/phpbench run benchmarks --config=phpbench.json --progress=plain --iterations=1 --revs=1"
         ]
     },
     "scripts-descriptions": {
@@ -85,7 +97,10 @@
         "test:external": "Run the external test suite against a live Valkey/Redis server and the loaded extension.",
         "test:coverage": "Run the PHPUnit test suite with clover coverage report.",
         "test:mutation": "Run the Infection mutation-testing gate against the MSI thresholds.",
-        "test:mutation:full": "Run the full Infection mutation suite without MSI thresholds."
+        "test:mutation:full": "Run the full Infection mutation suite without MSI thresholds.",
+        "bench": "Run the PHPBench suite over the command and configuration hot paths.",
+        "bench:ci": "Run PHPBench benchmarks and dump CI output for artifact upload.",
+        "bench:smoke": "Run a single-rev benchmark pass to verify every subject executes."
     },
     "config": {
         "optimize-autoloader": true,

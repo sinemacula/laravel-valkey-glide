@@ -4,6 +4,7 @@
     <rule ref="SineMacula"/>
 
     <file>src</file>
+    <file>benchmarks</file>
     <file>tests</file>
 
 </ruleset>
