@@ -68,14 +68,14 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
     #[Test]
     public function cachePutGetForgetRoundtripSucceeds(): void
     {
-        $key         = $this->uniqueKey('roundtrip');
-        $cache_store = $this->redisCacheStore();
+        $key        = $this->uniqueKey('roundtrip');
+        $cacheStore = $this->redisCacheStore();
 
-        self::assertTrue($cache_store->put($key, 'value-a', 600));
-        self::assertSame('value-a', $cache_store->get($key));
+        self::assertTrue($cacheStore->put($key, 'value-a', 600));
+        self::assertSame('value-a', $cacheStore->get($key));
 
-        self::assertTrue($cache_store->forget($key));
-        self::assertNull($cache_store->get($key));
+        self::assertTrue($cacheStore->forget($key));
+        self::assertNull($cacheStore->get($key));
     }
 
     /**
@@ -86,27 +86,27 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
     #[Test]
     public function cacheManyReturnsValuesAndNullForMissingKeys(): void
     {
-        $first_key   = $this->uniqueKey('many-a');
-        $second_key  = $this->uniqueKey('many-b');
-        $missing_key = $this->uniqueKey('many-missing');
-        $cache_store = $this->redisCacheStore();
+        $firstKey   = $this->uniqueKey('many-a');
+        $secondKey  = $this->uniqueKey('many-b');
+        $missingKey = $this->uniqueKey('many-missing');
+        $cacheStore = $this->redisCacheStore();
 
-        $cache_store->putMany([
-            $first_key  => 'value-a',
-            $second_key => 'value-b',
+        $cacheStore->putMany([
+            $firstKey  => 'value-a',
+            $secondKey => 'value-b',
         ], 600);
 
         self::assertSame(
             [
-                $first_key   => 'value-a',
-                $missing_key => null,
-                $second_key  => 'value-b',
+                $firstKey   => 'value-a',
+                $missingKey => null,
+                $secondKey  => 'value-b',
             ],
-            $cache_store->many([$first_key, $missing_key, $second_key]),
+            $cacheStore->many([$firstKey, $missingKey, $secondKey]),
         );
 
-        $cache_store->forget($first_key);
-        $cache_store->forget($second_key);
+        $cacheStore->forget($firstKey);
+        $cacheStore->forget($secondKey);
     }
 
     /**
@@ -117,18 +117,18 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
     #[Test]
     public function cacheWritesExpectedPhysicalRedisKey(): void
     {
-        $key          = $this->uniqueKey('physical-key');
-        $cache_store  = $this->redisCacheStore();
-        $connection   = $this->redisConnection();
-        $physical_key = self::REDIS_CONNECTION_PREFIX . self::CACHE_STORE_PREFIX . $key;
-        $non_prefixed = self::CACHE_STORE_PREFIX . $key;
+        $key         = $this->uniqueKey('physical-key');
+        $cacheStore  = $this->redisCacheStore();
+        $connection  = $this->redisConnection();
+        $physicalKey = self::REDIS_CONNECTION_PREFIX . self::CACHE_STORE_PREFIX . $key;
+        $nonPrefixed = self::CACHE_STORE_PREFIX . $key;
 
-        $cache_store->put($key, 'value-c', 600);
+        $cacheStore->put($key, 'value-c', 600);
 
-        self::assertNotFalse($connection->client()->get($physical_key));
-        self::assertFalse($connection->client()->get($non_prefixed));
+        self::assertNotFalse($connection->client()->get($physicalKey));
+        self::assertFalse($connection->client()->get($nonPrefixed));
 
-        $cache_store->forget($key);
+        $cacheStore->forget($key);
     }
 
     /**
@@ -139,26 +139,26 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
     #[Test]
     public function cacheLocksUseConfiguredLockConnectionAndEnforceOwnership(): void
     {
-        $key                = $this->uniqueKey('lock');
-        $cache_store        = $this->redisLockStore();
-        $default_connection = $this->redisConnection();
-        $lock_connection    = $this->redisConnection('lock');
+        $key               = $this->uniqueKey('lock');
+        $cacheStore        = $this->redisLockStore();
+        $defaultConnection = $this->redisConnection();
+        $lockConnection    = $this->redisConnection('lock');
 
-        $first_lock = $cache_store->lock($key, 10);
-        self::assertTrue($first_lock->get());
+        $firstLock = $cacheStore->lock($key, 10);
+        self::assertTrue($firstLock->get());
 
-        $second_lock = $cache_store->lock($key, 10);
-        self::assertFalse($second_lock->get());
+        $secondLock = $cacheStore->lock($key, 10);
+        self::assertFalse($secondLock->get());
 
-        $default_physical_key = self::REDIS_CONNECTION_PREFIX . self::CACHE_STORE_PREFIX . $key;
-        $lock_physical_key    = self::LOCK_CONNECTION_PREFIX . self::CACHE_STORE_PREFIX . $key;
+        $defaultPhysicalKey = self::REDIS_CONNECTION_PREFIX . self::CACHE_STORE_PREFIX . $key;
+        $lockPhysicalKey    = self::LOCK_CONNECTION_PREFIX . self::CACHE_STORE_PREFIX . $key;
 
-        self::assertFalse($default_connection->client()->get($default_physical_key));
-        self::assertNotFalse($lock_connection->client()->get($lock_physical_key));
+        self::assertFalse($defaultConnection->client()->get($defaultPhysicalKey));
+        self::assertNotFalse($lockConnection->client()->get($lockPhysicalKey));
 
-        $first_lock->release();
-        self::assertTrue($second_lock->get());
-        $second_lock->release();
+        $firstLock->release();
+        self::assertTrue($secondLock->get());
+        $secondLock->release();
     }
 
     /**
@@ -169,15 +169,15 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
     #[Test]
     public function cacheEntriesExpireAfterTtl(): void
     {
-        $key         = $this->uniqueKey('ttl-expiry');
-        $cache_store = $this->redisCacheStore();
+        $key        = $this->uniqueKey('ttl-expiry');
+        $cacheStore = $this->redisCacheStore();
 
-        self::assertTrue($cache_store->put($key, 'value-ttl', 1));
-        self::assertSame('value-ttl', $cache_store->get($key));
+        self::assertTrue($cacheStore->put($key, 'value-ttl', 1));
+        self::assertSame('value-ttl', $cacheStore->get($key));
 
         sleep(2);
 
-        self::assertNull($cache_store->get($key));
+        self::assertNull($cacheStore->get($key));
     }
 
     /**
@@ -188,14 +188,14 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
     #[Test]
     public function cachePutWithNonPositiveTtlForgetsExistingValue(): void
     {
-        $key         = $this->uniqueKey('ttl-non-positive');
-        $cache_store = $this->redisCacheStore();
+        $key        = $this->uniqueKey('ttl-non-positive');
+        $cacheStore = $this->redisCacheStore();
 
-        self::assertTrue($cache_store->put($key, 'value-before', 600));
-        self::assertSame('value-before', $cache_store->get($key));
+        self::assertTrue($cacheStore->put($key, 'value-before', 600));
+        self::assertSame('value-before', $cacheStore->get($key));
 
-        self::assertTrue($cache_store->put($key, 'value-after', 0));
-        self::assertNull($cache_store->get($key));
+        self::assertTrue($cacheStore->put($key, 'value-after', 0));
+        self::assertNull($cacheStore->get($key));
     }
 
     /**
@@ -212,8 +212,8 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
         $host = getenv('VALKEY_GLIDE_TEST_HOST');
         $port = getenv('VALKEY_GLIDE_TEST_PORT');
 
-        /** @var array<string, mixed> $redis_default */
-        $redis_default = [
+        /** @var array<string, mixed> $redisDefault */
+        $redisDefault = [
             'host'   => is_string($host) && $host !== '' ? $host : '127.0.0.1',
             'port'   => is_string($port) && is_numeric($port) ? (int) $port : 6379,
             'tls'    => $this->resolveBooleanEnv('VALKEY_GLIDE_TEST_TLS', false),
@@ -223,20 +223,20 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
         $password = getenv('VALKEY_GLIDE_TEST_PASSWORD');
 
         if (is_string($password) && $password !== '') {
-            $redis_default['password'] = $password;
+            $redisDefault['password'] = $password;
         }
 
         $username = getenv('VALKEY_GLIDE_TEST_USERNAME');
 
         if (is_string($username) && $username !== '') {
-            $redis_default['username'] = $username;
+            $redisDefault['username'] = $username;
         }
 
-        $redis_lock           = $redis_default;
-        $redis_lock['prefix'] = self::LOCK_CONNECTION_PREFIX;
+        $redisLock           = $redisDefault;
+        $redisLock['prefix'] = self::LOCK_CONNECTION_PREFIX;
 
-        $app['config']->set('database.redis.default', $redis_default);
-        $app['config']->set('database.redis.lock', $redis_lock);
+        $app['config']->set('database.redis.default', $redisDefault);
+        $app['config']->set('database.redis.lock', $redisLock);
         $app['config']->set('database.redis.options', []);
         $app['config']->set('cache.default', 'redis');
         $app['config']->set('cache.stores.redis', [
@@ -250,17 +250,17 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
     /**
      * Resolve a Redis manager connection as the valkey-glide wrapper.
      *
-     * @param  string  $connection_name
+     * @param  string  $connectionName
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
      */
-    private function redisConnection(string $connection_name = 'default'): ValkeyGlideConnection
+    private function redisConnection(string $connectionName = 'default'): ValkeyGlideConnection
     {
         if (!$this->app instanceof Application) {
             throw new \UnexpectedValueException('Application container is unavailable.');
         }
 
         $redis      = $this->app->make(RedisManager::class);
-        $connection = $redis->connection($connection_name);
+        $connection = $redis->connection($connectionName);
 
         if ($connection instanceof ValkeyGlideConnection) {
             return $connection;
@@ -268,7 +268,7 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
 
         $message = sprintf(
             'Expected redis connection [%s] to be [%s], received [%s].',
-            $connection_name,
+            $connectionName,
             ValkeyGlideConnection::class,
             get_debug_type($connection),
         );
@@ -296,13 +296,13 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
      */
     private function redisCacheStore(): Repository
     {
-        $cache_store = Cache::store('redis');
+        $cacheStore = Cache::store('redis');
 
-        if ($cache_store instanceof Repository) {
-            return $cache_store;
+        if ($cacheStore instanceof Repository) {
+            return $cacheStore;
         }
 
-        throw new \UnexpectedValueException(sprintf('Expected redis cache store to be [%s], received [%s].', Repository::class, get_debug_type($cache_store)));
+        throw new \UnexpectedValueException(sprintf('Expected redis cache store to be [%s], received [%s].', Repository::class, get_debug_type($cacheStore)));
     }
 
     /**

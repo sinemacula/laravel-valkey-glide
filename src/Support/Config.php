@@ -30,16 +30,16 @@ final class Config
      */
     public static function merge(array $config, array $options = []): array
     {
-        $nested_options = $config['options'] ?? [];
+        $nestedOptions = $config['options'] ?? [];
 
-        if (!is_array($nested_options)) {
-            $nested_options = [];
+        if (!is_array($nestedOptions)) {
+            $nestedOptions = [];
         }
 
-        $config_without_options = $config;
-        unset($config_without_options['options']);
+        $configWithoutOptions = $config;
+        unset($configWithoutOptions['options']);
 
-        return array_replace($config_without_options, $options, $nested_options);
+        return array_replace($configWithoutOptions, $options, $nestedOptions);
     }
 
     /**
@@ -64,16 +64,16 @@ final class Config
             $arguments['credentials'] = $credentials;
         }
 
-        $database_id = self::databaseId($config['database'] ?? null);
+        $databaseId = self::databaseId($config['database'] ?? null);
 
-        if ($database_id !== null) {
-            $arguments['database_id'] = $database_id;
+        if ($databaseId !== null) {
+            $arguments['database_id'] = $databaseId;
         }
 
-        $client_name = self::clientName($config['name'] ?? null);
+        $clientName = self::clientName($config['name'] ?? null);
 
-        if ($client_name !== null) {
-            $arguments['client_name'] = $client_name;
+        if ($clientName !== null) {
+            $arguments['client_name'] = $clientName;
         }
 
         return $arguments;
@@ -82,16 +82,16 @@ final class Config
     /**
      * Build GLIDE connect arguments for a cluster-style configuration.
      *
-     * @param  array<int|string, mixed>  $cluster_config
-     * @param  array<string, mixed>  $base_config
+     * @param  array<int|string, mixed>  $clusterConfig
+     * @param  array<string, mixed>  $baseConfig
      * @return array<string, mixed>
      */
-    public static function clusterConnectArguments(array $cluster_config, array $base_config = []): array
+    public static function clusterConnectArguments(array $clusterConfig, array $baseConfig = []): array
     {
-        $seed_addresses = self::clusterAddresses($cluster_config);
+        $seedAddresses = self::clusterAddresses($clusterConfig);
 
-        $merged = self::merge($base_config, [
-            'addresses' => $seed_addresses,
+        $merged = self::merge($baseConfig, [
+            'addresses' => $seedAddresses,
         ]);
 
         return self::connectArguments($merged);
@@ -105,12 +105,12 @@ final class Config
      */
     public static function addresses(array $config): array
     {
-        $raw_addresses = $config['addresses'] ?? null;
+        $rawAddresses = $config['addresses'] ?? null;
 
-        if (is_array($raw_addresses) && $raw_addresses !== []) {
+        if (is_array($rawAddresses) && $rawAddresses !== []) {
             $normalized = [];
 
-            foreach ($raw_addresses as $address) {
+            foreach ($rawAddresses as $address) {
                 if (!is_array($address)) {
                     continue;
                 }
@@ -129,12 +129,12 @@ final class Config
     /**
      * Normalize cluster node config arrays into GLIDE seed addresses.
      *
-     * @param  array<int|string, mixed>  $cluster_config
+     * @param  array<int|string, mixed>  $clusterConfig
      * @return array<int, array{host: string, port: int}>
      */
-    public static function clusterAddresses(array $cluster_config): array
+    public static function clusterAddresses(array $clusterConfig): array
     {
-        $nodes = self::extractClusterNodes($cluster_config);
+        $nodes = self::extractClusterNodes($clusterConfig);
 
         if ($nodes === []) {
             return [self::normalizeAddress([])];
@@ -172,10 +172,10 @@ final class Config
      */
     private static function credentials(array $config): ?array
     {
-        $iam_credentials = self::iamCredentials($config);
+        $iamCredentials = self::iamCredentials($config);
 
-        if ($iam_credentials !== null) {
-            return $iam_credentials;
+        if ($iamCredentials !== null) {
+            return $iamCredentials;
         }
 
         $password = $config['password'] ?? null;
@@ -219,27 +219,27 @@ final class Config
 
         $iam = $config['iam'];
 
-        $username     = self::normalizeString($iam['username'] ?? null);
-        $cluster_name = self::normalizeString($iam['cluster_name'] ?? null);
-        $region       = self::normalizeString($iam['region'] ?? null);
+        $username    = self::normalizeString($iam['username'] ?? null);
+        $clusterName = self::normalizeString($iam['cluster_name'] ?? null);
+        $region      = self::normalizeString($iam['region'] ?? null);
 
-        if ($username === '' || $cluster_name === '' || $region === '') {
+        if ($username === '' || $clusterName === '' || $region === '') {
             return null;
         }
 
-        $refresh_interval = self::normalizeNonNegativeInt($iam['refresh_interval'] ?? null);
+        $refreshInterval = self::normalizeNonNegativeInt($iam['refresh_interval'] ?? null);
 
-        if ($refresh_interval === null || $refresh_interval === 0) {
-            $refresh_interval = self::DEFAULT_IAM_REFRESH_INTERVAL;
+        if ($refreshInterval === null || $refreshInterval === 0) {
+            $refreshInterval = self::DEFAULT_IAM_REFRESH_INTERVAL;
         }
 
         return [
             'username'  => $username,
             'iamConfig' => [
-                'clusterName'            => $cluster_name,
+                'clusterName'            => $clusterName,
                 'region'                 => $region,
                 'service'                => 'Elasticache',
-                'refreshIntervalSeconds' => $refresh_interval,
+                'refreshIntervalSeconds' => $refreshInterval,
             ],
         ];
     }
@@ -264,14 +264,14 @@ final class Config
     /**
      * Extract nested cluster node definitions from a mixed cluster config.
      *
-     * @param  array<int|string, mixed>  $cluster_config
+     * @param  array<int|string, mixed>  $clusterConfig
      * @return array<int, array<string, mixed>>
      */
-    private static function extractClusterNodes(array $cluster_config): array
+    private static function extractClusterNodes(array $clusterConfig): array
     {
         $nodes = [];
 
-        foreach ($cluster_config as $value) {
+        foreach ($clusterConfig as $value) {
             if (is_array($value) && self::looksLikeNode($value)) {
                 $nodes[] = $value;
                 continue;

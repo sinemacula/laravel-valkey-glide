@@ -202,9 +202,9 @@ final class ValkeyGlideConnectionTest extends TestCase
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'mget', ['a', 'b']);
+        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'mget', ['a', 'b']);
 
-        self::assertSame(['app:a', 'app:b'], $normalized_parameters);
+        self::assertSame(['app:a', 'app:b'], $normalizedParameters);
     }
 
     /**
@@ -217,9 +217,9 @@ final class ValkeyGlideConnectionTest extends TestCase
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'rename', ['old-key', 'new-key']);
+        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'rename', ['old-key', 'new-key']);
 
-        self::assertSame(['app:old-key', 'app:new-key'], $normalized_parameters);
+        self::assertSame(['app:old-key', 'app:new-key'], $normalizedParameters);
     }
 
     /**
@@ -232,13 +232,13 @@ final class ValkeyGlideConnectionTest extends TestCase
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters(
+        $normalizedParameters = $this->invokeNormalizeCommandParameters(
             $connection,
             'eval',
             [self::EVAL_TEST_SCRIPT, 2, 'k1', 'k2', 'arg1'],
         );
 
-        self::assertSame([self::EVAL_TEST_SCRIPT, 2, 'app:k1', 'app:k2', 'arg1'], $normalized_parameters);
+        self::assertSame([self::EVAL_TEST_SCRIPT, 2, 'app:k1', 'app:k2', 'arg1'], $normalizedParameters);
     }
 
     /**
@@ -337,15 +337,15 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetriesIdempotentCommandAfterTransientFailure(): void
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willReturn('get', 'ok');
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
 
         $connection = new ValkeyGlideConnection(
-            $first_client,
-            static fn (): \ValkeyGlide => $second_client,
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
             [
                 'retry_delay_ms'  => 0,
                 'retry_jitter_ms' => 0,
@@ -353,8 +353,8 @@ final class ValkeyGlideConnectionTest extends TestCase
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertCount(1, $first_client->callsFor('get'));
-        self::assertCount(1, $second_client->callsFor('get'));
+        self::assertCount(1, $firstClient->callsFor('get'));
+        self::assertCount(1, $secondClient->callsFor('get'));
     }
 
     /**
@@ -367,15 +367,15 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetriesWhenProtocolErrorReplyTypeByteOccurs(): void
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('get', new \RuntimeException('protocol error, got \'�\' as reply-type byte'));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException('protocol error, got \'�\' as reply-type byte'));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willReturn('get', 'ok');
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
 
         $connection = new ValkeyGlideConnection(
-            $first_client,
-            static fn (): \ValkeyGlide => $second_client,
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
             [
                 'retry_delay_ms'  => 0,
                 'retry_jitter_ms' => 0,
@@ -393,15 +393,15 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandDoesNotRetryNonIdempotentCommands(): void
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('set', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('set', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willReturn('set', true);
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('set', true);
 
         $connection = new ValkeyGlideConnection(
-            $first_client,
-            static fn (): \ValkeyGlide => $second_client,
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
             [
                 'retry_delay_ms'  => 0,
                 'retry_jitter_ms' => 0,
@@ -411,7 +411,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $connection->command('set', ['key', 'value']);
 
-        self::assertCount(0, $second_client->callsFor('set'));
+        self::assertCount(0, $secondClient->callsFor('set'));
     }
 
     /**
@@ -630,15 +630,15 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetriesAtMostOnceWhenSecondAttemptAlsoFails(): void
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
 
         $connection = new ValkeyGlideConnection(
-            $first_client,
-            static fn (): \ValkeyGlide => $second_client,
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
             [
                 'retry_delay_ms'  => 0,
                 'retry_jitter_ms' => 0,
@@ -649,8 +649,8 @@ final class ValkeyGlideConnectionTest extends TestCase
 
         $connection->command('get', ['retry-key']);
 
-        self::assertCount(1, $first_client->callsFor('get'));
-        self::assertCount(1, $second_client->callsFor('get'));
+        self::assertCount(1, $firstClient->callsFor('get'));
+        self::assertCount(1, $secondClient->callsFor('get'));
     }
 
     /**
@@ -661,15 +661,15 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandDoesNotRetryIdempotentCommandWhenErrorIsNotTransient(): void
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('get', new \RuntimeException('domain validation failure'));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException('domain validation failure'));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willReturn('get', 'ok');
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
 
         $connection = new ValkeyGlideConnection(
-            $first_client,
-            static fn (): \ValkeyGlide => $second_client,
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
             [
                 'retry_delay_ms'  => 0,
                 'retry_jitter_ms' => 0,
@@ -680,7 +680,7 @@ final class ValkeyGlideConnectionTest extends TestCase
 
         $connection->command('get', ['retry-key']);
 
-        self::assertCount(0, $second_client->callsFor('get'));
+        self::assertCount(0, $secondClient->callsFor('get'));
     }
 
     /**
@@ -727,9 +727,9 @@ final class ValkeyGlideConnectionTest extends TestCase
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'rename', ['single-key']);
+        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'rename', ['single-key']);
 
-        self::assertSame(['app:single-key'], $normalized_parameters);
+        self::assertSame(['app:single-key'], $normalizedParameters);
     }
 
     /**
@@ -741,11 +741,11 @@ final class ValkeyGlideConnectionTest extends TestCase
     public function normalizeCommandParametersSkipsNonScalarSingleKeyValues(): void
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-        $key_object = new \stdClass;
+        $keyObject  = new \stdClass;
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'get', [$key_object]);
+        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'get', [$keyObject]);
 
-        self::assertSame($key_object, $normalized_parameters[0]);
+        self::assertSame($keyObject, $normalizedParameters[0]);
     }
 
     /**
@@ -758,9 +758,9 @@ final class ValkeyGlideConnectionTest extends TestCase
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'eval', [self::EVAL_TEST_SCRIPT]);
+        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'eval', [self::EVAL_TEST_SCRIPT]);
 
-        self::assertSame([self::EVAL_TEST_SCRIPT], $normalized_parameters);
+        self::assertSame([self::EVAL_TEST_SCRIPT], $normalizedParameters);
     }
 
     /**
@@ -773,13 +773,13 @@ final class ValkeyGlideConnectionTest extends TestCase
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters(
+        $normalizedParameters = $this->invokeNormalizeCommandParameters(
             $connection,
             'eval',
             [self::EVAL_TEST_SCRIPT, 'not-numeric', 'key-a'],
         );
 
-        self::assertSame([self::EVAL_TEST_SCRIPT, 'not-numeric', 'key-a'], $normalized_parameters);
+        self::assertSame([self::EVAL_TEST_SCRIPT, 'not-numeric', 'key-a'], $normalizedParameters);
     }
 
     /**
@@ -852,29 +852,29 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetryUsesConfiguredRandomIntAndSleepCallbacks(): void
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willReturn('get', 'ok');
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
 
-        $sleep_calls = [];
+        $sleepCalls = [];
 
         $connection = new ValkeyGlideConnection(
-            $first_client,
-            static fn (): \ValkeyGlide => $second_client,
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
             [
                 'retry_delay_ms'  => 10,
                 'retry_jitter_ms' => 5,
                 'random_int'      => static fn (int $min, int $max): int => 3,
-                'sleep'           => static function (int $microseconds) use (&$sleep_calls): void {
-                    $sleep_calls[] = $microseconds;
+                'sleep'           => static function (int $microseconds) use (&$sleepCalls): void {
+                    $sleepCalls[] = $microseconds;
                 },
             ],
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertSame([13000], $sleep_calls);
+        self::assertSame([13000], $sleepCalls);
     }
 
     /**
@@ -887,31 +887,31 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetryFallsBackWhenRandomIntCallbackThrows(): void
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willReturn('get', 'ok');
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
 
-        $sleep_calls = [];
+        $sleepCalls = [];
 
         $connection = new ValkeyGlideConnection(
-            $first_client,
-            static fn (): \ValkeyGlide => $second_client,
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
             [
                 'retry_delay_ms'  => 10,
                 'retry_jitter_ms' => 5,
                 'random_int'      => static function (): int {
                     throw new \DomainException('entropy unavailable');
                 },
-                'sleep' => static function (int $microseconds) use (&$sleep_calls): void {
-                    $sleep_calls[] = $microseconds;
+                'sleep' => static function (int $microseconds) use (&$sleepCalls): void {
+                    $sleepCalls[] = $microseconds;
                 },
             ],
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertSame([10000], $sleep_calls);
+        self::assertSame([10000], $sleepCalls);
     }
 
     /**
@@ -924,15 +924,15 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetryUsesDefaultSleepCallbackWhenNoCallbackConfigured(): void
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willReturn('get', 'ok');
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
 
         $connection = new ValkeyGlideConnection(
-            $first_client,
-            static fn (): \ValkeyGlide => $second_client,
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
             [
                 'retry_delay_ms'  => 1,
                 'retry_jitter_ms' => 0,
@@ -1027,19 +1027,19 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetriesAtMostOnceEvenWhenLaterAttemptWouldSucceed(): void
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
 
-        $third_client = new ValkeyGlideFake;
-        $third_client->willReturn('get', 'ok');
+        $thirdClient = new ValkeyGlideFake;
+        $thirdClient->willReturn('get', 'ok');
 
-        $clients = [$second_client, $third_client];
+        $clients = [$secondClient, $thirdClient];
 
         $connection = new ValkeyGlideConnection(
-            $first_client,
+            $firstClient,
             static function () use (&$clients): \ValkeyGlide {
                 return array_shift($clients) ?? new ValkeyGlideFake;
             },
@@ -1054,7 +1054,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         try {
             $connection->command('get', ['retry-key']);
         } finally {
-            self::assertCount(0, $third_client->callsFor('get'));
+            self::assertCount(0, $thirdClient->callsFor('get'));
         }
     }
 
@@ -1068,15 +1068,15 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetriesWhenTransientErrorMessageIsUppercase(): void
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('get', new \RuntimeException('CONNECTION RESET BY PEER'));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException('CONNECTION RESET BY PEER'));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willReturn('get', 'ok');
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
 
         $connection = new ValkeyGlideConnection(
-            $first_client,
-            static fn (): \ValkeyGlide => $second_client,
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
             [
                 'retry_delay_ms'  => 0,
                 'retry_jitter_ms' => 0,
@@ -1084,7 +1084,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertCount(1, $second_client->callsFor('get'));
+        self::assertCount(1, $secondClient->callsFor('get'));
     }
 
     /**
@@ -1290,19 +1290,19 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetryUsesDefaultBaseDelayWhenNoneConfigured(): void
     {
-        $sleep_calls = [];
+        $sleepCalls = [];
 
         $connection = $this->buildRetryConnection(
             [
                 'random_int' => static fn (int $min, int $max): int => 0,
-                'sleep'      => static function (int $microseconds) use (&$sleep_calls): void {
-                    $sleep_calls[] = $microseconds;
+                'sleep'      => static function (int $microseconds) use (&$sleepCalls): void {
+                    $sleepCalls[] = $microseconds;
                 },
             ],
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertSame([25000], $sleep_calls);
+        self::assertSame([25000], $sleepCalls);
     }
 
     /**
@@ -1315,12 +1315,12 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetryUsesDefaultJitterCeilingWhenNoneConfigured(): void
     {
-        $random_args = [];
+        $randomArgs = [];
 
         $connection = $this->buildRetryConnection(
             [
-                'random_int' => static function (int $min, int $max) use (&$random_args): int {
-                    $random_args = [$min, $max];
+                'random_int' => static function (int $min, int $max) use (&$randomArgs): int {
+                    $randomArgs = [$min, $max];
 
                     return 0;
                 },
@@ -1331,7 +1331,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertSame([0, 15], $random_args);
+        self::assertSame([0, 15], $randomArgs);
     }
 
     /**
@@ -1344,13 +1344,13 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetryUsesConfiguredJitterCeiling(): void
     {
-        $random_args = [];
+        $randomArgs = [];
 
         $connection = $this->buildRetryConnection(
             [
                 'retry_jitter_ms' => 8,
-                'random_int'      => static function (int $min, int $max) use (&$random_args): int {
-                    $random_args = [$min, $max];
+                'random_int'      => static function (int $min, int $max) use (&$randomArgs): int {
+                    $randomArgs = [$min, $max];
 
                     return 0;
                 },
@@ -1361,7 +1361,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertSame([0, 8], $random_args);
+        self::assertSame([0, 8], $randomArgs);
     }
 
     /**
@@ -1374,27 +1374,27 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetrySkipsJitterWhenCeilingIsZero(): void
     {
-        $random_called = false;
-        $sleep_calls   = [];
+        $randomCalled = false;
+        $sleepCalls   = [];
 
         $connection = $this->buildRetryConnection(
             [
                 'retry_delay_ms'  => 10,
                 'retry_jitter_ms' => 0,
-                'random_int'      => static function () use (&$random_called): int {
-                    $random_called = true;
+                'random_int'      => static function () use (&$randomCalled): int {
+                    $randomCalled = true;
 
                     return 5;
                 },
-                'sleep' => static function (int $microseconds) use (&$sleep_calls): void {
-                    $sleep_calls[] = $microseconds;
+                'sleep' => static function (int $microseconds) use (&$sleepCalls): void {
+                    $sleepCalls[] = $microseconds;
                 },
             ],
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertFalse($random_called);
-        self::assertSame([10000], $sleep_calls);
+        self::assertFalse($randomCalled);
+        self::assertSame([10000], $sleepCalls);
     }
 
     /**
@@ -1407,14 +1407,14 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetryUsesZeroLowerBoundForJitter(): void
     {
-        $random_args = [];
+        $randomArgs = [];
 
         $connection = $this->buildRetryConnection(
             [
                 'retry_delay_ms'  => 10,
                 'retry_jitter_ms' => 5,
-                'random_int'      => static function (int $min, int $max) use (&$random_args): int {
-                    $random_args = [$min, $max];
+                'random_int'      => static function (int $min, int $max) use (&$randomArgs): int {
+                    $randomArgs = [$min, $max];
 
                     return 0;
                 },
@@ -1425,7 +1425,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertSame([0, 5], $random_args);
+        self::assertSame([0, 5], $randomArgs);
     }
 
     /**
@@ -1438,20 +1438,20 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetryDoesNotSleepWhenBaseDelayIsZero(): void
     {
-        $sleep_calls = [];
+        $sleepCalls = [];
 
         $connection = $this->buildRetryConnection(
             [
                 'retry_delay_ms'  => 0,
                 'retry_jitter_ms' => 0,
-                'sleep'           => static function (int $microseconds) use (&$sleep_calls): void {
-                    $sleep_calls[] = $microseconds;
+                'sleep'           => static function (int $microseconds) use (&$sleepCalls): void {
+                    $sleepCalls[] = $microseconds;
                 },
             ],
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertSame([], $sleep_calls);
+        self::assertSame([], $sleepCalls);
     }
 
     /**
@@ -1464,7 +1464,7 @@ final class ValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function commandRetryDoesNotSleepWhenRandomThrowsAndBaseDelayIsZero(): void
     {
-        $sleep_calls = [];
+        $sleepCalls = [];
 
         $connection = $this->buildRetryConnection(
             [
@@ -1473,14 +1473,14 @@ final class ValkeyGlideConnectionTest extends TestCase
                 'random_int'      => static function (): int {
                     throw new \DomainException('entropy unavailable');
                 },
-                'sleep' => static function (int $microseconds) use (&$sleep_calls): void {
-                    $sleep_calls[] = $microseconds;
+                'sleep' => static function (int $microseconds) use (&$sleepCalls): void {
+                    $sleepCalls[] = $microseconds;
                 },
             ],
         );
 
         self::assertSame('ok', $connection->command('get', ['retry-key']));
-        self::assertSame([], $sleep_calls);
+        self::assertSame([], $sleepCalls);
     }
 
     /**
@@ -1575,9 +1575,9 @@ final class ValkeyGlideConnectionTest extends TestCase
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'ping', ['payload']);
+        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'ping', ['payload']);
 
-        self::assertSame(['payload'], $normalized_parameters);
+        self::assertSame(['payload'], $normalizedParameters);
     }
 
     /**
@@ -1590,9 +1590,9 @@ final class ValkeyGlideConnectionTest extends TestCase
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'get', [1 => 'a', 2 => 'b']);
+        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'get', [1 => 'a', 2 => 'b']);
 
-        self::assertSame([1 => 'a', 2 => 'b'], $normalized_parameters);
+        self::assertSame([1 => 'a', 2 => 'b'], $normalizedParameters);
     }
 
     /**
@@ -1604,11 +1604,11 @@ final class ValkeyGlideConnectionTest extends TestCase
     public function normalizeCommandParametersKeepsTrailingParametersWhenKeyIsNonScalar(): void
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-        $key_object = new \stdClass;
+        $keyObject  = new \stdClass;
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'get', [$key_object, 'trailing']);
+        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'get', [$keyObject, 'trailing']);
 
-        self::assertSame([$key_object, 'trailing'], $normalized_parameters);
+        self::assertSame([$keyObject, 'trailing'], $normalizedParameters);
     }
 
     /**
@@ -1621,13 +1621,13 @@ final class ValkeyGlideConnectionTest extends TestCase
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters(
+        $normalizedParameters = $this->invokeNormalizeCommandParameters(
             $connection,
             'eval',
             [0 => self::EVAL_TEST_SCRIPT, 2 => 'trailing'],
         );
 
-        self::assertSame([0 => self::EVAL_TEST_SCRIPT, 2 => 'trailing'], $normalized_parameters);
+        self::assertSame([0 => self::EVAL_TEST_SCRIPT, 2 => 'trailing'], $normalizedParameters);
     }
 
     /**
@@ -1640,13 +1640,13 @@ final class ValkeyGlideConnectionTest extends TestCase
     {
         $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
 
-        $normalized_parameters = $this->invokeNormalizeCommandParameters(
+        $normalizedParameters = $this->invokeNormalizeCommandParameters(
             $connection,
             'eval',
             [1 => 2, 2 => 'k1', 3 => 'k2'],
         );
 
-        self::assertSame([1 => 2, 2 => 'app:k1', 3 => 'app:k2'], $normalized_parameters);
+        self::assertSame([1 => 2, 2 => 'app:k1', 3 => 'app:k2'], $normalizedParameters);
     }
 
     /**
@@ -1657,15 +1657,15 @@ final class ValkeyGlideConnectionTest extends TestCase
      */
     private function buildRetryConnection(array $config): ValkeyGlideConnection
     {
-        $first_client = new ValkeyGlideFake;
-        $first_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
 
-        $second_client = new ValkeyGlideFake;
-        $second_client->willReturn('get', 'ok');
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
 
         return new ValkeyGlideConnection(
-            $first_client,
-            static fn (): \ValkeyGlide => $second_client,
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
             $config,
         );
     }
