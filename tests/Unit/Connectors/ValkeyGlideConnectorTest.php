@@ -113,6 +113,29 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
+     * Verify connectToCluster builds the cluster client via the default factory when none is injected.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterUsesDefaultClusterClientFactoryWhenNoneInjected(): void
+    {
+        $connector = new ValkeyGlideConnector(
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connection = $connector->connectToCluster(
+            [['host' => '127.0.0.1', 'port' => 6379]],
+            [],
+            [],
+        );
+
+        self::assertInstanceOf(ValkeyGlideConnection::class, $connection);
+        self::assertInstanceOf(\ValkeyGlideCluster::class, $connection->client());
+    }
+
+    /**
      * Verify connectToCluster returns a connection whose client is a ValkeyGlideCluster
      * and that the factory received the resolved connect arguments.
      *

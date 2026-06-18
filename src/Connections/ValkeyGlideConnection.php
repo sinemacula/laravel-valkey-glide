@@ -7,6 +7,7 @@ namespace SineMacula\Valkey\Connections;
 use Illuminate\Redis\Connections\Connection;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Redis\Events\CommandFailed;
+use SineMacula\Valkey\Support\Cast;
 
 /**
  * Laravel Redis connection adapter backed by the Valkey GLIDE client.
@@ -50,108 +51,6 @@ final class ValkeyGlideConnection extends Connection
         'ZSCORE',
     ];
 
-    /** @var array<int, string> Commands with a single key argument at index 0. */
-    private const array SINGLE_KEY_COMMANDS = [
-        'APPEND',
-        'DECR',
-        'DECRBY',
-        'DEL',
-        'DUMP',
-        'EXISTS',
-        'EXPIRE',
-        'EXPIREAT',
-        'GET',
-        'GETBIT',
-        'GETDEL',
-        'GETEX',
-        'GETRANGE',
-        'GETSET',
-        'HDEL',
-        'HEXISTS',
-        'HGET',
-        'HGETALL',
-        'HINCRBY',
-        'HINCRBYFLOAT',
-        'HKEYS',
-        'HLEN',
-        'HMGET',
-        'HSET',
-        'HSETNX',
-        'HSTRLEN',
-        'HVALS',
-        'INCR',
-        'INCRBY',
-        'INCRBYFLOAT',
-        'LINDEX',
-        'LINSERT',
-        'LLEN',
-        'LPOP',
-        'LPOS',
-        'LPUSH',
-        'LPUSHX',
-        'LRANGE',
-        'LREM',
-        'LSET',
-        'LTRIM',
-        'MGET',
-        'MOVE',
-        'PERSIST',
-        'PEXPIRE',
-        'PEXPIREAT',
-        'PTTL',
-        'RPOP',
-        'RPUSH',
-        'RPUSHX',
-        'SADD',
-        'SCARD',
-        'SDIFF',
-        'SET',
-        'SETBIT',
-        'SETEX',
-        'SETNX',
-        'SETRANGE',
-        'SISMEMBER',
-        'SMEMBERS',
-        'SPOP',
-        'SREM',
-        'STRLEN',
-        'TTL',
-        'TYPE',
-        'ZADD',
-        'ZCARD',
-        'ZCOUNT',
-        'ZINCRBY',
-        'ZRANGE',
-        'ZRANGEBYSCORE',
-        'ZRANK',
-        'ZREM',
-        'ZSCORE',
-    ];
-
-    /** @var array<int, string> Commands where every argument is a key. */
-    private const array ALL_KEY_COMMANDS = [
-        'DEL',
-        'MGET',
-        'MSET',
-        'MSETNX',
-        'SDIFF',
-        'SINTER',
-        'SUNION',
-        'TOUCH',
-        'UNLINK',
-    ];
-
-    /** @var array<int, string> Commands with key arguments at indexes 0 and 1. */
-    private const array DOUBLE_KEY_COMMANDS = [
-        'BITOP',
-        'BRPOPLPUSH',
-        'COPY',
-        'RENAME',
-        'RENAMENX',
-        'RPOPLPUSH',
-        'SMOVE',
-    ];
-
     /** @var array<int, string> Error fragments treated as transient transport faults. */
     private const array TRANSIENT_ERROR_FRAGMENTS = [
         'connection reset by peer',
@@ -178,8 +77,8 @@ final class ValkeyGlideConnection extends Connection
     /** @var array<string, mixed> Connection-level configuration. */
     protected array $config;
 
-    /** @var string Key prefix prepended to command key arguments; an empty string disables prefixing. */
-    private readonly string $prefix;
+    /** @var \SineMacula\Valkey\Connections\KeyPrefixer Key prefixer instance for command parameter normalization. */
+    private readonly KeyPrefixer $prefixer;
 
     /** @var \Closure(int, int): int Random integer generator callback. */
     private readonly \Closure $randomIntGenerator;
@@ -200,7 +99,7 @@ final class ValkeyGlideConnection extends Connection
         $this->glideClient        = $client;
         $this->connector          = $connector;
         $this->config             = $config;
-        $this->prefix             = $this->resolvePrefix($config['prefix'] ?? null);
+        $this->prefixer           = new KeyPrefixer($this->resolvePrefix($config['prefix'] ?? null));
         $this->randomIntGenerator = $this->resolveRandomIntGenerator($config['random_int'] ?? null);
         $this->sleepCallback      = $this->resolveSleepCallback($config['sleep'] ?? null);
     }
@@ -243,7 +142,7 @@ final class ValkeyGlideConnection extends Connection
      */
     public function mget(array $keys): array
     {
-        $results = $this->command('mget', [$this->prefixMgetKeys($keys)]);
+        $results = $this->command('mget', [$this->prefixer->mgetKeys($keys)]);
 
         if (!is_array($results)) {
             throw new \UnexpectedValueException(sprintf('Expected array response from mget, received [%s].', get_debug_type($results)));
@@ -268,10 +167,7 @@ final class ValkeyGlideConnection extends Connection
     public function command(mixed $method, array $parameters = []): mixed
     {
         $normalizedMethod     = $this->normalizeCommandMethod($method);
-        $normalizedParameters = $this->normalizeCommandParameters(
-            $normalizedMethod,
-            $parameters,
-        );
+        $normalizedParameters = $this->prefixer->apply($normalizedMethod, $parameters);
 
         return $this->executeCommandWithRetry(
             $normalizedMethod,
@@ -326,25 +222,6 @@ final class ValkeyGlideConnection extends Connection
     public function disconnect(): void
     {
         $this->glideClient->close();
-    }
-
-    /**
-     * Prefix MGET keys explicitly because the command accepts a key list array.
-     *
-     * @param  array<int, string>  $keys
-     * @return array<int, string>
-     */
-    private function prefixMgetKeys(array $keys): array
-    {
-        if ($this->prefix === '') {
-            return $keys;
-        }
-
-        foreach ($keys as $index => $key) {
-            $keys[$index] = $this->prefix . $key;
-        }
-
-        return $keys;
     }
 
     /**
@@ -466,7 +343,7 @@ final class ValkeyGlideConnection extends Connection
     {
         $keyIndex = match ($method) {
             'SET' => 0,
-            'EVAL', 'EVALSHA' => ($this->normalizeNonNegativeInt($values[1] ?? null) ?? 0) >= 1 ? 2 : null,
+            'EVAL', 'EVALSHA' => (Cast::toNonNegativeInt($values[1] ?? null) ?? 0) >= 1 ? 2 : null,
             default => null,
         };
 
@@ -575,121 +452,6 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
-     * Normalize command parameters and apply configured key prefix when needed.
-     *
-     * @param  string  $method
-     * @param  array<array-key, mixed>  $parameters
-     * @return array<array-key, mixed>
-     */
-    private function normalizeCommandParameters(string $method, array $parameters): array
-    {
-        if ($this->prefix === '' || $parameters === []) {
-            return $parameters;
-        }
-
-        $normalizedMethod = strtoupper($method);
-
-        if ($normalizedMethod === 'EVAL' || $normalizedMethod === 'EVALSHA') {
-            return $this->prefixEvalKeys($parameters);
-        }
-
-        return match (true) {
-            in_array($normalizedMethod, self::ALL_KEY_COMMANDS, true)    => $this->prefixAllParameters($parameters),
-            in_array($normalizedMethod, self::DOUBLE_KEY_COMMANDS, true) => $this->prefixParameterAt(
-                $this->prefixParameterAt($parameters, 0),
-                1,
-            ),
-            in_array($normalizedMethod, self::SINGLE_KEY_COMMANDS, true) => $this->prefixParameterAt($parameters, 0),
-            default                                                      => $parameters,
-        };
-    }
-
-    /**
-     * Prefix a parameter at a specific index when it can be represented as a key.
-     *
-     * @param  array<array-key, mixed>  $parameters
-     * @param  int  $index
-     * @return array<array-key, mixed>
-     */
-    private function prefixParameterAt(array $parameters, int $index): array
-    {
-        if (!array_key_exists($index, $parameters)) {
-            return $parameters;
-        }
-
-        $prefixedValue = $this->prefixValue($parameters[$index]);
-
-        if ($prefixedValue === null) {
-            return $parameters;
-        }
-
-        $parameters[$index] = $prefixedValue;
-
-        return $parameters;
-    }
-
-    /**
-     * Prefix every parameter value that can be represented as a key.
-     *
-     * @param  array<array-key, mixed>  $parameters
-     * @return array<array-key, mixed>
-     */
-    private function prefixAllParameters(array $parameters): array
-    {
-        foreach ($parameters as $index => $parameter) {
-            $prefixedValue = $this->prefixValue($parameter);
-
-            if ($prefixedValue !== null) {
-                $parameters[$index] = $prefixedValue;
-            }
-        }
-
-        return $parameters;
-    }
-
-    /**
-     * Prefix EVAL and EVALSHA key parameters.
-     *
-     * @param  array<array-key, mixed>  $parameters
-     * @return array<array-key, mixed>
-     */
-    private function prefixEvalKeys(array $parameters): array
-    {
-        if (!array_key_exists(1, $parameters)) {
-            return $parameters;
-        }
-
-        $keyCount = $this->normalizeNonNegativeInt($parameters[1]);
-
-        if ($keyCount === null || $keyCount <= 0) {
-            return $parameters;
-        }
-
-        for ($offset = 0; $offset < $keyCount; $offset++) {
-            $parameters = $this->prefixParameterAt($parameters, $offset + 2);
-        }
-
-        return $parameters;
-    }
-
-    /**
-     * Prefix a key-like value when possible.
-     *
-     * @param  mixed  $value
-     * @return string|null
-     */
-    private function prefixValue(mixed $value): ?string
-    {
-        if (!is_scalar($value) && !$value instanceof \Stringable) {
-            return null;
-        }
-
-        $normalizedValue = (string) $value;
-
-        return $this->prefix . $normalizedValue;
-    }
-
-    /**
      * Normalize command method names to non-empty strings.
      *
      * @param  mixed  $method
@@ -699,7 +461,7 @@ final class ValkeyGlideConnection extends Connection
      */
     private function normalizeCommandMethod(mixed $method): string
     {
-        $normalizedMethod = $this->normalizeNonEmptyStringable($method);
+        $normalizedMethod = Cast::toNonEmptyString($method);
 
         if ($normalizedMethod !== null) {
             return $normalizedMethod;
@@ -718,7 +480,7 @@ final class ValkeyGlideConnection extends Connection
      */
     private function normalizeSubscriptionMethod(mixed $method): string
     {
-        $normalizedMethod = $this->normalizeNonEmptyStringable($method);
+        $normalizedMethod = Cast::toNonEmptyString($method);
 
         if ($normalizedMethod !== null) {
             return strtolower($normalizedMethod);
@@ -734,8 +496,8 @@ final class ValkeyGlideConnection extends Connection
      */
     private function sleepBeforeRetry(): void
     {
-        $baseDelay = $this->normalizeNonNegativeInt($this->config['retry_delay_ms'] ?? null)  ?? 25;
-        $maxJitter = $this->normalizeNonNegativeInt($this->config['retry_jitter_ms'] ?? null) ?? 15;
+        $baseDelay = Cast::toNonNegativeInt($this->config['retry_delay_ms'] ?? null)  ?? 25;
+        $maxJitter = Cast::toNonNegativeInt($this->config['retry_jitter_ms'] ?? null) ?? 15;
 
         if ($maxJitter > 0) {
             $randomInt = $this->randomIntGenerator;
@@ -753,56 +515,6 @@ final class ValkeyGlideConnection extends Connection
 
         $sleepCallback = $this->sleepCallback;
         $sleepCallback($baseDelay * 1000);
-    }
-
-    /**
-     * Normalize mixed values into non-negative integers or null.
-     *
-     * @param  mixed  $value
-     * @return int|null
-     */
-    private function normalizeNonNegativeInt(mixed $value): ?int
-    {
-        $normalized = null;
-
-        if (is_int($value)) {
-            $normalized = $value;
-        } elseif (is_float($value)) {
-            $normalized = (int) $value;
-        } elseif (is_string($value) && is_numeric($value)) {
-            $normalized = (int) $value;
-        } elseif ($value instanceof \Stringable && is_numeric((string) $value)) {
-            $normalized = (int) (string) $value;
-        }
-
-        if ($normalized === null || $normalized < 0) {
-            return null;
-        }
-
-        return $normalized;
-    }
-
-    /**
-     * Normalize mixed values into non-empty string values when possible.
-     *
-     * @param  mixed  $value
-     * @return string|null
-     */
-    private function normalizeNonEmptyStringable(mixed $value): ?string
-    {
-        if (is_string($value) && $value !== '') {
-            return $value;
-        }
-
-        if (is_int($value) || is_float($value) || is_bool($value) || $value instanceof \Stringable) {
-            $normalized = (string) $value;
-
-            if ($normalized !== '') {
-                return $normalized;
-            }
-        }
-
-        return null;
     }
 
     /**

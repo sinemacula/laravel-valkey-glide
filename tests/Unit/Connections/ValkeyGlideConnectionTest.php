@@ -196,55 +196,6 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify multi-key commands prefix every key parameter.
-     *
-     * @return void
-     */
-    #[Test]
-    public function commandPrefixesAllKeysForAllKeyCommands(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'mget', ['a', 'b']);
-
-        self::assertSame(['app:a', 'app:b'], $normalizedParameters);
-    }
-
-    /**
-     * Verify double-key commands prefix both key positions.
-     *
-     * @return void
-     */
-    #[Test]
-    public function commandPrefixesBothKeyParametersForDoubleKeyCommands(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'rename', ['old-key', 'new-key']);
-
-        self::assertSame(['app:old-key', 'app:new-key'], $normalizedParameters);
-    }
-
-    /**
-     * Verify EVAL key prefixes apply only to key segments.
-     *
-     * @return void
-     */
-    #[Test]
-    public function commandPrefixesEvalKeyArgumentsOnly(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters(
-            $connection,
-            'eval',
-            [self::EVAL_TEST_SCRIPT, 2, 'k1', 'k2', 'arg1'],
-        );
-
-        self::assertSame([self::EVAL_TEST_SCRIPT, 2, 'app:k1', 'app:k2', 'arg1'], $normalizedParameters);
-    }
-
-    /**
      * Verify eval command arguments are executed through rawcommand.
      *
      * @return void
@@ -722,118 +673,6 @@ final class ValkeyGlideConnectionTest extends TestCase
         $connection->createSubscription(['', new \stdClass], static function (): void {
             throw new \LogicException('Callback should not be executed for empty channel list.');
         });
-    }
-
-    /**
-     * Verify normalizeCommandParameters leaves missing second key untouched.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeCommandParametersSkipsMissingDoubleKeyIndex(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'rename', ['single-key']);
-
-        self::assertSame(['app:single-key'], $normalizedParameters);
-    }
-
-    /**
-     * Verify non-scalar key values are ignored during prefixing.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeCommandParametersSkipsNonScalarSingleKeyValues(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-        $keyObject  = new \stdClass;
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'get', [$keyObject]);
-
-        self::assertSame($keyObject, $normalizedParameters[0]);
-    }
-
-    /**
-     * Verify EVAL normalization skips prefixing when key count is missing.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeCommandParametersLeavesEvalUntouchedWhenKeyCountIsMissing(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'eval', [self::EVAL_TEST_SCRIPT]);
-
-        self::assertSame([self::EVAL_TEST_SCRIPT], $normalizedParameters);
-    }
-
-    /**
-     * Verify EVAL normalization skips prefixing when key count is invalid.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeCommandParametersLeavesEvalUntouchedWhenKeyCountIsInvalid(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters(
-            $connection,
-            'eval',
-            [self::EVAL_TEST_SCRIPT, 'not-numeric', 'key-a'],
-        );
-
-        self::assertSame([self::EVAL_TEST_SCRIPT, 'not-numeric', 'key-a'], $normalizedParameters);
-    }
-
-    /**
-     * Verify normalizeNonNegativeInt supports float, string, and stringables.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeNonNegativeIntSupportsSupportedInputTypes(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
-
-        self::assertSame(4, $this->invokeNormalizeNonNegativeInt($connection, 4.7));
-        self::assertSame(7, $this->invokeNormalizeNonNegativeInt($connection, '7'));
-        self::assertSame(
-            9,
-            $this->invokeNormalizeNonNegativeInt(
-                $connection,
-                new \SimpleXMLElement('<root>9</root>'),
-            ),
-        );
-    }
-
-    /**
-     * Verify normalizeNonNegativeInt returns null for invalid numeric values.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeNonNegativeIntReturnsNullForNegativeValues(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
-
-        self::assertNull($this->invokeNormalizeNonNegativeInt($connection, -1));
-    }
-
-    /**
-     * Verify normalizeNonEmptyStringable casts scalar values correctly.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeNonEmptyStringableCastsScalarValues(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
-
-        self::assertSame('42', $this->invokeNormalizeNonEmptyStringable($connection, 42));
     }
 
     /**
@@ -1491,172 +1330,6 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify normalizeNonNegativeInt rejects non-numeric strings as null.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeNonNegativeIntRejectsNonNumericStrings(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
-
-        self::assertNull($this->invokeNormalizeNonNegativeInt($connection, 'not-numeric'));
-    }
-
-    /**
-     * Verify normalizeNonNegativeInt rejects non-numeric stringables as null.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeNonNegativeIntRejectsNonNumericStringables(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
-
-        self::assertNull(
-            $this->invokeNormalizeNonNegativeInt(
-                $connection,
-                new \SimpleXMLElement('<root>not-a-number</root>'),
-            ),
-        );
-    }
-
-    /**
-     * Verify normalizeNonNegativeInt casts the string form of numeric stringables.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeNonNegativeIntCastsStringFormOfStringables(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
-
-        $stringable = new class implements \Stringable {
-            /**
-             * Render a numeric string whose direct int cast differs from its value.
-             *
-             * @return string
-             */
-            public function __toString(): string
-            {
-                return '9';
-            }
-        };
-
-        self::assertSame(9, $this->invokeNormalizeNonNegativeInt($connection, $stringable));
-    }
-
-    /**
-     * Verify normalizeNonNegativeInt preserves a zero value as non-negative.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeNonNegativeIntPreservesZero(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
-
-        self::assertSame(0, $this->invokeNormalizeNonNegativeInt($connection, 0));
-    }
-
-    /**
-     * Verify normalizeNonEmptyStringable casts boolean values to their string form.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeNonEmptyStringableCastsBooleanValues(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
-
-        self::assertSame('1', $this->invokeNormalizeNonEmptyStringable($connection, true));
-    }
-
-    /**
-     * Verify unknown key commands leave their parameters untouched under a prefix.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeCommandParametersLeavesUnknownCommandsUntouched(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'ping', ['payload']);
-
-        self::assertSame(['payload'], $normalizedParameters);
-    }
-
-    /**
-     * Verify single-key prefixing keeps trailing parameters at a missing index.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeCommandParametersKeepsTrailingParametersWhenKeyIndexMissing(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'get', [1 => 'a', 2 => 'b']);
-
-        self::assertSame([1 => 'a', 2 => 'b'], $normalizedParameters);
-    }
-
-    /**
-     * Verify non-scalar key values keep every trailing parameter intact.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeCommandParametersKeepsTrailingParametersWhenKeyIsNonScalar(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-        $keyObject  = new \stdClass;
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters($connection, 'get', [$keyObject, 'trailing']);
-
-        self::assertSame([$keyObject, 'trailing'], $normalizedParameters);
-    }
-
-    /**
-     * Verify EVAL prefixing keeps trailing parameters when the key count is missing.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeCommandParametersKeepsEvalTrailingParametersWhenKeyCountIndexMissing(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters(
-            $connection,
-            'eval',
-            [0 => self::EVAL_TEST_SCRIPT, 2 => 'trailing'],
-        );
-
-        self::assertSame([0 => self::EVAL_TEST_SCRIPT, 2 => 'trailing'], $normalizedParameters);
-    }
-
-    /**
-     * Verify EVAL prefixing reads the key count from the second parameter index.
-     *
-     * @return void
-     */
-    #[Test]
-    public function normalizeCommandParametersReadsEvalKeyCountFromSecondIndex(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
-
-        $normalizedParameters = $this->invokeNormalizeCommandParameters(
-            $connection,
-            'eval',
-            [1 => 2, 2 => 'k1', 3 => 'k2'],
-        );
-
-        self::assertSame([1 => 2, 2 => 'app:k1', 3 => 'app:k2'], $normalizedParameters);
-    }
-
-    /**
      * Verify client() returns the cluster fake when constructed with one.
      *
      * @return void
@@ -1770,6 +1443,19 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify a raw command for an unexpected method defensively routes to randomNode.
+     *
+     * @return void
+     */
+    #[Test]
+    public function resolveClusterRouteFallsBackToRandomNodeForUnexpectedMethod(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
+
+        self::assertSame('randomNode', $this->invokeResolveClusterRoute($connection, 'GET', ['some-key']));
+    }
+
+    /**
      * Verify the standalone path does not prepend a route argument to rawcommand.
      *
      * @return void
@@ -1798,61 +1484,6 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Invoke private normalizeCommandParameters for deterministic prefix tests.
-     *
-     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
-     * @param  string  $method
-     * @param  array<array-key, mixed>  $parameters
-     * @return array<array-key, mixed>
-     */
-    private function invokeNormalizeCommandParameters(ValkeyGlideConnection $connection, string $method, array $parameters): array
-    {
-        $normalizer = \Closure::bind(
-            fn (string $method, array $parameters): array => $this->normalizeCommandParameters($method, $parameters),
-            $connection,
-            ValkeyGlideConnection::class,
-        );
-
-        return $normalizer($method, $parameters);
-    }
-
-    /**
-     * Invoke private normalizeNonNegativeInt for type coercion coverage.
-     *
-     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
-     * @param  mixed  $value
-     * @return int|null
-     */
-    private function invokeNormalizeNonNegativeInt(ValkeyGlideConnection $connection, mixed $value): ?int
-    {
-        $normalizer = \Closure::bind(
-            fn (mixed $value): ?int => $this->normalizeNonNegativeInt($value),
-            $connection,
-            ValkeyGlideConnection::class,
-        );
-
-        return $normalizer($value);
-    }
-
-    /**
-     * Invoke private normalizeNonEmptyStringable for method normalization.
-     *
-     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
-     * @param  mixed  $value
-     * @return string|null
-     */
-    private function invokeNormalizeNonEmptyStringable(ValkeyGlideConnection $connection, mixed $value): ?string
-    {
-        $normalizer = \Closure::bind(
-            fn (mixed $value): ?string => $this->normalizeNonEmptyStringable($value),
-            $connection,
-            ValkeyGlideConnection::class,
-        );
-
-        return $normalizer($value);
-    }
-
-    /**
      * Invoke private reconnectClient for reconnect path coverage.
      *
      * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
@@ -1867,6 +1498,25 @@ final class ValkeyGlideConnectionTest extends TestCase
         );
 
         return $reconnector();
+    }
+
+    /**
+     * Invoke private resolveClusterRoute for cluster routing coverage.
+     *
+     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
+     * @param  string  $method
+     * @param  array<int, mixed>  $values
+     * @return array<array-key, mixed>|string
+     */
+    private function invokeResolveClusterRoute(ValkeyGlideConnection $connection, string $method, array $values): array|string
+    {
+        $resolver = \Closure::bind(
+            fn (string $method, array $values): array|string => $this->resolveClusterRoute($method, $values),
+            $connection,
+            ValkeyGlideConnection::class,
+        );
+
+        return $resolver($method, $values);
     }
 
     /**
