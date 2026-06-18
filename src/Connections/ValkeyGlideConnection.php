@@ -430,6 +430,8 @@ final class ValkeyGlideConnection extends Connection
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
      * @return mixed
+     *
+     * @throws \Throwable
      */
     private function invokeAsRawCommand(string $method, array $parameters): mixed
     {
@@ -458,9 +460,9 @@ final class ValkeyGlideConnection extends Connection
      *
      * @param  string  $method
      * @param  array<int, mixed>  $values
-     * @return mixed
+     * @return array{type: string, key: string}|string
      */
-    private function resolveClusterRoute(string $method, array $values): mixed
+    private function resolveClusterRoute(string $method, array $values): array|string
     {
         $keyIndex = match ($method) {
             'SET' => 0,

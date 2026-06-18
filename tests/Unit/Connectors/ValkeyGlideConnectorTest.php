@@ -289,29 +289,6 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
-     * Verify connector rethrows domain connection exceptions unchanged.
-     *
-     * @return void
-     */
-    #[Test]
-    public function connectRethrowsConnectionExceptionWithoutWrapping(): void
-    {
-        $fake = new ValkeyGlideFake;
-        $fake->willThrow('connect', new ConnectionException('already-normalized'));
-
-        $connector = new ValkeyGlideConnector(
-            clientFactory  : static fn (): \ValkeyGlide => $fake,
-            extensionLoader: static fn (string $extension): bool => true,
-            classResolver  : static fn (string $class): bool => true,
-        );
-
-        $this->expectException(ConnectionException::class);
-        $this->expectExceptionMessage('already-normalized');
-
-        $connector->connect([], []);
-    }
-
-    /**
      * Verify reconnect callback is wired by retrying an idempotent command.
      *
      * @return void

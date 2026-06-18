@@ -145,7 +145,8 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
      */
     private function createClusterClient(#[\SensitiveParameter] array $config): \ValkeyGlideCluster
     {
-        $this->validateGlideExtension(requireCluster: true);
+        $this->validateGlideExtension();
+        $this->validateClusterClass();
 
         $factory = $this->clusterClientFactory
             ?? static fn (array $arguments): \ValkeyGlideCluster => new \ValkeyGlideCluster(...$arguments);
@@ -177,14 +178,13 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
     }
 
     /**
-     * Verify GLIDE extension availability before creating clients.
+     * Verify the GLIDE extension and standalone client class are available.
      *
-     * @param  bool  $requireCluster
      * @return void
      *
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
-    private function validateGlideExtension(bool $requireCluster = false): void
+    private function validateGlideExtension(): void
     {
         $extensionLoader = $this->extensionLoader ?? static fn (string $extension): bool => extension_loaded($extension);
 
@@ -192,14 +192,35 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
             throw new ConnectionException('Valkey GLIDE extension (ext-valkey_glide) is not loaded.');
         }
 
-        $classResolver = $this->classResolver ?? static fn (string $class): bool => class_exists($class);
-
-        if (!$classResolver(\ValkeyGlide::class)) {
+        if (!$this->classExists(\ValkeyGlide::class)) {
             throw new ConnectionException('Valkey GLIDE extension is loaded but class "ValkeyGlide" is unavailable.');
         }
+    }
 
-        if ($requireCluster && !$classResolver(\ValkeyGlideCluster::class)) {
+    /**
+     * Verify the GLIDE cluster client class is available.
+     *
+     * @return void
+     *
+     * @throws \SineMacula\Valkey\Exceptions\ConnectionException
+     */
+    private function validateClusterClass(): void
+    {
+        if (!$this->classExists(\ValkeyGlideCluster::class)) {
             throw new ConnectionException('Valkey GLIDE extension is loaded but class "ValkeyGlideCluster" is unavailable.');
         }
+    }
+
+    /**
+     * Resolve whether the given class is available at runtime.
+     *
+     * @param  string  $class
+     * @return bool
+     */
+    private function classExists(string $class): bool
+    {
+        $classResolver = $this->classResolver ?? static fn (string $name): bool => class_exists($name);
+
+        return $classResolver($class);
     }
 }

@@ -682,11 +682,12 @@ final class ValkeyGlideConnectionTest extends TestCase
             ],
         );
 
-        $this->expectException(\RuntimeException::class);
-
-        $connection->command('get', ['retry-key']);
-
-        self::assertCount(0, $secondClient->callsFor('get'));
+        try {
+            $connection->command('get', ['retry-key']);
+            self::fail('Expected a runtime exception for the non-transient failure.');
+        } catch (\RuntimeException) {
+            self::assertCount(0, $secondClient->callsFor('get'));
+        }
     }
 
     /**
