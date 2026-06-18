@@ -13,9 +13,11 @@ parameters:
 
     bootstrapFiles:
         - %currentWorkingDirectory%/stubs/ValkeyGlide.php
+        - %currentWorkingDirectory%/stubs/ValkeyGlideCluster.php
 
     stubFiles:
         - %currentWorkingDirectory%/stubs/ValkeyGlide.php
+        - %currentWorkingDirectory%/stubs/ValkeyGlideCluster.php
 
     excludePaths:
         analyse:

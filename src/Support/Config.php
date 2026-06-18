@@ -12,15 +12,6 @@ namespace SineMacula\Valkey\Support;
  */
 final class Config
 {
-    /** @var string Default host value. */
-    private const string DEFAULT_HOST = '127.0.0.1';
-
-    /** @var int Default port value. */
-    private const int DEFAULT_PORT = 6379;
-
-    /** @var int Default IAM refresh interval in seconds. */
-    private const int DEFAULT_IAM_REFRESH_INTERVAL = 300;
-
     /**
      * Merge Laravel connection config with options and nested option overrides.
      *
@@ -51,14 +42,14 @@ final class Config
     public static function connectArguments(#[\SensitiveParameter] array $config): array
     {
         $arguments = [
-            'addresses' => self::addresses($config),
+            'addresses' => AddressResolver::addresses($config),
         ];
 
-        if (self::usesTls($config) || self::hasIam($config)) {
+        if (self::usesTls($config) || CredentialResolver::hasIam($config)) {
             $arguments['use_tls'] = true;
         }
 
-        $credentials = self::credentials($config);
+        $credentials = CredentialResolver::resolve($config);
 
         if ($credentials !== null) {
             $arguments['credentials'] = $credentials;
@@ -76,6 +67,36 @@ final class Config
             $arguments['client_name'] = $clientName;
         }
 
+        $readFrom = self::readFrom($config['read_from'] ?? null);
+
+        if ($readFrom !== null) {
+            $arguments['read_from'] = $readFrom;
+        }
+
+        $clientAz = self::clientAz($config['client_az'] ?? null);
+
+        if ($clientAz !== null) {
+            $arguments['client_az'] = $clientAz;
+        }
+
+        $context = self::context($config['context'] ?? null);
+
+        if ($context !== null) {
+            $arguments['context'] = $context;
+        }
+
+        $requestTimeout = self::requestTimeout($config['timeout'] ?? null);
+
+        if ($requestTimeout !== null) {
+            $arguments['request_timeout'] = $requestTimeout;
+        }
+
+        $advancedConfig = self::advancedConfig($config['connection_timeout'] ?? null);
+
+        if ($advancedConfig !== null) {
+            $arguments['advanced_config'] = $advancedConfig;
+        }
+
         return $arguments;
     }
 
@@ -88,7 +109,7 @@ final class Config
      */
     public static function clusterConnectArguments(array $clusterConfig, array $baseConfig = []): array
     {
-        $seedAddresses = self::clusterAddresses($clusterConfig);
+        $seedAddresses = AddressResolver::clusterAddresses($clusterConfig);
 
         $merged = self::merge($baseConfig, [
             'addresses' => $seedAddresses,
@@ -100,53 +121,27 @@ final class Config
     /**
      * Normalize single-connection addresses for GLIDE.
      *
+     * Delegates to AddressResolver; retained as a public API entry point.
+     *
      * @param  array<string, mixed>  $config
      * @return array<int, array{host: string, port: int}>
      */
     public static function addresses(array $config): array
     {
-        $rawAddresses = $config['addresses'] ?? null;
-
-        if (is_array($rawAddresses) && $rawAddresses !== []) {
-            $normalized = [];
-
-            foreach ($rawAddresses as $address) {
-                if (!is_array($address)) {
-                    continue;
-                }
-
-                $normalized[] = self::normalizeAddress($address);
-            }
-
-            if ($normalized !== []) {
-                return $normalized;
-            }
-        }
-
-        return [self::normalizeAddress($config)];
+        return AddressResolver::addresses($config);
     }
 
     /**
      * Normalize cluster node config arrays into GLIDE seed addresses.
+     *
+     * Delegates to AddressResolver; retained as a public API entry point.
      *
      * @param  array<int|string, mixed>  $clusterConfig
      * @return array<int, array{host: string, port: int}>
      */
     public static function clusterAddresses(array $clusterConfig): array
     {
-        $nodes = self::extractClusterNodes($clusterConfig);
-
-        if ($nodes === []) {
-            return [self::normalizeAddress([])];
-        }
-
-        $addresses = [];
-
-        foreach ($nodes as $node) {
-            $addresses[] = self::normalizeAddress($node);
-        }
-
-        return $addresses;
+        return AddressResolver::clusterAddresses($clusterConfig);
     }
 
     /**
@@ -165,144 +160,6 @@ final class Config
     }
 
     /**
-     * Build password, ACL, or IAM credentials for GLIDE.
-     *
-     * @param  array<string, mixed>  $config
-     * @return array<string, mixed>|null
-     */
-    private static function credentials(#[\SensitiveParameter] array $config): ?array
-    {
-        $iamCredentials = self::iamCredentials($config);
-
-        if ($iamCredentials !== null) {
-            return $iamCredentials;
-        }
-
-        $password = $config['password'] ?? null;
-
-        if (!is_string($password) || $password === '') {
-            return null;
-        }
-
-        $username    = $config['username'] ?? null;
-        $credentials = ['password' => $password];
-
-        if (is_string($username) && $username !== '') {
-            $credentials['username'] = $username;
-        }
-
-        return $credentials;
-    }
-
-    /**
-     * Determine whether IAM auth config is present.
-     *
-     * @param  array<string, mixed>  $config
-     * @return bool
-     */
-    private static function hasIam(array $config): bool
-    {
-        return isset($config['iam']) && is_array($config['iam']);
-    }
-
-    /**
-     * Build IAM credentials in GLIDE's expected shape.
-     *
-     * @param  array<string, mixed>  $config
-     * @return array<string, mixed>|null
-     */
-    private static function iamCredentials(#[\SensitiveParameter] array $config): ?array
-    {
-        if (!self::hasIam($config)) {
-            return null;
-        }
-
-        $iam = $config['iam'];
-
-        $username    = self::normalizeString($iam['username'] ?? null);
-        $clusterName = self::normalizeString($iam['cluster_name'] ?? null);
-        $region      = self::normalizeString($iam['region'] ?? null);
-
-        if ($username === '' || $clusterName === '' || $region === '') {
-            return null;
-        }
-
-        $refreshInterval = self::normalizeNonNegativeInt($iam['refresh_interval'] ?? null);
-
-        if ($refreshInterval === null || $refreshInterval === 0) {
-            $refreshInterval = self::DEFAULT_IAM_REFRESH_INTERVAL;
-        }
-
-        return [
-            'username'  => $username,
-            'iamConfig' => [
-                'clusterName'            => $clusterName,
-                'region'                 => $region,
-                'service'                => 'Elasticache',
-                'refreshIntervalSeconds' => $refreshInterval,
-            ],
-        ];
-    }
-
-    /**
-     * Normalize a host and port pair.
-     *
-     * @param  array<string, mixed>  $address
-     * @return array{host: string, port: int}
-     */
-    private static function normalizeAddress(array $address): array
-    {
-        $host = self::normalizeString($address['host'] ?? null, self::DEFAULT_HOST);
-        $port = self::normalizePort($address['port'] ?? null);
-
-        return [
-            'host' => $host,
-            'port' => $port,
-        ];
-    }
-
-    /**
-     * Extract nested cluster node definitions from a mixed cluster config.
-     *
-     * @param  array<int|string, mixed>  $clusterConfig
-     * @return array<int, array<string, mixed>>
-     */
-    private static function extractClusterNodes(array $clusterConfig): array
-    {
-        $nodes = [];
-
-        foreach ($clusterConfig as $value) {
-            if (is_array($value) && self::looksLikeNode($value)) {
-                $nodes[] = $value;
-                continue;
-            }
-
-            if (!is_array($value)) {
-                continue;
-            }
-
-            foreach ($value as $nested) {
-                if (is_array($nested) && self::looksLikeNode($nested)) {
-                    $nodes[] = $nested;
-                }
-            }
-        }
-
-        return $nodes;
-    }
-
-    /**
-     * Determine whether the array shape resembles a host/port node definition.
-     *
-     * @param  array<string, mixed>  $value
-     * @return bool
-     */
-    private static function looksLikeNode(array $value): bool
-    {
-        return array_key_exists('host', $value) || array_key_exists('port', $value);
-    }
-
-    /**
      * Normalize a mixed database id into a non-negative integer.
      *
      * @param  mixed  $value
@@ -310,7 +167,7 @@ final class Config
      */
     private static function databaseId(mixed $value): ?int
     {
-        return self::normalizeNonNegativeInt($value);
+        return Cast::toNonNegativeInt($value);
     }
 
     /**
@@ -321,7 +178,7 @@ final class Config
      */
     private static function clientName(mixed $value): ?string
     {
-        $normalized = trim(self::normalizeString($value));
+        $normalized = trim(Cast::toNonEmptyString($value) ?? '');
 
         if ($normalized === '') {
             return null;
@@ -331,62 +188,108 @@ final class Config
     }
 
     /**
-     * Normalize mixed input to a non-empty string.
-     *
-     * @param  mixed  $value
-     * @param  string  $default
-     * @return string
-     */
-    private static function normalizeString(mixed $value, string $default = ''): string
-    {
-        if (is_string($value) && $value !== '') {
-            return $value;
-        }
-
-        if (is_int($value) || is_float($value) || is_bool($value) || $value instanceof \Stringable) {
-            $normalized = (string) $value;
-
-            if ($normalized !== '') {
-                return $normalized;
-            }
-        }
-
-        return $default;
-    }
-
-    /**
-     * Normalize mixed input to an integer port value.
-     *
-     * @param  mixed  $value
-     * @return int
-     */
-    private static function normalizePort(mixed $value): int
-    {
-        $normalized = self::normalizeNonNegativeInt($value);
-
-        if ($normalized === null || $normalized === 0) {
-            return self::DEFAULT_PORT;
-        }
-
-        return $normalized;
-    }
-
-    /**
-     * Normalize mixed values into non-negative integers or null.
+     * Resolve a mixed read-from value to its GLIDE integer constant.
      *
      * @param  mixed  $value
      * @return int|null
      */
-    private static function normalizeNonNegativeInt(mixed $value): ?int
+    private static function readFrom(mixed $value): ?int
     {
-        $normalized = match (true) {
-            is_int($value)                                               => $value,
-            is_float($value)                                             => (int) $value,
-            is_string($value)             && is_numeric($value)          => (int) $value,
-            $value instanceof \Stringable && is_numeric((string) $value) => (int) (string) $value,
-            default                                                      => null,
-        };
+        return ReadFrom::tryFromMixed($value)?->value;
+    }
 
-        return $normalized !== null && $normalized >= 0 ? $normalized : null;
+    /**
+     * Normalize a mixed availability-zone value into a non-empty string.
+     *
+     * @param  mixed  $value
+     * @return string|null
+     */
+    private static function clientAz(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
+    /**
+     * Normalize a mixed context value for GLIDE passthrough.
+     *
+     * Accepts a non-empty array or a PHP resource; all other values return null.
+     *
+     * @param  mixed  $value
+     * @return array<array-key, mixed>|resource|null
+     */
+    private static function context(mixed $value): mixed
+    {
+        if (is_array($value) && $value !== []) {
+            return $value;
+        }
+
+        if (is_resource($value)) {
+            return $value;
+        }
+
+        return null;
+    }
+
+    /**
+     * Convert a seconds value to GLIDE milliseconds for request_timeout.
+     *
+     * Accepts int, float, or numeric string greater than zero; all other values
+     * return null. The value is treated as seconds and converted to milliseconds.
+     *
+     * @param  mixed  $value
+     * @return int|null
+     */
+    private static function requestTimeout(mixed $value): ?int
+    {
+        return self::secondsToMilliseconds($value);
+    }
+
+    /**
+     * Build the advanced_config array from a connection_timeout value in seconds.
+     *
+     * Returns null when the value is absent or not a positive numeric.
+     *
+     * @param  mixed  $value
+     * @return array<string, int>|null
+     */
+    private static function advancedConfig(mixed $value): ?array
+    {
+        $milliseconds = self::secondsToMilliseconds($value);
+
+        if ($milliseconds === null) {
+            return null;
+        }
+
+        return ['connection_timeout' => $milliseconds];
+    }
+
+    /**
+     * Convert a seconds value to an integer millisecond count.
+     *
+     * Accepts int, float, or numeric string; returns null for non-numeric or
+     * non-positive values.
+     *
+     * @param  mixed  $value
+     * @return int|null
+     */
+    private static function secondsToMilliseconds(mixed $value): ?int
+    {
+        if (!is_numeric($value)) {
+            return null;
+        }
+
+        $seconds = (float) $value;
+
+        if ($seconds <= 0) {
+            return null;
+        }
+
+        return (int) round($seconds * 1000);
     }
 }

@@ -21,7 +21,7 @@ use SineMacula\Valkey\Connections\ValkeyGlideConnection;
  * @copyright   2026 Sine Macula Limited.
  */
 #[Bench\OutputTimeUnit('microseconds')]
-final class ConnectionBench
+final readonly class ConnectionBench
 {
     /** @var string Primary sample key reused across the command benchmarks. */
     private const string SAMPLE_KEY = 'user:1';
