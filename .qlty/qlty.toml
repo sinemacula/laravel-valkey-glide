@@ -18,7 +18,6 @@ exclude_patterns = [
     "**/vendor/**",
     ".qlty/configs/**",
     ".sinemacula/**",
-    "stubs/**",
 ]
 
 test_patterns = [
@@ -105,3 +104,12 @@ name = "yamllint"
 [[exclude]]
 plugins = ["radarlint-php"]
 file_patterns = ["tests/**"]
+
+# The ext-valkey_glide stub declares the third-party extension class for IDE and
+# static analysis only; its intentionally empty method bodies and load guard are
+# not project code, so the lint/format plugins skip it. PHPStan still consumes it
+# via bootstrapFiles/stubFiles (with stubs excluded from analysis) to resolve the
+# \ValkeyGlide type.
+[[exclude]]
+plugins = ["php-cs-fixer", "php-codesniffer", "radarlint-php"]
+file_patterns = ["stubs/**"]

@@ -8,3 +8,13 @@ parameters:
     paths:
         - src
         - tests
+
+    bootstrapFiles:
+        - %currentWorkingDirectory%/stubs/ValkeyGlide.php
+
+    stubFiles:
+        - %currentWorkingDirectory%/stubs/ValkeyGlide.php
+
+    excludePaths:
+        analyse:
+            - %currentWorkingDirectory%/stubs/*
