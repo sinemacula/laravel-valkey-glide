@@ -368,4 +368,355 @@ final class ConfigTest extends TestCase
         self::assertSame(['password' => 'secret'], $arguments['credentials']);
         self::assertSame(2, $arguments['database_id']);
     }
+
+    /**
+     * Verify the public addresses helper normalizes a configured address list.
+     *
+     * @return void
+     */
+    #[Test]
+    public function addressesNormalizesConfiguredAddressList(): void
+    {
+        $addresses = Config::addresses([
+            'addresses' => [
+                ['host' => 'cache-a', 'port' => '6380'],
+                ['host' => 'cache-b'],
+            ],
+        ]);
+
+        self::assertSame(
+            [
+                ['host' => 'cache-a', 'port' => 6380],
+                ['host' => 'cache-b', 'port' => self::DEFAULT_PORT],
+            ],
+            $addresses,
+        );
+    }
+
+    /**
+     * Verify addresses falls back to the single endpoint when none are listed.
+     *
+     * @return void
+     */
+    #[Test]
+    public function addressesFallsBackToSingleEndpointWhenAddressListIsEmpty(): void
+    {
+        $addresses = Config::addresses([
+            'addresses' => [],
+            'host'      => 'single-host',
+            'port'      => 6390,
+        ]);
+
+        self::assertSame(
+            [
+                ['host' => 'single-host', 'port' => 6390],
+            ],
+            $addresses,
+        );
+    }
+
+    /**
+     * Verify addresses ignores a non-array address list and uses the endpoint.
+     *
+     * @return void
+     */
+    #[Test]
+    public function addressesIgnoresNonArrayAddressListAndUsesEndpoint(): void
+    {
+        $addresses = Config::addresses([
+            'addresses' => 'not-an-array',
+            'host'      => 'fallback-host',
+            'port'      => 6395,
+        ]);
+
+        self::assertSame(
+            [
+                ['host' => 'fallback-host', 'port' => 6395],
+            ],
+            $addresses,
+        );
+    }
+
+    /**
+     * Verify addresses falls back to the endpoint when every entry is invalid.
+     *
+     * @return void
+     */
+    #[Test]
+    public function addressesFallsBackToEndpointWhenEveryAddressEntryIsInvalid(): void
+    {
+        $addresses = Config::addresses([
+            'addresses' => ['only-a-string', 42],
+            'host'      => 'endpoint-host',
+            'port'      => 6399,
+        ]);
+
+        self::assertSame(
+            [
+                ['host' => 'endpoint-host', 'port' => 6399],
+            ],
+            $addresses,
+        );
+    }
+
+    /**
+     * Verify IAM credentials require the iam config to be an array, not a scalar.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsIgnoresScalarIamConfiguration(): void
+    {
+        $arguments = Config::connectArguments([
+            'iam' => 'not-an-array',
+        ]);
+
+        self::assertArrayNotHasKey('credentials', $arguments);
+        self::assertArrayNotHasKey('use_tls', $arguments);
+    }
+
+    /**
+     * Verify a configured non-zero IAM refresh interval is preserved verbatim.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsPreservesNonZeroIamRefreshInterval(): void
+    {
+        $arguments = Config::connectArguments([
+            'iam' => [
+                'username'         => 'iam-user',
+                'cluster_name'     => 'cluster-x',
+                'region'           => 'eu-west-3',
+                'refresh_interval' => 45,
+            ],
+        ]);
+
+        self::assertSame(45, $arguments['credentials']['iamConfig']['refreshIntervalSeconds']);
+    }
+
+    /**
+     * Verify a zero IAM refresh interval is replaced with the package default.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsReplacesZeroIamRefreshIntervalWithDefault(): void
+    {
+        $arguments = Config::connectArguments([
+            'iam' => [
+                'username'         => 'iam-user',
+                'cluster_name'     => 'cluster-x',
+                'region'           => 'eu-west-3',
+                'refresh_interval' => 0,
+            ],
+        ]);
+
+        self::assertSame(300, $arguments['credentials']['iamConfig']['refreshIntervalSeconds']);
+    }
+
+    /**
+     * Verify cluster nodes nested under a non-node array are skipped after a scalar.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterAddressesSkipsScalarEntriesAndKeepsLaterNestedNodes(): void
+    {
+        $addresses = Config::clusterAddresses([
+            'plain-string',
+            [
+                'writer' => ['host' => 'node-late', 'port' => 6400],
+            ],
+        ]);
+
+        self::assertSame(
+            [
+                ['host' => 'node-late', 'port' => 6400],
+            ],
+            $addresses,
+        );
+    }
+
+    /**
+     * Verify nested non-node arrays are not collected alongside real nodes.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterAddressesIgnoresNestedNonNodeArraysAlongsideRealNodes(): void
+    {
+        $addresses = Config::clusterAddresses([
+            [
+                'meta' => ['weight' => 5, 'role' => 'reader'],
+                'real' => ['host' => 'node-real', 'port' => 6400],
+            ],
+        ]);
+
+        self::assertSame(
+            [
+                ['host' => 'node-real', 'port' => 6400],
+            ],
+            $addresses,
+        );
+    }
+
+    /**
+     * Verify boolean scalar host values are string-normalized for connect args.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsNormalizesBooleanHostValues(): void
+    {
+        $arguments = Config::connectArguments([
+            'host' => true,
+            'port' => 6402,
+        ]);
+
+        self::assertSame(
+            [
+                'addresses' => [
+                    ['host' => '1', 'port' => 6402],
+                ],
+            ],
+            $arguments,
+        );
+    }
+
+    /**
+     * Verify stringable host values are string-normalized for connect args.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsNormalizesStringableHostValues(): void
+    {
+        $arguments = Config::connectArguments([
+            'host' => new \SimpleXMLElement('<root>cache-xml</root>'),
+            'port' => 6403,
+        ]);
+
+        self::assertSame(
+            [
+                'addresses' => [
+                    ['host' => 'cache-xml', 'port' => 6403],
+                ],
+            ],
+            $arguments,
+        );
+    }
+
+    /**
+     * Verify a non-stringable database id falls back to being omitted.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsNonNumericStringableDatabaseId(): void
+    {
+        $arguments = Config::connectArguments([
+            'database' => new \SimpleXMLElement('<root>not-a-number</root>'),
+        ]);
+
+        self::assertArrayNotHasKey('database_id', $arguments);
+    }
+
+    /**
+     * Verify a numeric stringable database id is normalized to an integer.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsNormalizesNumericStringableDatabaseId(): void
+    {
+        $arguments = Config::connectArguments([
+            'database' => new \SimpleXMLElement('<root>7</root>'),
+        ]);
+
+        self::assertSame(7, $arguments['database_id']);
+    }
+
+    /**
+     * Verify a float database id is truncated to an integer.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsTruncatesFloatDatabaseId(): void
+    {
+        $arguments = Config::connectArguments([
+            'database' => 3.9,
+        ]);
+
+        self::assertSame(3, $arguments['database_id']);
+    }
+
+    /**
+     * Verify a zero database id is preserved as a valid non-negative value.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsPreservesZeroDatabaseId(): void
+    {
+        $arguments = Config::connectArguments([
+            'database' => 0,
+        ]);
+
+        self::assertSame(0, $arguments['database_id']);
+    }
+
+    /**
+     * Verify a numeric-string database id is normalized to an integer.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsNormalizesNumericStringDatabaseId(): void
+    {
+        $arguments = Config::connectArguments([
+            'database' => '11',
+        ]);
+
+        self::assertSame(11, $arguments['database_id']);
+    }
+
+    /**
+     * Verify a non-numeric string database id is rejected rather than cast.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsNonNumericStringDatabaseId(): void
+    {
+        $arguments = Config::connectArguments([
+            'database' => 'not-numeric',
+        ]);
+
+        self::assertArrayNotHasKey('database_id', $arguments);
+    }
+
+    /**
+     * Verify a non-stringable object host falls back to the default loopback host.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsUsesDefaultHostForNonStringableObjectHost(): void
+    {
+        $arguments = Config::connectArguments([
+            'host' => new \stdClass,
+            'port' => 6404,
+        ]);
+
+        self::assertSame(
+            [
+                'addresses' => [
+                    ['host' => self::LOOPBACK_HOST, 'port' => 6404],
+                ],
+            ],
+            $arguments,
+        );
+    }
 }

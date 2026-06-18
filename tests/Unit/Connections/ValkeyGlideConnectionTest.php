@@ -943,6 +943,734 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify SET routes to rawcommand at exactly the four-argument boundary.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRoutesSetToRawcommandAtFourArgumentBoundary(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', 'OK');
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame('OK', $connection->command('set', ['lock-key', 'owner-id', 'EX', 10]));
+        self::assertSame(
+            [
+                ['SET', 'app:lock-key', 'owner-id', 'EX', 10],
+            ],
+            $client->callsFor('rawcommand'),
+        );
+        self::assertSame([], $client->callsFor('set'));
+    }
+
+    /**
+     * Verify raw command argument unpacking reindexes string-keyed parameters.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandUnpacksRawCommandArgumentsByValueForStringKeyedParameters(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', 1);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(1, $connection->command('eval', ['script' => self::EVAL_TEST_SCRIPT, 'extra' => 'value']));
+        self::assertSame(
+            [
+                ['EVAL', self::EVAL_TEST_SCRIPT, 'value'],
+            ],
+            $client->callsFor('rawcommand'),
+        );
+    }
+
+    /**
+     * Verify a non-retryable command failure is not retried on the same client.
+     *
+     * @return void
+     */
+    #[Test]
+    public function commandDoesNotReinvokeNonRetryableCommandOnTheSameClient(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willThrow('set', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+
+        $connection = new ValkeyGlideConnection(
+            $client,
+            static fn (): \ValkeyGlide => new ValkeyGlideFake,
+            [
+                'retry_delay_ms'  => 0,
+                'retry_jitter_ms' => 0,
+            ],
+        );
+
+        try {
+            $connection->command('set', ['key', 'value']);
+            self::fail('Expected runtime exception to be thrown.');
+        } catch (\RuntimeException) {
+            self::assertCount(1, $client->callsFor('set'));
+        }
+    }
+
+    /**
+     * Verify idempotent retries are capped at one even when a third attempt would pass.
+     *
+     * @return void
+     */
+    #[Test]
+    public function commandRetriesAtMostOnceEvenWhenLaterAttemptWouldSucceed(): void
+    {
+        $first_client = new ValkeyGlideFake;
+        $first_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+
+        $second_client = new ValkeyGlideFake;
+        $second_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+
+        $third_client = new ValkeyGlideFake;
+        $third_client->willReturn('get', 'ok');
+
+        $clients = [$second_client, $third_client];
+
+        $connection = new ValkeyGlideConnection(
+            $first_client,
+            static function () use (&$clients): \ValkeyGlide {
+                return array_shift($clients) ?? new ValkeyGlideFake;
+            },
+            [
+                'retry_delay_ms'  => 0,
+                'retry_jitter_ms' => 0,
+            ],
+        );
+
+        $this->expectException(\RuntimeException::class);
+
+        try {
+            $connection->command('get', ['retry-key']);
+        } finally {
+            self::assertCount(0, $third_client->callsFor('get'));
+        }
+    }
+
+    /**
+     * Verify uppercase transient error messages are matched case-insensitively.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetriesWhenTransientErrorMessageIsUppercase(): void
+    {
+        $first_client = new ValkeyGlideFake;
+        $first_client->willThrow('get', new \RuntimeException('CONNECTION RESET BY PEER'));
+
+        $second_client = new ValkeyGlideFake;
+        $second_client->willReturn('get', 'ok');
+
+        $connection = new ValkeyGlideConnection(
+            $first_client,
+            static fn (): \ValkeyGlide => $second_client,
+            [
+                'retry_delay_ms'  => 0,
+                'retry_jitter_ms' => 0,
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertCount(1, $second_client->callsFor('get'));
+    }
+
+    /**
+     * Verify a single-argument subscription payload is mapped to the message.
+     *
+     * @return void
+     */
+    #[Test]
+    public function createSubscriptionMapsSingleArgumentPayloadToMessage(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->setSubscriptionPayload('subscribe', ['only-message']);
+
+        $captured = [];
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->createSubscription('channel-a', static function (mixed $message, mixed $channel) use (&$captured): void {
+            $captured = [$message, $channel];
+        });
+
+        self::assertSame(['only-message', null], $captured);
+    }
+
+    /**
+     * Verify a two-argument subscription payload maps to message and channel.
+     *
+     * @return void
+     */
+    #[Test]
+    public function createSubscriptionMapsTwoArgumentPayloadToMessageAndChannel(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->setSubscriptionPayload('subscribe', ['channel-a', 'message-a']);
+
+        $captured = [];
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->createSubscription('channel-a', static function (mixed $message, mixed $channel) use (&$captured): void {
+            $captured = [$message, $channel];
+        });
+
+        self::assertSame(['message-a', 'channel-a'], $captured);
+    }
+
+    /**
+     * Verify subscription methods are matched case-insensitively via lowercasing.
+     *
+     * @return void
+     */
+    #[Test]
+    public function createSubscriptionLowercasesSubscriptionMethod(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->setSubscriptionPayload('subscribe', ['ignored', 'channel-a', 'payload-a']);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->createSubscription('channel-a', static function (): void {
+            // No-op callback; the subscription wiring is the unit under test.
+        }, 'SUBSCRIBE');
+
+        self::assertCount(1, $client->callsFor('subscribe'));
+        self::assertCount(0, $client->callsFor('psubscribe'));
+    }
+
+    /**
+     * Verify non-stringable channels are skipped without aborting the channel list.
+     *
+     * @return void
+     */
+    #[Test]
+    public function createSubscriptionSkipsInvalidChannelsAndKeepsValidOnes(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->setSubscriptionPayload('subscribe', ['ignored', 'valid-channel', 'payload-a']);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->createSubscription([new \stdClass, 'valid-channel'], static function (): void {
+            // No-op callback; the channel normalization is the unit under test.
+        });
+
+        self::assertSame([[['valid-channel']]], $client->callsFor('subscribe'));
+    }
+
+    /**
+     * Verify scalar channel values are cast to strings before subscribing.
+     *
+     * @return void
+     */
+    #[Test]
+    public function createSubscriptionCastsScalarChannelsToStrings(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->setSubscriptionPayload('subscribe', ['ignored', '123', 'payload-a']);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->createSubscription([123], static function (): void {
+            // No-op callback; channel string casting is the unit under test.
+        });
+
+        self::assertSame([[['123']]], $client->callsFor('subscribe'));
+    }
+
+    /**
+     * Verify every normalized channel is forwarded to the subscription call.
+     *
+     * @return void
+     */
+    #[Test]
+    public function createSubscriptionForwardsEveryNormalizedChannel(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->setSubscriptionPayload('subscribe', ['ignored', 'channel-a', 'payload-a']);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->createSubscription(['channel-a', 'channel-b'], static function (): void {
+            // No-op callback; the channel forwarding is the unit under test.
+        });
+
+        self::assertSame([[['channel-a', 'channel-b']]], $client->callsFor('subscribe'));
+    }
+
+    /**
+     * Verify the unsupported channel type message is reported precisely.
+     *
+     * @return void
+     */
+    #[Test]
+    public function createSubscriptionReportsUnsupportedChannelTypeMessage(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Unsupported subscription channel type [stdClass].');
+
+        $connection->createSubscription(new \stdClass, static function (): void {
+            throw new \LogicException('Callback should not be executed for invalid channels.');
+        });
+    }
+
+    /**
+     * Verify a Stringable key prefix is resolved and applied to command keys.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandAppliesStringablePrefixToKeys(): void
+    {
+        $client = new ValkeyGlideFake;
+
+        $prefix = new class implements \Stringable {
+            /**
+             * Render the prefix as a string.
+             *
+             * @return string
+             */
+            public function __toString(): string
+            {
+                return 'px:';
+            }
+        };
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => $prefix]);
+
+        $connection->command('get', ['user:1']);
+
+        self::assertSame([['px:user:1']], $client->callsFor('get'));
+    }
+
+    /**
+     * Verify a non-scalar non-stringable prefix resolves to an empty prefix.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandUsesEmptyPrefixForNonScalarNonStringablePrefix(): void
+    {
+        $client = new ValkeyGlideFake;
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => new \stdClass]);
+
+        $connection->command('get', ['user:1']);
+
+        self::assertSame([['user:1']], $client->callsFor('get'));
+    }
+
+    /**
+     * Verify default retry sleep delay is used when no delay is configured.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetryUsesDefaultBaseDelayWhenNoneConfigured(): void
+    {
+        $sleep_calls = [];
+
+        $connection = $this->buildRetryConnection(
+            [
+                'random_int' => static fn (int $min, int $max): int => 0,
+                'sleep'      => static function (int $microseconds) use (&$sleep_calls): void {
+                    $sleep_calls[] = $microseconds;
+                },
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertSame([25000], $sleep_calls);
+    }
+
+    /**
+     * Verify the default jitter ceiling is passed to the random generator.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetryUsesDefaultJitterCeilingWhenNoneConfigured(): void
+    {
+        $random_args = [];
+
+        $connection = $this->buildRetryConnection(
+            [
+                'random_int' => static function (int $min, int $max) use (&$random_args): int {
+                    $random_args = [$min, $max];
+
+                    return 0;
+                },
+                'sleep' => static function (): void {
+                    // No-op sleep; the random generator arguments are asserted instead.
+                },
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertSame([0, 15], $random_args);
+    }
+
+    /**
+     * Verify a configured jitter ceiling overrides the default jitter ceiling.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetryUsesConfiguredJitterCeiling(): void
+    {
+        $random_args = [];
+
+        $connection = $this->buildRetryConnection(
+            [
+                'retry_jitter_ms' => 8,
+                'random_int'      => static function (int $min, int $max) use (&$random_args): int {
+                    $random_args = [$min, $max];
+
+                    return 0;
+                },
+                'sleep' => static function (): void {
+                    // No-op sleep; the random generator arguments are asserted instead.
+                },
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertSame([0, 8], $random_args);
+    }
+
+    /**
+     * Verify jitter is skipped entirely when the configured ceiling is zero.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetrySkipsJitterWhenCeilingIsZero(): void
+    {
+        $random_called = false;
+        $sleep_calls   = [];
+
+        $connection = $this->buildRetryConnection(
+            [
+                'retry_delay_ms'  => 10,
+                'retry_jitter_ms' => 0,
+                'random_int'      => static function () use (&$random_called): int {
+                    $random_called = true;
+
+                    return 5;
+                },
+                'sleep' => static function (int $microseconds) use (&$sleep_calls): void {
+                    $sleep_calls[] = $microseconds;
+                },
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertFalse($random_called);
+        self::assertSame([10000], $sleep_calls);
+    }
+
+    /**
+     * Verify retry jitter uses zero as the lower bound for the random generator.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetryUsesZeroLowerBoundForJitter(): void
+    {
+        $random_args = [];
+
+        $connection = $this->buildRetryConnection(
+            [
+                'retry_delay_ms'  => 10,
+                'retry_jitter_ms' => 5,
+                'random_int'      => static function (int $min, int $max) use (&$random_args): int {
+                    $random_args = [$min, $max];
+
+                    return 0;
+                },
+                'sleep' => static function (): void {
+                    // No-op sleep; the random generator arguments are asserted instead.
+                },
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertSame([0, 5], $random_args);
+    }
+
+    /**
+     * Verify a zero base delay short-circuits before invoking the sleep callback.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetryDoesNotSleepWhenBaseDelayIsZero(): void
+    {
+        $sleep_calls = [];
+
+        $connection = $this->buildRetryConnection(
+            [
+                'retry_delay_ms'  => 0,
+                'retry_jitter_ms' => 0,
+                'sleep'           => static function (int $microseconds) use (&$sleep_calls): void {
+                    $sleep_calls[] = $microseconds;
+                },
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertSame([], $sleep_calls);
+    }
+
+    /**
+     * Verify a zero base delay is preserved when the random generator throws.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetryDoesNotSleepWhenRandomThrowsAndBaseDelayIsZero(): void
+    {
+        $sleep_calls = [];
+
+        $connection = $this->buildRetryConnection(
+            [
+                'retry_delay_ms'  => 0,
+                'retry_jitter_ms' => 5,
+                'random_int'      => static function (): int {
+                    throw new \DomainException('entropy unavailable');
+                },
+                'sleep' => static function (int $microseconds) use (&$sleep_calls): void {
+                    $sleep_calls[] = $microseconds;
+                },
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertSame([], $sleep_calls);
+    }
+
+    /**
+     * Verify normalizeNonNegativeInt rejects non-numeric strings as null.
+     *
+     * @return void
+     */
+    #[Test]
+    public function normalizeNonNegativeIntRejectsNonNumericStrings(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
+
+        self::assertNull($this->invokeNormalizeNonNegativeInt($connection, 'not-numeric'));
+    }
+
+    /**
+     * Verify normalizeNonNegativeInt rejects non-numeric stringables as null.
+     *
+     * @return void
+     */
+    #[Test]
+    public function normalizeNonNegativeIntRejectsNonNumericStringables(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
+
+        self::assertNull(
+            $this->invokeNormalizeNonNegativeInt(
+                $connection,
+                new \SimpleXMLElement('<root>not-a-number</root>'),
+            ),
+        );
+    }
+
+    /**
+     * Verify normalizeNonNegativeInt casts the string form of numeric stringables.
+     *
+     * @return void
+     */
+    #[Test]
+    public function normalizeNonNegativeIntCastsStringFormOfStringables(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
+
+        $stringable = new class implements \Stringable {
+            /**
+             * Render a numeric string whose direct int cast differs from its value.
+             *
+             * @return string
+             */
+            public function __toString(): string
+            {
+                return '9';
+            }
+        };
+
+        self::assertSame(9, $this->invokeNormalizeNonNegativeInt($connection, $stringable));
+    }
+
+    /**
+     * Verify normalizeNonNegativeInt preserves a zero value as non-negative.
+     *
+     * @return void
+     */
+    #[Test]
+    public function normalizeNonNegativeIntPreservesZero(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
+
+        self::assertSame(0, $this->invokeNormalizeNonNegativeInt($connection, 0));
+    }
+
+    /**
+     * Verify normalizeNonEmptyStringable casts boolean values to their string form.
+     *
+     * @return void
+     */
+    #[Test]
+    public function normalizeNonEmptyStringableCastsBooleanValues(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
+
+        self::assertSame('1', $this->invokeNormalizeNonEmptyStringable($connection, true));
+    }
+
+    /**
+     * Verify unknown key commands leave their parameters untouched under a prefix.
+     *
+     * @return void
+     */
+    #[Test]
+    public function normalizeCommandParametersLeavesUnknownCommandsUntouched(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
+
+        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'ping', ['payload']);
+
+        self::assertSame(['payload'], $normalized_parameters);
+    }
+
+    /**
+     * Verify single-key prefixing keeps trailing parameters at a missing index.
+     *
+     * @return void
+     */
+    #[Test]
+    public function normalizeCommandParametersKeepsTrailingParametersWhenKeyIndexMissing(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
+
+        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'get', [1 => 'a', 2 => 'b']);
+
+        self::assertSame([1 => 'a', 2 => 'b'], $normalized_parameters);
+    }
+
+    /**
+     * Verify non-scalar key values keep every trailing parameter intact.
+     *
+     * @return void
+     */
+    #[Test]
+    public function normalizeCommandParametersKeepsTrailingParametersWhenKeyIsNonScalar(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
+        $key_object = new \stdClass;
+
+        $normalized_parameters = $this->invokeNormalizeCommandParameters($connection, 'get', [$key_object, 'trailing']);
+
+        self::assertSame([$key_object, 'trailing'], $normalized_parameters);
+    }
+
+    /**
+     * Verify EVAL prefixing keeps trailing parameters when the key count is missing.
+     *
+     * @return void
+     */
+    #[Test]
+    public function normalizeCommandParametersKeepsEvalTrailingParametersWhenKeyCountIndexMissing(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
+
+        $normalized_parameters = $this->invokeNormalizeCommandParameters(
+            $connection,
+            'eval',
+            [0 => self::EVAL_TEST_SCRIPT, 2 => 'trailing'],
+        );
+
+        self::assertSame([0 => self::EVAL_TEST_SCRIPT, 2 => 'trailing'], $normalized_parameters);
+    }
+
+    /**
+     * Verify EVAL prefixing reads the key count from the second parameter index.
+     *
+     * @return void
+     */
+    #[Test]
+    public function normalizeCommandParametersReadsEvalKeyCountFromSecondIndex(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
+
+        $normalized_parameters = $this->invokeNormalizeCommandParameters(
+            $connection,
+            'eval',
+            [1 => 2, 2 => 'k1', 3 => 'k2'],
+        );
+
+        self::assertSame([1 => 2, 2 => 'app:k1', 3 => 'app:k2'], $normalized_parameters);
+    }
+
+    /**
+     * Build a connection that fails once transiently then succeeds on retry.
+     *
+     * @param  array<string, mixed>  $config
+     * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
+     */
+    private function buildRetryConnection(array $config): ValkeyGlideConnection
+    {
+        $first_client = new ValkeyGlideFake;
+        $first_client->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+
+        $second_client = new ValkeyGlideFake;
+        $second_client->willReturn('get', 'ok');
+
+        return new ValkeyGlideConnection(
+            $first_client,
+            static fn (): \ValkeyGlide => $second_client,
+            $config,
+        );
+    }
+
+    /**
      * Invoke private normalizeCommandParameters for deterministic prefix tests.
      *
      * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection

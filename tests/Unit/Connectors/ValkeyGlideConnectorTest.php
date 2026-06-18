@@ -273,4 +273,103 @@ final class ValkeyGlideConnectorTest extends TestCase
         );
         self::assertSame(['password' => 'cluster-secret'], $connect_calls[0]['credentials']);
     }
+
+    /**
+     * Verify domain connection exceptions are rethrown without a wrapping cause.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectRethrowsConnectionExceptionWithoutAddingAPreviousCause(): void
+    {
+        $fake = new ValkeyGlideFake;
+        $fake->willThrow('connect', new ConnectionException('already-normalized'));
+
+        $connector = new ValkeyGlideConnector(
+            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        try {
+            $connector->connect([], []);
+            self::fail('Expected connection exception to be thrown.');
+        } catch (ConnectionException $exception) {
+            self::assertSame('already-normalized', $exception->getMessage());
+            self::assertNull($exception->getPrevious());
+        }
+    }
+
+    /**
+     * Verify the first array cluster node seeds non-address base configuration.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterSeedsBaseConfigFromFirstArrayNode(): void
+    {
+        $fake = new ValkeyGlideFake;
+
+        $connector = new ValkeyGlideConnector(
+            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connection = $connector->connectToCluster(
+            [
+                ['host' => 'node-1', 'port' => 6380, 'database' => 5],
+                ['host' => 'node-2', 'port' => 6381],
+            ],
+            [],
+            [],
+        );
+
+        self::assertInstanceOf(ValkeyGlideConnection::class, $connection);
+
+        $connect_calls = $fake->callsFor('connect');
+
+        self::assertCount(1, $connect_calls);
+        self::assertSame(5, $connect_calls[0]['database_id']);
+        self::assertSame(
+            [
+                ['host' => 'node-1', 'port' => 6380],
+                ['host' => 'node-2', 'port' => 6381],
+            ],
+            $connect_calls[0]['addresses'],
+        );
+    }
+
+    /**
+     * Verify a leading scalar cluster entry is skipped to seed the next array node.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterSkipsLeadingScalarEntryWhenSeedingBaseConfig(): void
+    {
+        $fake = new ValkeyGlideFake;
+
+        $connector = new ValkeyGlideConnector(
+            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connection = $connector->connectToCluster(
+            [
+                'leading-scalar',
+                ['host' => 'node-2', 'port' => 6381, 'database' => 6],
+            ],
+            [],
+            [],
+        );
+
+        self::assertInstanceOf(ValkeyGlideConnection::class, $connection);
+
+        $connect_calls = $fake->callsFor('connect');
+
+        self::assertCount(1, $connect_calls);
+        self::assertSame(6, $connect_calls[0]['database_id']);
+    }
 }

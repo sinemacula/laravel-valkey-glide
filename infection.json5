@@ -1,0 +1,106 @@
+{
+    $schema: "./vendor/infection/infection/resources/schema.json",
+    source: {
+        directories: [
+            "src"
+        ]
+    },
+    logs: {
+        summary: "build/infection-summary.log",
+        text: "build/infection.log"
+    },
+    phpUnit: {
+        configDir: ".",
+        customPath: "vendor/bin/phpunit"
+    },
+    timeout: 15,
+    mutators: {
+        "@default": true,
+
+        // dispatchCommandExecutedEvent derives CommandExecuted::$time from
+        // round((microtime(true) - $started_at) * 1000, 2). The elapsed wall-clock time is
+        // non-deterministic, so no deterministic test can assert the value; mutating the
+        // subtraction is unobservable. (This is the only subtraction in the method.)
+        Minus: {
+            ignore: [
+                "SineMacula\\Valkey\\Connections\\ValkeyGlideConnection::dispatchCommandExecutedEvent"
+            ]
+        },
+
+        // dispatchCommandExecutedEvent: the only multiplication is the *1000 scaling of the
+        // non-deterministic elapsed time above, so changing it cannot be detected.
+        Multiplication: {
+            ignore: [
+                "SineMacula\\Valkey\\Connections\\ValkeyGlideConnection::dispatchCommandExecutedEvent"
+            ]
+        },
+
+        // dispatchCommandExecutedEvent: the only round() call wraps the non-deterministic
+        // elapsed time above, so swapping round for floor/ceil cannot be detected.
+        RoundingFamily: {
+            ignore: [
+                "SineMacula\\Valkey\\Connections\\ValkeyGlideConnection::dispatchCommandExecutedEvent"
+            ]
+        },
+
+        // dispatchCommandExecutedEvent: the only integer literals are the *1000 scale and the
+        // rounding precision (2) applied to the non-deterministic elapsed time above, so
+        // incrementing them is unobservable.
+        IncrementInteger: {
+            ignore: [
+                "SineMacula\\Valkey\\Connections\\ValkeyGlideConnection::dispatchCommandExecutedEvent"
+            ]
+        },
+
+        // dispatchCommandExecutedEvent: as above (the only integer literals feed the
+        // non-deterministic elapsed time), so decrementing them is unobservable.
+        DecrementInteger: {
+            ignore: [
+                "SineMacula\\Valkey\\Connections\\ValkeyGlideConnection::dispatchCommandExecutedEvent"
+            ]
+        },
+
+        // prefixEvalKeys L610: "$key_count === null || $key_count <= 0". normalizeNonNegativeInt
+        // never returns a negative, so key_count is null, 0 or positive. For key_count === 0 the
+        // following "for ($offset = 0; $offset < $key_count; ...)" loop runs zero iterations, so
+        // the '||' guard's two arms produce identical output. This is the only logical-or in the
+        // method.
+        LogicalOr: {
+            ignore: [
+                "SineMacula\\Valkey\\Connections\\ValkeyGlideConnection::prefixEvalKeys"
+            ]
+        },
+
+        // prefixEvalKeys L610: "$key_count <= 0" vs "$key_count < 0" differ only when
+        // key_count === 0, and for key_count === 0 the subsequent for-loop performs zero
+        // iterations, so both return the parameters unchanged. This is the only <= comparison
+        // in the method.
+        LessThanOrEqualTo: {
+            ignore: [
+                "SineMacula\\Valkey\\Connections\\ValkeyGlideConnection::prefixEvalKeys"
+            ]
+        },
+
+        // prefixValue L633: the only string cast, "$normalized_value = (string) $value", is
+        // immediately consumed by "$this->prefix . $normalized_value". The '.' operator already
+        // coerces scalars and Stringables to string, so the explicit cast is redundant and its
+        // removal is unobservable.
+        CastString: {
+            ignore: [
+                "SineMacula\\Valkey\\Connections\\ValkeyGlideConnection::prefixValue"
+            ]
+        },
+
+        // Config::addresses L110 (the only logical-and in the method):
+        // "is_array($raw_addresses) && $raw_addresses !== []" -> '||'. The predicates differ only
+        // when $raw_addresses is a non-array that is also "!== []" (a scalar). For such a value the
+        // mutated branch is entered but its "foreach ($raw_addresses as ...)" iterates nothing
+        // (non-iterable), leaving $normalized empty, so it falls through to the same
+        // single-endpoint fallback the original returns.
+        LogicalAnd: {
+            ignore: [
+                "SineMacula\\Valkey\\Support\\Config::addresses"
+            ]
+        }
+    }
+}
