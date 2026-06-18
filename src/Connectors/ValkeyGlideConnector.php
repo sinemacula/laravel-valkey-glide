@@ -15,7 +15,7 @@ use SineMacula\Valkey\Support\Config;
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
  */
-final class ValkeyGlideConnector implements ConnectorContract
+final readonly class ValkeyGlideConnector implements ConnectorContract
 {
     /**
      * Create a new connector instance.
