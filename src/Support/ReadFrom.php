@@ -14,10 +14,10 @@ namespace SineMacula\Valkey\Support;
  */
 enum ReadFrom: int
 {
-    case Primary                      = 0;
-    case PreferReplica                = 1;
-    case AzAffinity                   = 2;
-    case AzAffinityReplicasAndPrimary = 3;
+    case PRIMARY                          = 0;
+    case PREFER_REPLICA                   = 1;
+    case AZ_AFFINITY                      = 2;
+    case AZ_AFFINITY_REPLICAS_AND_PRIMARY = 3;
 
     /**
      * Resolve a mixed value to a ReadFrom case, or null when unresolvable.
@@ -75,10 +75,10 @@ enum ReadFrom: int
     private static function nameMap(): array
     {
         return [
-            'primary'                          => self::Primary,
-            'prefer_replica'                   => self::PreferReplica,
-            'az_affinity'                      => self::AzAffinity,
-            'az_affinity_replicas_and_primary' => self::AzAffinityReplicasAndPrimary,
+            'primary'                          => self::PRIMARY,
+            'prefer_replica'                   => self::PREFER_REPLICA,
+            'az_affinity'                      => self::AZ_AFFINITY,
+            'az_affinity_replicas_and_primary' => self::AZ_AFFINITY_REPLICAS_AND_PRIMARY,
         ];
     }
 }
