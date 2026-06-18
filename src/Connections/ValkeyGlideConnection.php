@@ -169,10 +169,10 @@ final class ValkeyGlideConnection extends Connection
         'temporarily unavailable',
     ];
 
-    /** @var \ValkeyGlide Active GLIDE client instance. */
-    protected \ValkeyGlide $glideClient;
+    /** @var \ValkeyGlide|\ValkeyGlideCluster Active GLIDE client instance. */
+    protected \ValkeyGlide|\ValkeyGlideCluster $glideClient;
 
-    /** @var (\Closure(): \ValkeyGlide)|null Reconnection client factory. */
+    /** @var (\Closure(): (\ValkeyGlide|\ValkeyGlideCluster))|null Reconnection client factory. */
     protected ?\Closure $connector;
 
     /** @var array<string, mixed> Connection-level configuration. */
@@ -190,12 +190,12 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Create a new Valkey GLIDE Laravel connection wrapper.
      *
-     * @param  \ValkeyGlide  $client
-     * @param  (\Closure(): \ValkeyGlide)|null  $connector
+     * @param  \ValkeyGlide|\ValkeyGlideCluster  $client
+     * @param  (\Closure(): (\ValkeyGlide|\ValkeyGlideCluster))|null  $connector
      * @param  array<string, mixed>  $config
      * @return void
      */
-    public function __construct(\ValkeyGlide $client, ?\Closure $connector = null, array $config = [])
+    public function __construct(\ValkeyGlide|\ValkeyGlideCluster $client, ?\Closure $connector = null, array $config = [])
     {
         $this->glideClient        = $client;
         $this->connector          = $connector;
@@ -208,10 +208,10 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Get the underlying GLIDE client instance.
      *
-     * @return \ValkeyGlide
+     * @return \ValkeyGlide|\ValkeyGlideCluster
      */
     #[\Override]
-    public function client(): \ValkeyGlide
+    public function client(): \ValkeyGlide|\ValkeyGlideCluster
     {
         return $this->glideClient;
     }
@@ -423,13 +423,56 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Execute a command through rawcommand with Redis protocol arguments.
      *
+     * Cluster clients require a leading route argument so the command lands on
+     * the primary that owns the key's slot. Standalone clients use the existing
+     * two-argument form (no route).
+     *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
      * @return mixed
      */
     private function invokeAsRawCommand(string $method, array $parameters): mixed
     {
-        return $this->glideClient->rawcommand($method, ...array_values($parameters));
+        $values = array_values($parameters);
+
+        if ($this->glideClient instanceof \ValkeyGlideCluster) {
+            return $this->glideClient->rawcommand($this->resolveClusterRoute($method, $values), $method, ...$values);
+        }
+
+        return $this->glideClient->rawcommand($method, ...$values);
+    }
+
+    /**
+     * Resolve the cluster route for a raw command.
+     *
+     * Keyed write/script commands (EVAL, EVALSHA, phpredis-style SET-with-options)
+     * must land on the primary that owns the key's hash slot. Using
+     * `primarySlotKey` tells GLIDE to compute the slot from the supplied key and
+     * route there, preserving the same per-key semantics as standalone. Fan-out
+     * routes (`allPrimaries`, `allNodes`) would execute the write on every shard;
+     * `randomNode` would hit an arbitrary slot owner. `randomNode` is the correct
+     * fallback only for keyless cases where no slot must be honoured.
+     *
+     * The parameters array is already prefix-normalised before this method runs,
+     * so the key used for routing is identical to the key the command targets.
+     *
+     * @param  string  $method
+     * @param  array<int, mixed>  $values
+     * @return mixed
+     */
+    private function resolveClusterRoute(string $method, array $values): mixed
+    {
+        $keyIndex = match ($method) {
+            'SET' => 0,
+            'EVAL', 'EVALSHA' => ($this->normalizeNonNegativeInt($values[1] ?? null) ?? 0) >= 1 ? 2 : null,
+            default => null,
+        };
+
+        $key = $keyIndex !== null ? ($values[$keyIndex] ?? null) : null;
+
+        return is_scalar($key) || $key instanceof \Stringable
+            ? ['type' => 'primarySlotKey', 'key' => (string) $key]
+            : 'randomNode';
     }
 
     /**

@@ -12,6 +12,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use Stringable;
+use Tests\Fakes\ValkeyGlideClusterFake;
 use Tests\Fakes\ValkeyGlideFake;
 
 /**
@@ -1652,6 +1653,147 @@ final class ValkeyGlideConnectionTest extends TestCase
         );
 
         self::assertSame([1 => 2, 2 => 'app:k1', 3 => 'app:k2'], $normalizedParameters);
+    }
+
+    /**
+     * Verify client() returns the cluster fake when constructed with one.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clientReturnsClusterInstanceWhenConstructedWithCluster(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame($client, $connection->client());
+        self::assertInstanceOf(ValkeyGlideClusterFake::class, $connection->client());
+    }
+
+    /**
+     * Verify a cluster-backed EVAL raw command routes by the first key slot.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterEvalWithKeyRoutesToPrimarySlotKeyOfFirstKey(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', 1);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame(
+            1,
+            $connection->command(
+                'eval',
+                [self::EVAL_TEST_SCRIPT, 1, 'queue-key', 'arg-value'],
+            ),
+        );
+
+        self::assertSame(
+            [
+                [
+                    ['type' => 'primarySlotKey', 'key' => 'app:queue-key'],
+                    'EVAL',
+                    self::EVAL_TEST_SCRIPT,
+                    1,
+                    'app:queue-key',
+                    'arg-value',
+                ],
+            ],
+            $client->callsFor('rawcommand'),
+        );
+    }
+
+    /**
+     * Verify a cluster-backed phpredis-style SET routes by the key at index zero.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterSetWithOptionsRoutesToPrimarySlotKeyOfSetKey(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', 'OK');
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame(
+            'OK',
+            $connection->command('set', ['lock-key', 'owner-id', 'EX', 10, 'NX']),
+        );
+
+        self::assertSame(
+            [
+                [
+                    ['type' => 'primarySlotKey', 'key' => 'app:lock-key'],
+                    'SET',
+                    'app:lock-key',
+                    'owner-id',
+                    'EX',
+                    10,
+                    'NX',
+                ],
+            ],
+            $client->callsFor('rawcommand'),
+        );
+    }
+
+    /**
+     * Verify a cluster-backed keyless EVAL (numkeys = 0) falls back to randomNode.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterEvalWithZeroKeysFallsBackToRandomNode(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', null);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        $connection->command('eval', [self::EVAL_TEST_SCRIPT, 0, 'arg-value']);
+
+        $calls = $client->callsFor('rawcommand');
+        self::assertCount(1, $calls);
+        self::assertSame('randomNode', $calls[0][0]);
+        self::assertSame('EVAL', $calls[0][1]);
+    }
+
+    /**
+     * Verify the standalone path does not prepend a route argument to rawcommand.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function standaloneSetWithOptionsCallsRawcommandWithoutLeadingRoute(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', 'OK');
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame(
+            'OK',
+            $connection->command('set', ['lock-key', 'owner-id', 'EX', 10, 'NX']),
+        );
+
+        self::assertSame(
+            [
+                ['SET', 'app:lock-key', 'owner-id', 'EX', 10, 'NX'],
+            ],
+            $client->callsFor('rawcommand'),
+        );
     }
 
     /**
