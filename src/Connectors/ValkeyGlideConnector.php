@@ -21,6 +21,7 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
      * Create a new connector instance.
      *
      * @param  (\Closure(): \ValkeyGlide)|null  $clientFactory
+     * @param  (\Closure(array<string, mixed>): \ValkeyGlideCluster)|null  $clusterClientFactory
      * @param  (\Closure(string): bool)|null  $extensionLoader
      * @param  (\Closure(string): bool)|null  $classResolver
      * @return void
@@ -29,6 +30,9 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
 
         /** Factory used to instantiate the Valkey GLIDE client. */
         private readonly ?\Closure $clientFactory = null,
+
+        /** Factory used to instantiate the Valkey GLIDE cluster client. */
+        private readonly ?\Closure $clusterClientFactory = null,
 
         /** Callback used to resolve loaded extension state. */
         private readonly ?\Closure $extensionLoader = null,
@@ -72,11 +76,11 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
         $resolvedConfig              = Config::merge($seedNode, array_merge($options, $clusterOptions));
         $resolvedConfig['addresses'] = Config::clusterAddresses($config);
 
-        return $this->createConnection($resolvedConfig);
+        return $this->createClusterConnection($resolvedConfig);
     }
 
     /**
-     * Build the Laravel connection wrapper and reconnect callback.
+     * Build the Laravel connection wrapper and reconnect callback for a single endpoint.
      *
      * @param  array<string, mixed>  $resolvedConfig
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
@@ -86,6 +90,21 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
     private function createConnection(array $resolvedConfig): ValkeyGlideConnection
     {
         $connector = fn (): \ValkeyGlide => $this->createClient($resolvedConfig);
+
+        return new ValkeyGlideConnection($connector(), $connector, $resolvedConfig);
+    }
+
+    /**
+     * Build the Laravel connection wrapper and reconnect callback for a cluster endpoint.
+     *
+     * @param  array<string, mixed>  $resolvedConfig
+     * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
+     *
+     * @throws \SineMacula\Valkey\Exceptions\ConnectionException
+     */
+    private function createClusterConnection(array $resolvedConfig): ValkeyGlideConnection
+    {
+        $connector = fn (): \ValkeyGlideCluster => $this->createClusterClient($resolvedConfig);
 
         return new ValkeyGlideConnection($connector(), $connector, $resolvedConfig);
     }
@@ -117,6 +136,30 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
     }
 
     /**
+     * Create the underlying GLIDE cluster client instance via its constructor.
+     *
+     * @param  array<string, mixed>  $config
+     * @return \ValkeyGlideCluster
+     *
+     * @throws \SineMacula\Valkey\Exceptions\ConnectionException
+     */
+    private function createClusterClient(#[\SensitiveParameter] array $config): \ValkeyGlideCluster
+    {
+        $this->validateGlideExtension(requireCluster: true);
+
+        $factory = $this->clusterClientFactory
+            ?? static fn (array $arguments): \ValkeyGlideCluster => new \ValkeyGlideCluster(...$arguments);
+
+        try {
+            return $factory(Config::connectArguments($config));
+        } catch (ConnectionException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            throw new ConnectionException(sprintf('Unable to establish a Valkey GLIDE cluster connection: %s', $exception->getMessage()), previous: $exception);
+        }
+    }
+
+    /**
      * Resolve the first valid cluster node from config.
      *
      * @param  array<array-key, mixed>  $config
@@ -136,11 +179,12 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
     /**
      * Verify GLIDE extension availability before creating clients.
      *
+     * @param  bool  $requireCluster
      * @return void
      *
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
-    private function validateGlideExtension(): void
+    private function validateGlideExtension(bool $requireCluster = false): void
     {
         $extensionLoader = $this->extensionLoader ?? static fn (string $extension): bool => extension_loaded($extension);
 
@@ -152,6 +196,10 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
 
         if (!$classResolver(\ValkeyGlide::class)) {
             throw new ConnectionException('Valkey GLIDE extension is loaded but class "ValkeyGlide" is unavailable.');
+        }
+
+        if ($requireCluster && !$classResolver(\ValkeyGlideCluster::class)) {
+            throw new ConnectionException('Valkey GLIDE extension is loaded but class "ValkeyGlideCluster" is unavailable.');
         }
     }
 }

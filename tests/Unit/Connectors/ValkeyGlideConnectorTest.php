@@ -10,6 +10,7 @@ use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use SineMacula\Valkey\Connectors\ValkeyGlideConnector;
 use SineMacula\Valkey\Exceptions\ConnectionException;
+use Tests\Fakes\ValkeyGlideClusterFake;
 use Tests\Fakes\ValkeyGlideFake;
 
 /**
@@ -112,17 +113,23 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
-     * Verify connectToCluster forwards normalized cluster seed addresses.
+     * Verify connectToCluster returns a connection whose client is a ValkeyGlideCluster
+     * and that the factory received the resolved connect arguments.
      *
      * @return void
      */
     #[Test]
-    public function connectToClusterUsesClusterAddressesAndMergedOptions(): void
+    public function connectToClusterBuildsClusterConnectionAndPassesNormalizedArguments(): void
     {
-        $fake = new ValkeyGlideFake;
+        $clusterFake  = new ValkeyGlideClusterFake;
+        $capturedArgs = null;
 
         $connector = new ValkeyGlideConnector(
-            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            clusterClientFactory: static function (array $args) use ($clusterFake, &$capturedArgs): \ValkeyGlideCluster {
+                $capturedArgs = $args;
+
+                return $clusterFake;
+            },
             extensionLoader: static fn (string $extension): bool => true,
             classResolver  : static fn (string $class): bool => true,
         );
@@ -135,7 +142,8 @@ final class ValkeyGlideConnectorTest extends TestCase
                 ],
             ],
             [
-                'password' => 'cluster-secret',
+                'password'  => 'cluster-secret',
+                'read_from' => 'prefer_replica',
             ],
             [
                 'database' => 3,
@@ -143,19 +151,115 @@ final class ValkeyGlideConnectorTest extends TestCase
         );
 
         self::assertInstanceOf(ValkeyGlideConnection::class, $connection);
-
-        $connectCalls = $fake->callsFor('connect');
-
-        self::assertCount(1, $connectCalls);
+        self::assertInstanceOf(\ValkeyGlideCluster::class, $connection->client());
+        self::assertSame($clusterFake, $connection->client());
+        self::assertNotNull($capturedArgs);
         self::assertSame(
             [
                 ['host' => 'node-1', 'port' => 6380],
                 ['host' => 'node-2', 'port' => 6381],
             ],
-            $connectCalls[0]['addresses'],
+            $capturedArgs['addresses'],
         );
-        self::assertSame(['password' => 'cluster-secret'], $connectCalls[0]['credentials']);
-        self::assertSame(3, $connectCalls[0]['database_id']);
+        self::assertSame(['password' => 'cluster-secret'], $capturedArgs['credentials']);
+        self::assertSame(3, $capturedArgs['database_id']);
+        self::assertArrayHasKey('read_from', $capturedArgs);
+    }
+
+    /**
+     * Verify connect path still builds a standalone ValkeyGlide and calls connect().
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectBuildsStandaloneClientAndCallsConnect(): void
+    {
+        $fake = new ValkeyGlideFake;
+
+        $connector = new ValkeyGlideConnector(
+            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connection = $connector->connect(['host' => 'standalone-host', 'port' => 6379], []);
+
+        self::assertInstanceOf(ValkeyGlideConnection::class, $connection);
+        self::assertInstanceOf(\ValkeyGlide::class, $connection->client());
+        self::assertCount(1, $fake->callsFor('connect'));
+        self::assertEmpty($fake->callsFor('__construct'));
+    }
+
+    /**
+     * Verify connectToCluster throws when ValkeyGlideCluster class is unavailable.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterThrowsWhenClusterClassIsUnavailable(): void
+    {
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static fn (array $args): \ValkeyGlideCluster => new ValkeyGlideClusterFake,
+            extensionLoader     : static fn (string $extension): bool => true,
+            classResolver       : static fn (string $class): bool => $class !== \ValkeyGlideCluster::class,
+        );
+
+        $this->expectException(ConnectionException::class);
+        $this->expectExceptionMessage('Valkey GLIDE extension is loaded but class "ValkeyGlideCluster" is unavailable.');
+
+        $connector->connectToCluster([], [], []);
+    }
+
+    /**
+     * Verify a domain ConnectionException from the cluster factory is rethrown
+     * without double-wrapping.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterRethrowsConnectionExceptionWithoutWrapping(): void
+    {
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static function (array $args): \ValkeyGlideCluster {
+                throw new ConnectionException('cluster-already-normalized');
+            },
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        try {
+            $connector->connectToCluster([], [], []);
+            self::fail('Expected ConnectionException to be thrown.');
+        } catch (ConnectionException $exception) {
+            self::assertSame('cluster-already-normalized', $exception->getMessage());
+            self::assertNull($exception->getPrevious());
+        }
+    }
+
+    /**
+     * Verify a generic Throwable from the cluster factory is wrapped in a
+     * ConnectionException with the correct message and cause.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterWrapsGenericThrowableWithConnectionException(): void
+    {
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static function (array $args): \ValkeyGlideCluster {
+                throw new \RuntimeException('cluster-boom');
+            },
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        try {
+            $connector->connectToCluster([], [], []);
+            self::fail('Expected ConnectionException to be thrown.');
+        } catch (ConnectionException $exception) {
+            self::assertStringContainsString('Unable to establish a Valkey GLIDE cluster connection: cluster-boom', $exception->getMessage());
+            self::assertInstanceOf(\RuntimeException::class, $exception->getPrevious());
+        }
     }
 
     /**
@@ -246,10 +350,15 @@ final class ValkeyGlideConnectorTest extends TestCase
     #[Test]
     public function connectToClusterFallsBackWhenNoArraySeedNodeExists(): void
     {
-        $fake = new ValkeyGlideFake;
+        $clusterFake  = new ValkeyGlideClusterFake;
+        $capturedArgs = null;
 
         $connector = new ValkeyGlideConnector(
-            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            clusterClientFactory: static function (array $args) use ($clusterFake, &$capturedArgs): \ValkeyGlideCluster {
+                $capturedArgs = $args;
+
+                return $clusterFake;
+            },
             extensionLoader: static fn (string $extension): bool => true,
             classResolver  : static fn (string $class): bool => true,
         );
@@ -261,17 +370,14 @@ final class ValkeyGlideConnectorTest extends TestCase
         );
 
         self::assertInstanceOf(ValkeyGlideConnection::class, $connection);
-
-        $connectCalls = $fake->callsFor('connect');
-
-        self::assertCount(1, $connectCalls);
+        self::assertNotNull($capturedArgs);
         self::assertSame(
             [
                 ['host' => '127.0.0.1', 'port' => 6379],
             ],
-            $connectCalls[0]['addresses'],
+            $capturedArgs['addresses'],
         );
-        self::assertSame(['password' => 'cluster-secret'], $connectCalls[0]['credentials']);
+        self::assertSame(['password' => 'cluster-secret'], $capturedArgs['credentials']);
     }
 
     /**
@@ -309,10 +415,15 @@ final class ValkeyGlideConnectorTest extends TestCase
     #[Test]
     public function connectToClusterSeedsBaseConfigFromFirstArrayNode(): void
     {
-        $fake = new ValkeyGlideFake;
+        $clusterFake  = new ValkeyGlideClusterFake;
+        $capturedArgs = null;
 
         $connector = new ValkeyGlideConnector(
-            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            clusterClientFactory: static function (array $args) use ($clusterFake, &$capturedArgs): \ValkeyGlideCluster {
+                $capturedArgs = $args;
+
+                return $clusterFake;
+            },
             extensionLoader: static fn (string $extension): bool => true,
             classResolver  : static fn (string $class): bool => true,
         );
@@ -327,17 +438,14 @@ final class ValkeyGlideConnectorTest extends TestCase
         );
 
         self::assertInstanceOf(ValkeyGlideConnection::class, $connection);
-
-        $connectCalls = $fake->callsFor('connect');
-
-        self::assertCount(1, $connectCalls);
-        self::assertSame(5, $connectCalls[0]['database_id']);
+        self::assertNotNull($capturedArgs);
+        self::assertSame(5, $capturedArgs['database_id']);
         self::assertSame(
             [
                 ['host' => 'node-1', 'port' => 6380],
                 ['host' => 'node-2', 'port' => 6381],
             ],
-            $connectCalls[0]['addresses'],
+            $capturedArgs['addresses'],
         );
     }
 
@@ -350,10 +458,15 @@ final class ValkeyGlideConnectorTest extends TestCase
     #[Test]
     public function connectToClusterSkipsLeadingScalarEntryWhenSeedingBaseConfig(): void
     {
-        $fake = new ValkeyGlideFake;
+        $clusterFake  = new ValkeyGlideClusterFake;
+        $capturedArgs = null;
 
         $connector = new ValkeyGlideConnector(
-            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            clusterClientFactory: static function (array $args) use ($clusterFake, &$capturedArgs): \ValkeyGlideCluster {
+                $capturedArgs = $args;
+
+                return $clusterFake;
+            },
             extensionLoader: static fn (string $extension): bool => true,
             classResolver  : static fn (string $class): bool => true,
         );
@@ -368,10 +481,7 @@ final class ValkeyGlideConnectorTest extends TestCase
         );
 
         self::assertInstanceOf(ValkeyGlideConnection::class, $connection);
-
-        $connectCalls = $fake->callsFor('connect');
-
-        self::assertCount(1, $connectCalls);
-        self::assertSame(6, $connectCalls[0]['database_id']);
+        self::assertNotNull($capturedArgs);
+        self::assertSame(6, $capturedArgs['database_id']);
     }
 }
