@@ -82,8 +82,14 @@ The connector normalizes Laravel config into GLIDE connect arguments:
 - `iam` block -> IAM credentials + `use_tls=true`
 - `database` -> `database_id`
 - `name` -> `client_name`
+- `read_from` -> `read_from` (replica read routing; see Read Routing)
+- `client_az` -> `client_az` (availability zone for AZ-affinity routing)
+- `context` -> `context` (TLS stream context; array or resource)
+- `timeout` (seconds) -> `request_timeout` (milliseconds)
+- `connection_timeout` (seconds) -> `advanced_config.connection_timeout` (milliseconds)
 
-Cluster-style configs are normalized into seed `addresses` using `connectToCluster()`.
+Cluster-style configs are normalized into seed `addresses` and connected through the dedicated `ValkeyGlideCluster`
+client via `connectToCluster()`.
 
 ## Runtime Behavior
 
@@ -104,6 +110,100 @@ Prefixing is handled in the connection wrapper for supported command families:
 - all-key commands (`MGET`, `DEL`, etc.)
 - two-key commands (`RENAME`, etc.)
 - `EVAL` / `EVALSHA` key segments
+
+## Read Routing
+
+GLIDE can route read commands to replicas. Set `read_from` on the connection to one of the following strategies (both
+the string name and the integer constant are accepted):
+
+| Strategy                           | Value | Behavior                                                |
+|------------------------------------|-------|---------------------------------------------------------|
+| `primary`                          | `0`   | All reads go to the primary (default)                   |
+| `prefer_replica`                   | `1`   | Reads prefer replicas, falling back to the primary      |
+| `az_affinity`                      | `2`   | Reads prefer replicas in the same AZ as `client_az`     |
+| `az_affinity_replicas_and_primary` | `3`   | Same-AZ affinity across replicas and the primary        |
+
+`client_az` is required for the AZ-affinity strategies.
+
+```php
+'default' => [
+    'host' => env('REDIS_HOST', '127.0.0.1'),
+    'port' => (int) env('REDIS_PORT', 6379),
+    'read_from' => env('REDIS_READ_FROM', 'prefer_replica'),
+    'client_az' => env('REDIS_CLIENT_AZ'),
+],
+```
+
+## Timeouts and TLS Context
+
+The GLIDE core defaults the request timeout to 250ms, which can be too short for managed services during warm-up.
+Configure timeouts in seconds (matching the phpredis convention); they are converted to milliseconds for GLIDE:
+
+- `timeout` (seconds) -> `request_timeout`
+- `connection_timeout` (seconds) -> `advanced_config.connection_timeout`
+
+Pass a custom TLS stream context (for custom CA certificates or verification settings) via the per-connection `context`
+key. Both a config-array and a pre-built `stream_context_create()` resource are accepted:
+
+```php
+'default' => [
+    'host' => env('REDIS_HOST', '127.0.0.1'),
+    'tls' => true,
+    'timeout' => 3.0,
+    'context' => [
+        'ssl' => [
+            'cafile' => '/path/to/ca.crt',
+            'verify_peer' => true,
+        ],
+    ],
+],
+```
+
+## Cluster Connections
+
+Cluster connections use the dedicated `ValkeyGlideCluster` client, which follows cluster topology and slot routing.
+Configure a cluster the standard Laravel way:
+
+```php
+'redis' => [
+    'client' => 'valkey-glide',
+
+    'clusters' => [
+        'default' => [
+            ['host' => env('REDIS_HOST'), 'port' => (int) env('REDIS_PORT', 6379)],
+        ],
+    ],
+],
+```
+
+Raw commands (`EVAL` / `EVALSHA`, phpredis-style `SET` with options) are routed to the primary that owns the affected
+key's slot.
+
+## ElastiCache Serverless
+
+AWS ElastiCache Serverless runs in cluster mode (single logical database, TLS required) and exposes the primary on port
+6379 and the reader on port 6380. Configure it as a cluster with TLS, and optionally with replica read routing:
+
+```php
+'redis' => [
+    'client' => 'valkey-glide',
+
+    'clusters' => [
+        'default' => [
+            [
+                'host' => env('REDIS_HOST'),
+                'port' => (int) env('REDIS_PORT', 6379),
+                'tls' => true,
+                'read_from' => 'prefer_replica',
+                'timeout' => 3.0,
+            ],
+        ],
+    ],
+],
+```
+
+Keep the database index at `0` - cluster mode exposes only database 0. When using replica read routing, ensure the
+security group allows both port 6379 (read/write) and 6380 (read-only).
 
 ## Testing
 
