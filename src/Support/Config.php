@@ -76,6 +76,36 @@ final class Config
             $arguments['client_name'] = $clientName;
         }
 
+        $readFrom = self::readFrom($config['read_from'] ?? null);
+
+        if ($readFrom !== null) {
+            $arguments['read_from'] = $readFrom;
+        }
+
+        $clientAz = self::clientAz($config['client_az'] ?? null);
+
+        if ($clientAz !== null) {
+            $arguments['client_az'] = $clientAz;
+        }
+
+        $context = self::context($config['context'] ?? null);
+
+        if ($context !== null) {
+            $arguments['context'] = $context;
+        }
+
+        $requestTimeout = self::requestTimeout($config['timeout'] ?? null);
+
+        if ($requestTimeout !== null) {
+            $arguments['request_timeout'] = $requestTimeout;
+        }
+
+        $advancedConfig = self::advancedConfig($config['connection_timeout'] ?? null);
+
+        if ($advancedConfig !== null) {
+            $arguments['advanced_config'] = $advancedConfig;
+        }
+
         return $arguments;
     }
 
@@ -328,6 +358,112 @@ final class Config
         }
 
         return $normalized;
+    }
+
+    /**
+     * Resolve a mixed read-from value to its GLIDE integer constant.
+     *
+     * @param  mixed  $value
+     * @return int|null
+     */
+    private static function readFrom(mixed $value): ?int
+    {
+        return ReadFrom::tryFromMixed($value)?->value;
+    }
+
+    /**
+     * Normalize a mixed availability-zone value into a non-empty string.
+     *
+     * @param  mixed  $value
+     * @return string|null
+     */
+    private static function clientAz(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
+    /**
+     * Normalize a mixed context value for GLIDE passthrough.
+     *
+     * Accepts a non-empty array or a PHP resource; all other values return null.
+     *
+     * @param  mixed  $value
+     * @return array<array-key, mixed>|resource|null
+     */
+    private static function context(mixed $value): mixed
+    {
+        if (is_array($value) && $value !== []) {
+            return $value;
+        }
+
+        if (is_resource($value)) {
+            return $value;
+        }
+
+        return null;
+    }
+
+    /**
+     * Convert a seconds value to GLIDE milliseconds for request_timeout.
+     *
+     * Accepts int, float, or numeric string greater than zero; all other values
+     * return null. The value is treated as seconds and converted to milliseconds.
+     *
+     * @param  mixed  $value
+     * @return int|null
+     */
+    private static function requestTimeout(mixed $value): ?int
+    {
+        return self::secondsToMilliseconds($value);
+    }
+
+    /**
+     * Build the advanced_config array from a connection_timeout value in seconds.
+     *
+     * Returns null when the value is absent or not a positive numeric.
+     *
+     * @param  mixed  $value
+     * @return array<string, int>|null
+     */
+    private static function advancedConfig(mixed $value): ?array
+    {
+        $milliseconds = self::secondsToMilliseconds($value);
+
+        if ($milliseconds === null) {
+            return null;
+        }
+
+        return ['connection_timeout' => $milliseconds];
+    }
+
+    /**
+     * Convert a seconds value to an integer millisecond count.
+     *
+     * Accepts int, float, or numeric string; returns null for non-numeric or
+     * non-positive values.
+     *
+     * @param  mixed  $value
+     * @return int|null
+     */
+    private static function secondsToMilliseconds(mixed $value): ?int
+    {
+        if (!is_numeric($value)) {
+            return null;
+        }
+
+        $seconds = (float) $value;
+
+        if ($seconds <= 0) {
+            return null;
+        }
+
+        return (int) round($seconds * 1000);
     }
 
     /**

@@ -719,4 +719,269 @@ final class ConfigTest extends TestCase
             $arguments,
         );
     }
+
+    /**
+     * Verify read_from 'prefer_replica' resolves to integer 1.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsResolvesPreferReplicaReadFromToOne(): void
+    {
+        $arguments = Config::connectArguments(['read_from' => 'prefer_replica']);
+
+        self::assertArrayHasKey('read_from', $arguments);
+        self::assertSame(1, $arguments['read_from']);
+    }
+
+    /**
+     * Verify read_from 'primary' resolves to integer 0 and the key is present.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsResolvesPrimaryReadFromToZeroAndKeepsKey(): void
+    {
+        $arguments = Config::connectArguments(['read_from' => 'primary']);
+
+        self::assertArrayHasKey('read_from', $arguments);
+        self::assertSame(0, $arguments['read_from']);
+    }
+
+    /**
+     * Verify read_from integer 0 resolves to 0 and the key is present, not dropped.
+     *
+     * This is the critical mutation-killing assertion: a mutant flipping !== null to
+     * a truthiness check would drop read_from => 0, which must always be emitted.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsPreservesZeroReadFromAsKeyPresentWithValueZero(): void
+    {
+        $arguments = Config::connectArguments(['read_from' => 0]);
+
+        self::assertArrayHasKey('read_from', $arguments);
+        self::assertSame(0, $arguments['read_from']);
+    }
+
+    /**
+     * Verify an invalid read_from value is omitted from connect arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsInvalidReadFrom(): void
+    {
+        $arguments = Config::connectArguments(['read_from' => 'not_a_strategy']);
+
+        self::assertArrayNotHasKey('read_from', $arguments);
+    }
+
+    /**
+     * Verify client_az is trimmed and emitted when a valid string is provided.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsTrimsAndEmitsClientAz(): void
+    {
+        $arguments = Config::connectArguments(['client_az' => '  use1-az1 ']);
+
+        self::assertArrayHasKey('client_az', $arguments);
+        self::assertSame('use1-az1', $arguments['client_az']);
+    }
+
+    /**
+     * Verify an empty client_az string is omitted from connect arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsEmptyClientAz(): void
+    {
+        $arguments = Config::connectArguments(['client_az' => '   ']);
+
+        self::assertArrayNotHasKey('client_az', $arguments);
+    }
+
+    /**
+     * Verify a non-string client_az value is omitted from connect arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsNonStringClientAz(): void
+    {
+        $arguments = Config::connectArguments(['client_az' => 42]);
+
+        self::assertArrayNotHasKey('client_az', $arguments);
+    }
+
+    /**
+     * Verify a non-empty array context is passed through as-is.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsPassesThroughNonEmptyArrayContext(): void
+    {
+        $contextValue = ['ssl' => ['verify_peer' => true, 'cafile' => '/etc/ssl/ca.pem']];
+
+        $arguments = Config::connectArguments(['context' => $contextValue]);
+
+        self::assertArrayHasKey('context', $arguments);
+        self::assertSame($contextValue, $arguments['context']);
+    }
+
+    /**
+     * Verify a PHP resource context is passed through as-is.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsPassesThroughResourceContext(): void
+    {
+        $resource = fopen('php://memory', 'r');
+
+        $arguments = Config::connectArguments(['context' => $resource]);
+
+        self::assertArrayHasKey('context', $arguments);
+        self::assertSame($resource, $arguments['context']);
+
+        fclose($resource);
+    }
+
+    /**
+     * Verify an empty array context is omitted from connect arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsEmptyArrayContext(): void
+    {
+        $arguments = Config::connectArguments(['context' => []]);
+
+        self::assertArrayNotHasKey('context', $arguments);
+    }
+
+    /**
+     * Verify a scalar context value is omitted from connect arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsScalarContext(): void
+    {
+        $arguments = Config::connectArguments(['context' => 'not-a-context']);
+
+        self::assertArrayNotHasKey('context', $arguments);
+    }
+
+    /**
+     * Verify a float timeout of 2.0 seconds is converted to 2000 milliseconds.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsConvertsFloatTimeoutToMilliseconds(): void
+    {
+        $arguments = Config::connectArguments(['timeout' => 2.0]);
+
+        self::assertArrayHasKey('request_timeout', $arguments);
+        self::assertSame(2000, $arguments['request_timeout']);
+    }
+
+    /**
+     * Verify a float timeout of 0.25 seconds is converted to 250 milliseconds.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsConvertsSubSecondTimeoutToMilliseconds(): void
+    {
+        $arguments = Config::connectArguments(['timeout' => 0.25]);
+
+        self::assertArrayHasKey('request_timeout', $arguments);
+        self::assertSame(250, $arguments['request_timeout']);
+    }
+
+    /**
+     * Verify an absent timeout key is omitted from connect arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsAbsentTimeout(): void
+    {
+        $arguments = Config::connectArguments([]);
+
+        self::assertArrayNotHasKey('request_timeout', $arguments);
+    }
+
+    /**
+     * Verify a non-numeric timeout value is omitted from connect arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsNonNumericTimeout(): void
+    {
+        $arguments = Config::connectArguments(['timeout' => 'fast']);
+
+        self::assertArrayNotHasKey('request_timeout', $arguments);
+    }
+
+    /**
+     * Verify a zero timeout is omitted because it is not a positive value.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsZeroTimeout(): void
+    {
+        $arguments = Config::connectArguments(['timeout' => 0]);
+
+        self::assertArrayNotHasKey('request_timeout', $arguments);
+    }
+
+    /**
+     * Verify connection_timeout in seconds is wrapped in advanced_config as milliseconds.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsConvertsConnectionTimeoutToAdvancedConfigMilliseconds(): void
+    {
+        $arguments = Config::connectArguments(['connection_timeout' => 3]);
+
+        self::assertArrayHasKey('advanced_config', $arguments);
+        self::assertSame(['connection_timeout' => 3000], $arguments['advanced_config']);
+    }
+
+    /**
+     * Verify an absent connection_timeout key is omitted from connect arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsAbsentConnectionTimeout(): void
+    {
+        $arguments = Config::connectArguments([]);
+
+        self::assertArrayNotHasKey('advanced_config', $arguments);
+    }
+
+    /**
+     * Verify a non-numeric connection_timeout value is omitted from connect arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsNonNumericConnectionTimeout(): void
+    {
+        $arguments = Config::connectArguments(['connection_timeout' => 'slow']);
+
+        self::assertArrayNotHasKey('advanced_config', $arguments);
+    }
 }
