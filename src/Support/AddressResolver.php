@@ -107,7 +107,7 @@ final class AddressResolver
         $nodes = [];
 
         foreach ($clusterConfig as $value) {
-            if (is_array($value) && self::looksLikeNode($value)) {
+            if (is_array($value) && self::isNodeShape($value)) {
                 $nodes[] = $value;
                 continue;
             }
@@ -117,7 +117,7 @@ final class AddressResolver
             }
 
             foreach ($value as $nested) {
-                if (is_array($nested) && self::looksLikeNode($nested)) {
+                if (is_array($nested) && self::isNodeShape($nested)) {
                     $nodes[] = $nested;
                 }
             }
@@ -132,7 +132,7 @@ final class AddressResolver
      * @param  array<string, mixed>  $value
      * @return bool
      */
-    private static function looksLikeNode(array $value): bool
+    private static function isNodeShape(array $value): bool
     {
         return array_key_exists('host', $value) || array_key_exists('port', $value);
     }

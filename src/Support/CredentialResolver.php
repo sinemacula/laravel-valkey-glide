@@ -55,7 +55,7 @@ final class CredentialResolver
      * @param  array<string, mixed>  $config
      * @return bool
      */
-    public static function hasIam(array $config): bool
+    public static function hasIam(#[\SensitiveParameter] array $config): bool
     {
         return isset($config['iam']) && is_array($config['iam']);
     }

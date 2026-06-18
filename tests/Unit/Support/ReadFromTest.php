@@ -29,10 +29,10 @@ final class ReadFromTest extends TestCase
     #[Test]
     public function enumValuesMatchExtensionReadFromConstants(): void
     {
-        self::assertSame(0, ReadFrom::Primary->value);
-        self::assertSame(1, ReadFrom::PreferReplica->value);
-        self::assertSame(2, ReadFrom::AzAffinity->value);
-        self::assertSame(3, ReadFrom::AzAffinityReplicasAndPrimary->value);
+        self::assertSame(0, ReadFrom::PRIMARY->value);
+        self::assertSame(1, ReadFrom::PREFER_REPLICA->value);
+        self::assertSame(2, ReadFrom::AZ_AFFINITY->value);
+        self::assertSame(3, ReadFrom::AZ_AFFINITY_REPLICAS_AND_PRIMARY->value);
     }
 
     /**
@@ -42,33 +42,33 @@ final class ReadFromTest extends TestCase
      */
     public static function validResolutionProvider(): iterable
     {
-        yield 'int 0 resolves to Primary' => [0, ReadFrom::Primary];
-        yield 'int 1 resolves to PreferReplica' => [1, ReadFrom::PreferReplica];
-        yield 'int 2 resolves to AzAffinity' => [2, ReadFrom::AzAffinity];
-        yield 'int 3 resolves to AzAffinityReplicasAndPrimary' => [3, ReadFrom::AzAffinityReplicasAndPrimary];
+        yield 'int 0 resolves to PRIMARY' => [0, ReadFrom::PRIMARY];
+        yield 'int 1 resolves to PREFER_REPLICA' => [1, ReadFrom::PREFER_REPLICA];
+        yield 'int 2 resolves to AZ_AFFINITY' => [2, ReadFrom::AZ_AFFINITY];
+        yield 'int 3 resolves to AZ_AFFINITY_REPLICAS_AND_PRIMARY' => [3, ReadFrom::AZ_AFFINITY_REPLICAS_AND_PRIMARY];
 
-        yield 'numeric string 0 resolves to Primary' => ['0', ReadFrom::Primary];
-        yield 'numeric string 1 resolves to PreferReplica' => ['1', ReadFrom::PreferReplica];
-        yield 'numeric string 2 resolves to AzAffinity' => ['2', ReadFrom::AzAffinity];
-        yield 'numeric string 3 resolves to AzAffinityReplicasAndPrimary' => ['3', ReadFrom::AzAffinityReplicasAndPrimary];
+        yield 'numeric string 0 resolves to PRIMARY' => ['0', ReadFrom::PRIMARY];
+        yield 'numeric string 1 resolves to PREFER_REPLICA' => ['1', ReadFrom::PREFER_REPLICA];
+        yield 'numeric string 2 resolves to AZ_AFFINITY' => ['2', ReadFrom::AZ_AFFINITY];
+        yield 'numeric string 3 resolves to AZ_AFFINITY_REPLICAS_AND_PRIMARY' => ['3', ReadFrom::AZ_AFFINITY_REPLICAS_AND_PRIMARY];
 
-        yield 'lowercase name primary' => ['primary', ReadFrom::Primary];
-        yield 'lowercase name prefer_replica' => ['prefer_replica', ReadFrom::PreferReplica];
-        yield 'lowercase name az_affinity' => ['az_affinity', ReadFrom::AzAffinity];
-        yield 'lowercase name az_affinity_replicas_and_primary' => ['az_affinity_replicas_and_primary', ReadFrom::AzAffinityReplicasAndPrimary];
+        yield 'lowercase name primary' => ['primary', ReadFrom::PRIMARY];
+        yield 'lowercase name prefer_replica' => ['prefer_replica', ReadFrom::PREFER_REPLICA];
+        yield 'lowercase name az_affinity' => ['az_affinity', ReadFrom::AZ_AFFINITY];
+        yield 'lowercase name az_affinity_replicas_and_primary' => ['az_affinity_replicas_and_primary', ReadFrom::AZ_AFFINITY_REPLICAS_AND_PRIMARY];
 
-        yield 'uppercase name PRIMARY' => ['PRIMARY', ReadFrom::Primary];
-        yield 'mixed-case name Prefer_Replica' => ['Prefer_Replica', ReadFrom::PreferReplica];
-        yield 'uppercase name AZ_AFFINITY' => ['AZ_AFFINITY', ReadFrom::AzAffinity];
-        yield 'uppercase name AZ_AFFINITY_REPLICAS_AND_PRIMARY' => ['AZ_AFFINITY_REPLICAS_AND_PRIMARY', ReadFrom::AzAffinityReplicasAndPrimary];
+        yield 'uppercase name PRIMARY' => ['PRIMARY', ReadFrom::PRIMARY];
+        yield 'mixed-case name Prefer_Replica' => ['Prefer_Replica', ReadFrom::PREFER_REPLICA];
+        yield 'uppercase name AZ_AFFINITY' => ['AZ_AFFINITY', ReadFrom::AZ_AFFINITY];
+        yield 'uppercase name AZ_AFFINITY_REPLICAS_AND_PRIMARY' => ['AZ_AFFINITY_REPLICAS_AND_PRIMARY', ReadFrom::AZ_AFFINITY_REPLICAS_AND_PRIMARY];
 
-        yield 'name with surrounding whitespace' => ['  primary  ', ReadFrom::Primary];
-        yield 'name with tabs' => ["\tprefer_replica\t", ReadFrom::PreferReplica];
+        yield 'name with surrounding whitespace' => ['  primary  ', ReadFrom::PRIMARY];
+        yield 'name with tabs' => ["\tprefer_replica\t", ReadFrom::PREFER_REPLICA];
 
-        yield 'self instance Primary returns itself' => [ReadFrom::Primary, ReadFrom::Primary];
-        yield 'self instance PreferReplica returns itself' => [ReadFrom::PreferReplica, ReadFrom::PreferReplica];
-        yield 'self instance AzAffinity returns itself' => [ReadFrom::AzAffinity, ReadFrom::AzAffinity];
-        yield 'self instance AzAffinityReplicasAndPrimary returns itself' => [ReadFrom::AzAffinityReplicasAndPrimary, ReadFrom::AzAffinityReplicasAndPrimary];
+        yield 'self instance PRIMARY returns itself' => [ReadFrom::PRIMARY, ReadFrom::PRIMARY];
+        yield 'self instance PREFER_REPLICA returns itself' => [ReadFrom::PREFER_REPLICA, ReadFrom::PREFER_REPLICA];
+        yield 'self instance AZ_AFFINITY returns itself' => [ReadFrom::AZ_AFFINITY, ReadFrom::AZ_AFFINITY];
+        yield 'self instance AZ_AFFINITY_REPLICAS_AND_PRIMARY returns itself' => [ReadFrom::AZ_AFFINITY_REPLICAS_AND_PRIMARY, ReadFrom::AZ_AFFINITY_REPLICAS_AND_PRIMARY];
     }
 
     /**
