@@ -18,6 +18,7 @@ exclude_patterns = [
     "**/vendor/**",
     ".qlty/configs/**",
     ".sinemacula/**",
+    "stubs/**",
 ]
 
 test_patterns = [
