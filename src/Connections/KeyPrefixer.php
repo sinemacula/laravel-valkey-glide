@@ -124,7 +124,12 @@ final class KeyPrefixer
      * @param  string  $prefix
      * @return void
      */
-    public function __construct(private readonly string $prefix) {}
+    public function __construct(
+
+        /** The key prefix applied to every outgoing Redis command. */
+        private readonly string $prefix,
+
+    ) {}
 
     /**
      * Apply the configured prefix to command parameters.
