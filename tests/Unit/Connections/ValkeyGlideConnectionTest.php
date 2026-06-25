@@ -11,7 +11,6 @@ use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
-use Stringable;
 use Tests\Fakes\ValkeyGlideClusterFake;
 use Tests\Fakes\ValkeyGlideFake;
 
@@ -257,7 +256,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify native set argument shapes continue to use the set method directly.
+     * Verify native set argument shapes continue to use the set method
+     * directly.
      *
      * @return void
      *
@@ -866,7 +866,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify idempotent retries are capped at one even when a third attempt would pass.
+     * Verify idempotent retries are capped at one even when a third attempt
+     * would pass.
      *
      * @return void
      */
@@ -978,7 +979,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify subscription methods are matched case-insensitively via lowercasing.
+     * Verify subscription methods are matched case-insensitively via
+     * lowercasing.
      *
      * @return void
      */
@@ -999,7 +1001,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify non-stringable channels are skipped without aborting the channel list.
+     * Verify non-stringable channels are skipped without aborting the
+     * channel list.
      *
      * @return void
      */
@@ -1094,6 +1097,7 @@ final class ValkeyGlideConnectionTest extends TestCase
              *
              * @return string
              */
+            #[\Override]
             public function __toString(): string
             {
                 return 'px:';
@@ -1171,7 +1175,8 @@ final class ValkeyGlideConnectionTest extends TestCase
                     return 0;
                 },
                 'sleep' => static function (): void {
-                    // No-op sleep; the random generator arguments are asserted instead.
+                    // No-op sleep; the random generator arguments are
+                    // asserted instead.
                 },
             ],
         );
@@ -1201,7 +1206,8 @@ final class ValkeyGlideConnectionTest extends TestCase
                     return 0;
                 },
                 'sleep' => static function (): void {
-                    // No-op sleep; the random generator arguments are asserted instead.
+                    // No-op sleep; the random generator arguments are
+                    // asserted instead.
                 },
             ],
         );
@@ -1244,7 +1250,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify retry jitter uses zero as the lower bound for the random generator.
+     * Verify retry jitter uses zero as the lower bound for the random
+     * generator.
      *
      * @return void
      *
@@ -1265,7 +1272,8 @@ final class ValkeyGlideConnectionTest extends TestCase
                     return 0;
                 },
                 'sleep' => static function (): void {
-                    // No-op sleep; the random generator arguments are asserted instead.
+                    // No-op sleep; the random generator arguments are
+                    // asserted instead.
                 },
             ],
         );
@@ -1275,7 +1283,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a zero base delay short-circuits before invoking the sleep callback.
+     * Verify a zero base delay short-circuits before invoking the sleep
+     * callback.
      *
      * @return void
      *
@@ -1384,7 +1393,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a cluster-backed phpredis-style SET routes by the key at index zero.
+     * Verify a cluster-backed phpredis-style SET routes by the key at
+     * index zero.
      *
      * @return void
      *
@@ -1420,7 +1430,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a cluster-backed keyless EVAL (numkeys = 0) falls back to randomNode.
+     * Verify a cluster-backed keyless EVAL (numkeys = 0) falls back to
+     * randomNode.
      *
      * @return void
      *
@@ -1443,7 +1454,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a raw command for an unexpected method defensively routes to randomNode.
+     * Verify a raw command for an unexpected method defensively routes
+     * to randomNode.
      *
      * @return void
      */
@@ -1456,7 +1468,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify the standalone path does not prepend a route argument to rawcommand.
+     * Verify the standalone path does not prepend a route argument to
+     * rawcommand.
      *
      * @return void
      *
@@ -1488,6 +1501,8 @@ final class ValkeyGlideConnectionTest extends TestCase
      *
      * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
      * @return bool
+     *
+     * @imperative
      */
     private function invokeReconnectClient(ValkeyGlideConnection $connection): bool
     {

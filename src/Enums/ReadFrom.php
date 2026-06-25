@@ -2,7 +2,7 @@
 
 declare(strict_types = 1);
 
-namespace SineMacula\Valkey\Support;
+namespace SineMacula\Valkey\Enums;
 
 /**
  * Read strategy enum mirroring the Valkey GLIDE extension READ_FROM_*
@@ -53,7 +53,8 @@ enum ReadFrom: int
      * Resolve a trimmed string to a ReadFrom case, or null when unresolvable.
      *
      * Integral numeric strings are cast and passed to tryFrom(); otherwise the
-     * value is matched case-insensitively against the snake-case strategy names.
+     * value is matched case-insensitively against the snake-case strategy
+     * names.
      *
      * @param  string  $value
      * @return self|null

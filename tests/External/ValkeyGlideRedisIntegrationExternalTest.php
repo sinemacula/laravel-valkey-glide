@@ -12,7 +12,8 @@ use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use SineMacula\Valkey\Connectors\ValkeyGlideConnector;
 
 /**
- * Redis-backed external integration checks for connector and connection behavior.
+ * Redis-backed external integration checks for connector and connection
+ * behavior.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -44,7 +45,8 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     }
 
     /**
-     * Verify the connector can establish an external connection and execute PING.
+     * Verify the connector can establish an external connection and
+     * execute PING.
      *
      * @return void
      *
@@ -63,7 +65,8 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     }
 
     /**
-     * Verify set and get roundtrip works through the Laravel connection wrapper.
+     * Verify set and get roundtrip works through the Laravel connection
+     * wrapper.
      *
      * @return void
      *
@@ -108,7 +111,8 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     }
 
     /**
-     * Verify configured key prefixes are applied when mget is used with key lists.
+     * Verify configured key prefixes are applied when mget is used with
+     * key lists.
      *
      * @return void
      *
@@ -155,7 +159,8 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     }
 
     /**
-     * Verify database selection in connector config routes data to that database.
+     * Verify database selection in connector config routes data to that
+     * database.
      *
      * @return void
      *

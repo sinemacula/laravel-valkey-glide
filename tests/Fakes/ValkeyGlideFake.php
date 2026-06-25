@@ -88,6 +88,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
         return $this->calls[strtolower($method)] ?? [];
     }
 
+    // phpcs:disable Squiz.NamingConventions.ValidVariableName.NotCamelCaps
     /**
      * Record a connect invocation and apply configured behavior.
      *
@@ -115,6 +116,8 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  bool|null  $lazy_connect
      * @param  mixed  $context
      * @return bool
+     *
+     * @imperative
      */
     #[\Override]
     public function connect(
@@ -161,10 +164,14 @@ final class ValkeyGlideFake extends \ValkeyGlide
         return (bool) $this->resolveBehavior('connect', true);
     }
 
+    // phpcs:enable Squiz.NamingConventions.ValidVariableName.NotCamelCaps
+
     /**
      * Record a close invocation and apply configured behavior.
      *
      * @return bool
+     *
+     * @imperative
      */
     #[\Override]
     public function close(): bool
@@ -208,6 +215,8 @@ final class ValkeyGlideFake extends \ValkeyGlide
      *
      * @param  array<int, string>  $keys
      * @return array<int, false|string>|false|self
+     *
+     * @throws \UnexpectedValueException
      */
     public function mget(array $keys): array|false|self
     {
@@ -283,6 +292,8 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @phpstan-param callable(): mixed $callback
      *
      * @return bool
+     *
+     * @imperative
      */
     #[\Override]
     public function subscribe(array $channels, callable $callback): bool
@@ -304,6 +315,8 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @phpstan-param callable(): mixed $callback
      *
      * @return bool
+     *
+     * @imperative
      */
     #[\Override]
     public function psubscribe(array $patterns, callable $callback): bool

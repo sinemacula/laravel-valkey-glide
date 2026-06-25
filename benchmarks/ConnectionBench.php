@@ -119,7 +119,8 @@ final readonly class ConnectionBench
     }
 
     /**
-     * Benchmark the phpredis-style SET option rewrite routed through rawcommand.
+     * Benchmark the phpredis-style SET option rewrite routed through
+     * rawcommand.
      *
      * @return void
      *

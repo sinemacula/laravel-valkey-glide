@@ -1,7 +1,24 @@
 <?xml version="1.0"?>
 <ruleset name="Project">
 
-    <rule ref="SineMacula"/>
+    <!-- DisallowMixedTypeHint excluded: this is a Redis driver. Command arguments
+         and return values, plus user-supplied connection config, are arbitrary by
+         nature (a GET may return a string, an HGETALL an array, a missing key
+         false/null), so `mixed` is the correct type here, not laziness. Narrowable
+         cases were tightened first; PHPStan still guards unsafe mixed access. -->
+    <rule ref="SineMaculaLaravelPackage">
+        <exclude name="SlevomatCodingStandard.TypeHints.DisallowMixedTypeHint"/>
+    </rule>
+
+    <!-- The test fakes mirror the ext-valkey_glide API verbatim, so their boolean
+         method names (connect/close/subscribe/psubscribe) are fixed by the
+         extension and cannot be renamed to predicates. The methods carry an
+         @imperative tag to document this, but BooleanMethodNameSniff does not
+         honour that tag when an #[\Override] attribute sits between the docblock
+         and the method, so the rule is excluded for the fake doubles. -->
+    <rule ref="SineMacula.NamingConventions.BooleanMethodName">
+        <exclude-pattern>tests/Fakes/*</exclude-pattern>
+    </rule>
 
     <file>src</file>
     <file>benchmarks</file>

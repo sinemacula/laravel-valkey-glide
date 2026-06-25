@@ -128,7 +128,6 @@ final class KeyPrefixer
 
         /** The key prefix applied to every outgoing Redis command. */
         private readonly string $prefix,
-
     ) {}
 
     /**
@@ -187,7 +186,8 @@ final class KeyPrefixer
     }
 
     /**
-     * Prefix a parameter at a specific index when it can be represented as a key.
+     * Prefix a parameter at a specific index when it can be represented as a
+     * key.
      *
      * @param  array<array-key, mixed>  $parameters
      * @param  int  $index
@@ -221,9 +221,11 @@ final class KeyPrefixer
         foreach ($parameters as $index => $parameter) {
             $prefixedValue = $this->prefixValue($parameter);
 
-            if ($prefixedValue !== null) {
-                $parameters[$index] = $prefixedValue;
+            if ($prefixedValue === null) {
+                continue;
             }
+
+            $parameters[$index] = $prefixedValue;
         }
 
         return $parameters;

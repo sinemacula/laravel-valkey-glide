@@ -169,9 +169,12 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
     }
 
     /**
-     * Resolve the Redis manager's default connection as the valkey-glide wrapper.
+     * Resolve the Redis manager's default connection as the valkey-glide
+     * wrapper.
      *
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
+     *
+     * @throws \UnexpectedValueException
      */
     private function redisConnection(): ValkeyGlideConnection
     {
@@ -193,6 +196,8 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
      * Resolve Laravel's Redis queue connection.
      *
      * @return \Illuminate\Queue\RedisQueue
+     *
+     * @throws \UnexpectedValueException
      */
     private function redisQueueConnection(): RedisQueue
     {
@@ -248,6 +253,8 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
      *
      * @param  mixed  $response
      * @return int
+     *
+     * @throws \UnexpectedValueException
      */
     private function normalizeIntegerResponse(mixed $response): int
     {
