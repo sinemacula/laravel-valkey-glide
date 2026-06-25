@@ -39,7 +39,6 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
 
         /** Callback used to resolve runtime class availability. */
         private readonly ?\Closure $classResolver = null,
-
     ) {}
 
     /**
@@ -80,7 +79,8 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
     }
 
     /**
-     * Build the Laravel connection wrapper and reconnect callback for a single endpoint.
+     * Build the Laravel connection wrapper and reconnect callback for a single
+     * endpoint.
      *
      * @param  array<string, mixed>  $resolvedConfig
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
@@ -95,7 +95,8 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
     }
 
     /**
-     * Build the Laravel connection wrapper and reconnect callback for a cluster endpoint.
+     * Build the Laravel connection wrapper and reconnect callback for a cluster
+     * endpoint.
      *
      * @param  array<string, mixed>  $resolvedConfig
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection

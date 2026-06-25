@@ -4,6 +4,8 @@ declare(strict_types = 1);
 
 namespace SineMacula\Valkey\Support;
 
+use SineMacula\Valkey\Enums\ReadFrom;
+
 /**
  * Normalize Laravel Redis config arrays into Valkey GLIDE connect arguments.
  *
@@ -55,49 +57,7 @@ final class Config
             $arguments['credentials'] = $credentials;
         }
 
-        $databaseId = self::databaseId($config['database'] ?? null);
-
-        if ($databaseId !== null) {
-            $arguments['database_id'] = $databaseId;
-        }
-
-        $clientName = self::clientName($config['name'] ?? null);
-
-        if ($clientName !== null) {
-            $arguments['client_name'] = $clientName;
-        }
-
-        $readFrom = self::readFrom($config['read_from'] ?? null);
-
-        if ($readFrom !== null) {
-            $arguments['read_from'] = $readFrom;
-        }
-
-        $clientAz = self::clientAz($config['client_az'] ?? null);
-
-        if ($clientAz !== null) {
-            $arguments['client_az'] = $clientAz;
-        }
-
-        $context = self::context($config['context'] ?? null);
-
-        if ($context !== null) {
-            $arguments['context'] = $context;
-        }
-
-        $requestTimeout = self::requestTimeout($config['timeout'] ?? null);
-
-        if ($requestTimeout !== null) {
-            $arguments['request_timeout'] = $requestTimeout;
-        }
-
-        $advancedConfig = self::advancedConfig($config['connection_timeout'] ?? null);
-
-        if ($advancedConfig !== null) {
-            $arguments['advanced_config'] = $advancedConfig;
-        }
-
-        return $arguments;
+        return array_merge($arguments, self::optionalArguments($config));
     }
 
     /**
@@ -142,6 +102,31 @@ final class Config
     public static function clusterAddresses(array $clusterConfig): array
     {
         return AddressResolver::clusterAddresses($clusterConfig);
+    }
+
+    /**
+     * Resolve the optional, value-dependent GLIDE connect arguments.
+     *
+     * Each entry is included only when its resolver returns a non-null value,
+     * preserving the original key order. A zero database_id is kept; only null
+     * is treated as absent.
+     *
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    private static function optionalArguments(#[\SensitiveParameter] array $config): array
+    {
+        $resolved = [
+            'database_id'     => self::databaseId($config['database'] ?? null),
+            'client_name'     => self::clientName($config['name'] ?? null),
+            'read_from'       => self::readFrom($config['read_from'] ?? null),
+            'client_az'       => self::clientAz($config['client_az'] ?? null),
+            'context'         => self::context($config['context'] ?? null),
+            'request_timeout' => self::requestTimeout($config['timeout'] ?? null),
+            'advanced_config' => self::advancedConfig($config['connection_timeout'] ?? null),
+        ];
+
+        return array_filter($resolved, static fn (mixed $value): bool => $value !== null);
     }
 
     /**
@@ -218,7 +203,8 @@ final class Config
     /**
      * Normalize a mixed context value for GLIDE passthrough.
      *
-     * Accepts a non-empty array or a PHP resource; all other values return null.
+     * Accepts a non-empty array or a PHP resource; all other values return
+     * null.
      *
      * @param  mixed  $value
      * @return array<array-key, mixed>|resource|null
@@ -240,7 +226,8 @@ final class Config
      * Convert a seconds value to GLIDE milliseconds for request_timeout.
      *
      * Accepts int, float, or numeric string greater than zero; all other values
-     * return null. The value is treated as seconds and converted to milliseconds.
+     * return null. The value is treated as seconds and converted to
+     * milliseconds.
      *
      * @param  mixed  $value
      * @return int|null
@@ -251,7 +238,8 @@ final class Config
     }
 
     /**
-     * Build the advanced_config array from a connection_timeout value in seconds.
+     * Build the advanced_config array from a connection_timeout value in
+     * seconds.
      *
      * Returns null when the value is absent or not a positive numeric.
      *

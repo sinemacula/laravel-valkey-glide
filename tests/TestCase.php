@@ -23,6 +23,7 @@ abstract class TestCase extends OrchestraTestCase
      * @param  \Illuminate\Contracts\Foundation\Application  $app
      * @return array<int, class-string>
      */
+    #[\Override]
     protected function getPackageProviders(mixed $app): array
     {
         return [
@@ -36,6 +37,7 @@ abstract class TestCase extends OrchestraTestCase
      * @param  \Illuminate\Contracts\Foundation\Application  $app
      * @return void
      */
+    #[\Override]
     protected function defineEnvironment(mixed $app): void
     {
         $app['config']->set('database.redis.client', 'valkey-glide');

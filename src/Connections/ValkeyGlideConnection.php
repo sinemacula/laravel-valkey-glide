@@ -9,6 +9,10 @@ use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Redis\Events\CommandFailed;
 use SineMacula\Valkey\Support\Cast;
 
+// The adapter mirrors a broad Redis command surface plus retry, event, and
+// normalisation helpers, so it exceeds the default method ceiling by design;
+// the methods stay small and cohesive. Mirrors the @SuppressWarnings below.
+// phpcs:disable SineMacula.Metrics.MaxMethodCount.TooManyMethods
 /**
  * Laravel Redis connection adapter backed by the Valkey GLIDE client.
  *
@@ -137,7 +141,6 @@ final class ValkeyGlideConnection extends Connection
      * @param  array<int, string>  $keys
      * @return array<int, string|null>
      *
-     * @throws \Throwable
      * @throws \UnexpectedValueException
      */
     public function mget(array $keys): array
@@ -282,7 +285,8 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
-     * Determine whether a command must run through rawcommand for compatibility.
+     * Determine whether a command must run through rawcommand for
+     * compatibility.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
@@ -324,16 +328,18 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Resolve the cluster route for a raw command.
      *
-     * Keyed write/script commands (EVAL, EVALSHA, phpredis-style SET-with-options)
-     * must land on the primary that owns the key's hash slot. Using
-     * `primarySlotKey` tells GLIDE to compute the slot from the supplied key and
-     * route there, preserving the same per-key semantics as standalone. Fan-out
-     * routes (`allPrimaries`, `allNodes`) would execute the write on every shard;
-     * `randomNode` would hit an arbitrary slot owner. `randomNode` is the correct
-     * fallback only for keyless cases where no slot must be honoured.
+     * Keyed write/script commands (EVAL, EVALSHA, phpredis-style
+     * SET-with-options) must land on the primary that owns the key's hash
+     * slot. Using `primarySlotKey` tells GLIDE to compute the slot from the
+     * supplied key and route there, preserving the same per-key semantics as
+     * standalone. Fan-out routes (`allPrimaries`, `allNodes`) would execute
+     * the write on every shard; `randomNode` would hit an arbitrary slot
+     * owner. `randomNode` is the correct fallback only for keyless cases where
+     * no slot must be honoured.
      *
-     * The parameters array is already prefix-normalised before this method runs,
-     * so the key used for routing is identical to the key the command targets.
+     * The parameters array is already prefix-normalised before this method
+     * runs, so the key used for routing is identical to the key the command
+     * targets.
      *
      * @param  string  $method
      * @param  array<int, mixed>  $values
@@ -439,6 +445,8 @@ final class ValkeyGlideConnection extends Connection
      * Recreate the client via the configured connector callback.
      *
      * @return bool
+     *
+     * @imperative
      */
     private function reconnectClient(): bool
     {
@@ -583,9 +591,11 @@ final class ValkeyGlideConnection extends Connection
 
             $channelName = (string) $channel;
 
-            if ($channelName !== '') {
-                $normalized[] = $channelName;
+            if ($channelName === '') {
+                continue;
             }
+
+            $normalized[] = $channelName;
         }
 
         if ($normalized === []) {

@@ -8,7 +8,7 @@ use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
-use SineMacula\Valkey\Support\ReadFrom;
+use SineMacula\Valkey\Enums\ReadFrom;
 
 /**
  * ReadFrom enum test case.
@@ -38,7 +38,7 @@ final class ReadFromTest extends TestCase
     /**
      * Provide valid inputs and their expected ReadFrom resolution.
      *
-     * @return iterable<string, array{0: mixed, 1: \SineMacula\Valkey\Support\ReadFrom}>
+     * @return iterable<string, array{0: mixed, 1: \SineMacula\Valkey\Enums\ReadFrom}>
      */
     public static function validResolutionProvider(): iterable
     {
@@ -75,7 +75,7 @@ final class ReadFromTest extends TestCase
      * Verify valid inputs resolve to the expected ReadFrom case.
      *
      * @param  mixed  $input
-     * @param  \SineMacula\Valkey\Support\ReadFrom  $expected
+     * @param  \SineMacula\Valkey\Enums\ReadFrom  $expected
      * @return void
      */
     #[DataProvider('validResolutionProvider')]

@@ -150,9 +150,12 @@ final class ValkeyGlideLaravelSessionExternalTest extends TestCase
     }
 
     /**
-     * Resolve the Redis manager's default connection as the valkey-glide wrapper.
+     * Resolve the Redis manager's default connection as the valkey-glide
+     * wrapper.
      *
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
+     *
+     * @throws \UnexpectedValueException
      */
     private function redisConnection(): ValkeyGlideConnection
     {
@@ -174,6 +177,8 @@ final class ValkeyGlideLaravelSessionExternalTest extends TestCase
      * Resolve a fresh Laravel session store instance.
      *
      * @return \Illuminate\Session\Store
+     *
+     * @throws \UnexpectedValueException
      */
     private function freshSessionStore(): Store
     {
@@ -197,6 +202,8 @@ final class ValkeyGlideLaravelSessionExternalTest extends TestCase
      * Resolve the Laravel redis cache store as the concrete cache repository.
      *
      * @return \Illuminate\Cache\Repository
+     *
+     * @throws \UnexpectedValueException
      */
     private function redisCacheStore(): Repository
     {

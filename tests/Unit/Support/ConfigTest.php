@@ -460,7 +460,8 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify IAM credentials require the iam config to be an array, not a scalar.
+     * Verify IAM credentials require the iam config to be an array, not a
+     * scalar.
      *
      * @return void
      */
@@ -516,7 +517,8 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify cluster nodes nested under a non-node array are skipped after a scalar.
+     * Verify cluster nodes nested under a non-node array are skipped after
+     * a scalar.
      *
      * @return void
      */
@@ -698,7 +700,8 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify a non-stringable object host falls back to the default loopback host.
+     * Verify a non-stringable object host falls back to the default
+     * loopback host.
      *
      * @return void
      */
@@ -749,10 +752,12 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify read_from integer 0 resolves to 0 and the key is present, not dropped.
+     * Verify read_from integer 0 resolves to 0 and the key is present, not
+     * dropped.
      *
-     * This is the critical mutation-killing assertion: a mutant flipping !== null to
-     * a truthiness check would drop read_from => 0, which must always be emitted.
+     * This is the critical mutation-killing assertion: a mutant flipping
+     * !== null to a truthiness check would drop read_from => 0, which must
+     * always be emitted.
      *
      * @return void
      */
@@ -946,7 +951,8 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify connection_timeout in seconds is wrapped in advanced_config as milliseconds.
+     * Verify connection_timeout in seconds is wrapped in advanced_config as
+     * milliseconds.
      *
      * @return void
      */
@@ -960,7 +966,8 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify an absent connection_timeout key is omitted from connect arguments.
+     * Verify an absent connection_timeout key is omitted from connect
+     * arguments.
      *
      * @return void
      */
@@ -973,7 +980,8 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify a non-numeric connection_timeout value is omitted from connect arguments.
+     * Verify a non-numeric connection_timeout value is omitted from connect
+     * arguments.
      *
      * @return void
      */

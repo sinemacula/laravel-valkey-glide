@@ -252,6 +252,8 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
      *
      * @param  string  $connectionName
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
+     *
+     * @throws \UnexpectedValueException
      */
     private function redisConnection(string $connectionName = 'default'): ValkeyGlideConnection
     {
@@ -293,6 +295,8 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
      * Resolve the Laravel redis cache store as the concrete cache repository.
      *
      * @return \Illuminate\Cache\Repository
+     *
+     * @throws \UnexpectedValueException
      */
     private function redisCacheStore(): Repository
     {
@@ -309,6 +313,8 @@ final class ValkeyGlideLaravelCacheExternalTest extends TestCase
      * Resolve the underlying Redis cache store for lock assertions.
      *
      * @return \Illuminate\Cache\RedisStore
+     *
+     * @throws \UnexpectedValueException
      */
     private function redisLockStore(): RedisStore
     {

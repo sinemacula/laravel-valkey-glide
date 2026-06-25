@@ -85,20 +85,33 @@ final class CredentialResolver
             return null;
         }
 
-        $refreshInterval = Cast::toNonNegativeInt($iam['refresh_interval'] ?? null);
-
-        if ($refreshInterval === null || $refreshInterval === 0) {
-            $refreshInterval = self::DEFAULT_IAM_REFRESH_INTERVAL;
-        }
-
         return [
             'username'  => $username,
             'iamConfig' => [
                 'clusterName'            => $clusterName,
                 'region'                 => $region,
                 'service'                => 'Elasticache',
-                'refreshIntervalSeconds' => $refreshInterval,
+                'refreshIntervalSeconds' => self::iamRefreshInterval($iam['refresh_interval'] ?? null),
             ],
         ];
+    }
+
+    /**
+     * Resolve the IAM refresh interval in seconds, applying the default.
+     *
+     * Falls back to the default when the value is absent, non-numeric, or zero.
+     *
+     * @param  mixed  $value
+     * @return int
+     */
+    private static function iamRefreshInterval(mixed $value): int
+    {
+        $refreshInterval = Cast::toNonNegativeInt($value);
+
+        if ($refreshInterval === null || $refreshInterval === 0) {
+            return self::DEFAULT_IAM_REFRESH_INTERVAL;
+        }
+
+        return $refreshInterval;
     }
 }

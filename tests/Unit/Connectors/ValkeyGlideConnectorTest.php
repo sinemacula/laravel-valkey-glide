@@ -113,7 +113,8 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
-     * Verify connectToCluster builds the cluster client via the default factory when none is injected.
+     * Verify connectToCluster builds the cluster client via the default factory
+     * when none is injected.
      *
      * @return void
      */
@@ -136,8 +137,9 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
-     * Verify connectToCluster returns a connection whose client is a ValkeyGlideCluster
-     * and that the factory received the resolved connect arguments.
+     * Verify connectToCluster returns a connection whose client is a
+     * ValkeyGlideCluster and that the factory received the resolved
+     * connect arguments.
      *
      * @return void
      */
@@ -190,7 +192,8 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
-     * Verify connect path still builds a standalone ValkeyGlide and calls connect().
+     * Verify connect path still builds a standalone ValkeyGlide and calls
+     * connect().
      *
      * @return void
      */
@@ -214,7 +217,8 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
-     * Verify connectToCluster throws when ValkeyGlideCluster class is unavailable.
+     * Verify connectToCluster throws when ValkeyGlideCluster class is
+     * unavailable.
      *
      * @return void
      */

@@ -92,6 +92,8 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
      * Record a close invocation and apply configured behavior.
      *
      * @return bool
+     *
+     * @imperative
      */
     #[\Override]
     public function close(): bool
@@ -146,6 +148,8 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
      * @phpstan-param callable(): mixed $callback
      *
      * @return bool
+     *
+     * @imperative
      */
     #[\Override]
     public function subscribe(array $channels, callable $callback): bool
@@ -167,6 +171,8 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
      * @phpstan-param callable(): mixed $callback
      *
      * @return bool
+     *
+     * @imperative
      */
     #[\Override]
     public function psubscribe(array $patterns, callable $callback): bool

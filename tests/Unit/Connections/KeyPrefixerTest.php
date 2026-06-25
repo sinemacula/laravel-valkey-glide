@@ -49,7 +49,8 @@ final class KeyPrefixerTest extends TestCase
     }
 
     /**
-     * Verify apply routes each command family to the correct prefixing strategy.
+     * Verify apply routes each command family to the correct prefixing
+     * strategy.
      *
      * @param  string  $prefix
      * @param  string  $method

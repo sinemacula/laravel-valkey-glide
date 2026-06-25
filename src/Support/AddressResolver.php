@@ -107,20 +107,39 @@ final class AddressResolver
         $nodes = [];
 
         foreach ($clusterConfig as $value) {
-            if (is_array($value) && self::isNodeShape($value)) {
-                $nodes[] = $value;
-                continue;
-            }
-
             if (!is_array($value)) {
                 continue;
             }
 
-            foreach ($value as $nested) {
-                if (is_array($nested) && self::isNodeShape($nested)) {
-                    $nodes[] = $nested;
-                }
+            if (self::isNodeShape($value)) {
+                $nodes[] = $value;
+                continue;
             }
+
+            foreach (self::nodesFromGroup($value) as $node) {
+                $nodes[] = $node;
+            }
+        }
+
+        return $nodes;
+    }
+
+    /**
+     * Extract host/port node definitions nested one level inside a group.
+     *
+     * @param  array<int|string, mixed>  $group
+     * @return array<int, array<string, mixed>>
+     */
+    private static function nodesFromGroup(array $group): array
+    {
+        $nodes = [];
+
+        foreach ($group as $nested) {
+            if (!is_array($nested) || !self::isNodeShape($nested)) {
+                continue;
+            }
+
+            $nodes[] = $nested;
         }
 
         return $nodes;
