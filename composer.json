@@ -17,7 +17,7 @@
     ],
     "require": {
         "php": "^8.3",
-        "illuminate/redis": "^11.0 || ^12.0"
+        "illuminate/redis": "^11.0 || ^12.0 || ^13.0"
     },
     "suggest": {
         "ext-valkey_glide": "Required when using the valkey-glide Redis client in runtime environments."
@@ -37,7 +37,7 @@
         "sinemacula/coding-standards-laravel": "^1.0",
         "slevomat/coding-standard": "^8.28",
         "squizlabs/php_codesniffer": "^4.0",
-        "orchestra/testbench": "^9.0 || ^10.0"
+        "orchestra/testbench": "^9.0 || ^10.0 || ^11.0"
     },
     "autoload": {
         "psr-4": {
@@ -74,7 +74,7 @@
             "@php vendor/bin/paratest --exclude-group external --coverage-clover=clover.xml"
         ],
         "test:mutation": [
-            "@php vendor/bin/infection --configuration=infection.json5 --test-framework-options=\"--exclude-group external --do-not-fail-on-warning --do-not-fail-on-phpunit-warning\" --only-covering-test-cases --threads=max --git-diff-lines --git-diff-base=origin/master --map-source-class-to-test --min-msi=90 --min-covered-msi=90"
+            "@php vendor/bin/infection --configuration=infection.json5 --test-framework-options=\"--exclude-group external --do-not-fail-on-warning --do-not-fail-on-phpunit-warning\" --only-covering-test-cases --threads=max --git-diff-lines --git-diff-base=origin/master --map-source-class-to-test --min-msi=90 --min-covered-msi=90 --ignore-msi-with-no-mutations"
         ],
         "test:mutation:full": [
             "@php vendor/bin/infection --configuration=infection.full.json5 --test-framework-options=\"--exclude-group external --do-not-fail-on-warning --do-not-fail-on-phpunit-warning\" --only-covering-test-cases --threads=max"
