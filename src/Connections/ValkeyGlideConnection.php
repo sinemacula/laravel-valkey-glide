@@ -329,13 +329,13 @@ final class ValkeyGlideConnection extends Connection
      * Resolve the cluster route for a raw command.
      *
      * Keyed write/script commands (EVAL, EVALSHA, phpredis-style
-     * SET-with-options) must land on the primary that owns the key's hash
-     * slot. Using `primarySlotKey` tells GLIDE to compute the slot from the
-     * supplied key and route there, preserving the same per-key semantics as
-     * standalone. Fan-out routes (`allPrimaries`, `allNodes`) would execute
-     * the write on every shard; `randomNode` would hit an arbitrary slot
-     * owner. `randomNode` is the correct fallback only for keyless cases where
-     * no slot must be honoured.
+     * SET-with-options) must land on the primary that owns the key's hash slot.
+     * Using `primarySlotKey` tells GLIDE to compute the slot from the supplied
+     * key and route there, preserving the same per-key semantics as standalone.
+     * Fan-out routes (`allPrimaries`, `allNodes`) would execute the write on
+     * every shard; `randomNode` would hit an arbitrary slot owner. `randomNode`
+     * is the correct fallback only for keyless cases where no slot must be
+     * honoured.
      *
      * The parameters array is already prefix-normalised before this method
      * runs, so the key used for routing is identical to the key the command

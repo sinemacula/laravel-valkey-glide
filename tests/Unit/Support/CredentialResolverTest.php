@@ -247,8 +247,8 @@ final class CredentialResolverTest extends TestCase
     }
 
     /**
-     * Verify resolve returns null when IAM config is a scalar rather than
-     * an array.
+     * Verify resolve returns null when IAM config is a scalar rather than an
+     * array.
      *
      * @return void
      */
@@ -282,8 +282,8 @@ final class CredentialResolverTest extends TestCase
     }
 
     /**
-     * Verify a zero IAM refresh interval is replaced with the package
-     * default of 300.
+     * Verify a zero IAM refresh interval is replaced with the package default
+     * of 300.
      *
      * @return void
      */

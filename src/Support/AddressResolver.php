@@ -23,8 +23,8 @@ final class AddressResolver
      *
      * When the config contains a non-empty array under the 'addresses' key,
      * each array element is normalized; non-array elements are skipped. Falls
-     * back to a single endpoint derived from the top-level config when the
-     * list is absent, empty, or entirely non-array.
+     * back to a single endpoint derived from the top-level config when the list
+     * is absent, empty, or entirely non-array.
      *
      * @param  array<string, mixed>  $config
      * @return array<int, array{host: string, port: int}>

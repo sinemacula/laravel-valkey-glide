@@ -235,8 +235,8 @@ final class KeyPrefixer
      * Prefix EVAL and EVALSHA key parameters.
      *
      * Reads the key count from index 1 and prefixes the subsequent numkeys
-     * parameters starting at index 2. Returns the parameters unchanged when
-     * the key count is missing, non-numeric, or zero.
+     * parameters starting at index 2. Returns the parameters unchanged when the
+     * key count is missing, non-numeric, or zero.
      *
      * @param  array<array-key, mixed>  $parameters
      * @return array<array-key, mixed>

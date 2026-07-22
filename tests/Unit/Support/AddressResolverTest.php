@@ -111,8 +111,8 @@ final class AddressResolverTest extends TestCase
     }
 
     /**
-     * Verify addresses falls back to the endpoint when every address entry
-     * is invalid.
+     * Verify addresses falls back to the endpoint when every address entry is
+     * invalid.
      *
      * @return void
      */
@@ -182,8 +182,8 @@ final class AddressResolverTest extends TestCase
     }
 
     /**
-     * Verify addresses uses the default host when the host is a
-     * non-stringable object.
+     * Verify addresses uses the default host when the host is a non-stringable
+     * object.
      *
      * @return void
      */
@@ -212,8 +212,8 @@ final class AddressResolverTest extends TestCase
     }
 
     /**
-     * Verify addresses uses the default port when the port value is absent
-     * or invalid.
+     * Verify addresses uses the default port when the port value is absent or
+     * invalid.
      *
      * @param  mixed  $port
      * @return void
@@ -302,8 +302,8 @@ final class AddressResolverTest extends TestCase
     }
 
     /**
-     * Verify clusterAddresses falls back to the default address when no
-     * valid nodes exist.
+     * Verify clusterAddresses falls back to the default address when no valid
+     * nodes exist.
      *
      * @return void
      */
@@ -319,8 +319,8 @@ final class AddressResolverTest extends TestCase
     }
 
     /**
-     * Verify clusterAddresses skips scalar entries and collects later
-     * nested nodes.
+     * Verify clusterAddresses skips scalar entries and collects later nested
+     * nodes.
      *
      * @return void
      */
@@ -363,8 +363,8 @@ final class AddressResolverTest extends TestCase
     }
 
     /**
-     * Verify clusterAddresses treats an array with only a port key as a
-     * valid node.
+     * Verify clusterAddresses treats an array with only a port key as a valid
+     * node.
      *
      * @return void
      */
@@ -382,8 +382,8 @@ final class AddressResolverTest extends TestCase
     }
 
     /**
-     * Verify clusterAddresses treats an array with only a host key as a
-     * valid node.
+     * Verify clusterAddresses treats an array with only a host key as a valid
+     * node.
      *
      * @return void
      */

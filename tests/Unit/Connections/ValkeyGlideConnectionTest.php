@@ -52,8 +52,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify get returns null when the underlying client returns false
-     * (cache miss).
+     * Verify get returns null when the underlying client returns false (cache
+     * miss).
      *
      * @return void
      */
@@ -1001,8 +1001,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify non-stringable channels are skipped without aborting the
-     * channel list.
+     * Verify non-stringable channels are skipped without aborting the channel
+     * list.
      *
      * @return void
      */
@@ -1175,8 +1175,8 @@ final class ValkeyGlideConnectionTest extends TestCase
                     return 0;
                 },
                 'sleep' => static function (): void {
-                    // No-op sleep; the random generator arguments are
-                    // asserted instead.
+                    // No-op sleep; the random generator arguments are asserted
+                    // instead.
                 },
             ],
         );
@@ -1206,8 +1206,8 @@ final class ValkeyGlideConnectionTest extends TestCase
                     return 0;
                 },
                 'sleep' => static function (): void {
-                    // No-op sleep; the random generator arguments are
-                    // asserted instead.
+                    // No-op sleep; the random generator arguments are asserted
+                    // instead.
                 },
             ],
         );
@@ -1272,8 +1272,8 @@ final class ValkeyGlideConnectionTest extends TestCase
                     return 0;
                 },
                 'sleep' => static function (): void {
-                    // No-op sleep; the random generator arguments are
-                    // asserted instead.
+                    // No-op sleep; the random generator arguments are asserted
+                    // instead.
                 },
             ],
         );
@@ -1393,8 +1393,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a cluster-backed phpredis-style SET routes by the key at
-     * index zero.
+     * Verify a cluster-backed phpredis-style SET routes by the key at index
+     * zero.
      *
      * @return void
      *
@@ -1454,8 +1454,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a raw command for an unexpected method defensively routes
-     * to randomNode.
+     * Verify a raw command for an unexpected method defensively routes to
+     * randomNode.
      *
      * @return void
      */

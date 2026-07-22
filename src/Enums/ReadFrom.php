@@ -6,8 +6,8 @@ namespace SineMacula\Valkey\Enums;
 
 /**
  * Read strategy enum mirroring the Valkey GLIDE extension READ_FROM_*
- * constants. Provides a typed resolver that accepts a strategy name, an int,
- * or a numeric string, and returns null for anything unresolvable.
+ * constants. Provides a typed resolver that accepts a strategy name, an int, or
+ * a numeric string, and returns null for anything unresolvable.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
