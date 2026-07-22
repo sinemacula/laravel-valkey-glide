@@ -17,7 +17,7 @@
     ],
     "require": {
         "php": "^8.3",
-        "illuminate/redis": "^11.0 || ^12.0"
+        "illuminate/redis": "^11.0 || ^12.0 || ^13.0"
     },
     "suggest": {
         "ext-valkey_glide": "Required when using the valkey-glide Redis client in runtime environments."
@@ -37,7 +37,7 @@
         "sinemacula/coding-standards-laravel": "^1.0",
         "slevomat/coding-standard": "^8.28",
         "squizlabs/php_codesniffer": "^4.0",
-        "orchestra/testbench": "^9.0 || ^10.0"
+        "orchestra/testbench": "^9.0 || ^10.0 || ^11.0"
     },
     "autoload": {
         "psr-4": {
