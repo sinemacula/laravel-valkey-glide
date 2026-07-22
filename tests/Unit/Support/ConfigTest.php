@@ -517,8 +517,8 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify cluster nodes nested under a non-node array are skipped after
-     * a scalar.
+     * Verify cluster nodes nested under a non-node array are skipped after a
+     * scalar.
      *
      * @return void
      */
@@ -700,8 +700,8 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify a non-stringable object host falls back to the default
-     * loopback host.
+     * Verify a non-stringable object host falls back to the default loopback
+     * host.
      *
      * @return void
      */

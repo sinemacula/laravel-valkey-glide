@@ -138,8 +138,8 @@ final class ValkeyGlideConnectorTest extends TestCase
 
     /**
      * Verify connectToCluster returns a connection whose client is a
-     * ValkeyGlideCluster and that the factory received the resolved
-     * connect arguments.
+     * ValkeyGlideCluster and that the factory received the resolved connect
+     * arguments.
      *
      * @return void
      */

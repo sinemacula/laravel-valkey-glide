@@ -45,8 +45,8 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     }
 
     /**
-     * Verify the connector can establish an external connection and
-     * execute PING.
+     * Verify the connector can establish an external connection and execute
+     * PING.
      *
      * @return void
      *
@@ -111,8 +111,8 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
     }
 
     /**
-     * Verify configured key prefixes are applied when mget is used with
-     * key lists.
+     * Verify configured key prefixes are applied when mget is used with key
+     * lists.
      *
      * @return void
      *

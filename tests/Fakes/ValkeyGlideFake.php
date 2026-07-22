@@ -94,8 +94,8 @@ final class ValkeyGlideFake extends \ValkeyGlide
      *
      * The parameter names are intentionally snake_case to mirror the
      * ext-valkey_glide signature: the connector spreads the snake_case
-     * connect-argument array as named arguments, so these names are a fixed
-     * API contract and must not be renamed to camelCase.
+     * connect-argument array as named arguments, so these names are a fixed API
+     * contract and must not be renamed to camelCase.
      *
      * @param  string|null  $host
      * @param  int|null  $port
