@@ -100,7 +100,7 @@ final class AddressResolver
      * Extract nested cluster node definitions from a mixed cluster config.
      *
      * @param  array<int|string, mixed>  $clusterConfig
-     * @return array<int, array<string, mixed>>
+     * @return array<int, array<array-key, mixed>>
      */
     private static function extractClusterNodes(array $clusterConfig): array
     {
@@ -128,7 +128,7 @@ final class AddressResolver
      * Extract host/port node definitions nested one level inside a group.
      *
      * @param  array<int|string, mixed>  $group
-     * @return array<int, array<string, mixed>>
+     * @return array<int, array<array-key, mixed>>
      */
     private static function nodesFromGroup(array $group): array
     {

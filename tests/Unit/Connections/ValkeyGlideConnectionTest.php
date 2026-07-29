@@ -343,6 +343,8 @@ final class ValkeyGlideConnectionTest extends TestCase
      * Verify non-idempotent commands are not retried after transient errors.
      *
      * @return void
+     *
+     * @throws \Throwable
      */
     #[Test]
     public function commandDoesNotRetryNonIdempotentCommands(): void
@@ -421,6 +423,8 @@ final class ValkeyGlideConnectionTest extends TestCase
      * Verify command dispatch emits command failed events on terminal failure.
      *
      * @return void
+     *
+     * @throws \Throwable
      */
     #[Test]
     public function commandDispatchesCommandFailedEvent(): void
@@ -582,6 +586,8 @@ final class ValkeyGlideConnectionTest extends TestCase
      * Verify idempotent command retry is limited to one reconnect attempt.
      *
      * @return void
+     *
+     * @throws \Throwable
      */
     #[Test]
     public function commandRetriesAtMostOnceWhenSecondAttemptAlsoFails(): void
@@ -614,6 +620,8 @@ final class ValkeyGlideConnectionTest extends TestCase
      * Verify non-transient failures are not retried for idempotent commands.
      *
      * @return void
+     *
+     * @throws \Throwable
      */
     #[Test]
     public function commandDoesNotRetryIdempotentCommandWhenErrorIsNotTransient(): void
@@ -841,6 +849,8 @@ final class ValkeyGlideConnectionTest extends TestCase
      * Verify a non-retryable command failure is not retried on the same client.
      *
      * @return void
+     *
+     * @throws \Throwable
      */
     #[Test]
     public function commandDoesNotReinvokeNonRetryableCommandOnTheSameClient(): void

@@ -127,9 +127,9 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
 
         try {
             $client->connect(...Config::connectArguments($config));
-        } catch (ConnectionException $exception) {
+        } catch (ConnectionException $exception) { // @phpstan-ignore catch.neverThrown
             throw $exception;
-        } catch (\Throwable $exception) {
+        } catch (\Throwable $exception) { // @phpstan-ignore catch.neverThrown
             throw new ConnectionException(sprintf('Unable to establish a Valkey GLIDE connection: %s', $exception->getMessage()), previous: $exception);
         }
 
