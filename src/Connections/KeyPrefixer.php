@@ -12,7 +12,7 @@ use SineMacula\Valkey\Support\Cast;
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
  */
-final class KeyPrefixer
+final readonly class KeyPrefixer
 {
     /** @var array<int, string> Commands with a single key argument at index 0. */
     private const array SINGLE_KEY_COMMANDS = [
@@ -127,7 +127,7 @@ final class KeyPrefixer
     public function __construct(
 
         /** The key prefix applied to every outgoing Redis command. */
-        private readonly string $prefix,
+        private string $prefix,
     ) {}
 
     /**

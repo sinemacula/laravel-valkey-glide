@@ -313,6 +313,8 @@ final class ValkeyGlideConnection extends Connection
      * @return mixed
      *
      * @throws \Throwable
+     *
+     * @phpstan-ignore throws.unusedType
      */
     private function invokeAsRawCommand(string $method, array $parameters): mixed
     {
