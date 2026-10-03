@@ -55,6 +55,12 @@ final class ValkeyGlideConnection extends Connection
         'ZSCORE',
     ];
 
+    /** @var array<int, string> Keyless commands a cluster client must run on every primary. */
+    private const array ALL_PRIMARIES_COMMANDS = [
+        'FLUSHALL',
+        'FLUSHDB',
+    ];
+
     /** @var array<int, string> Error fragments treated as transient transport faults. */
     private const array TRANSIENT_ERROR_FRAGMENTS = [
         'connection reset by peer',
@@ -281,6 +287,10 @@ final class ValkeyGlideConnection extends Connection
             return $this->invokeAsRawCommand($normalizedMethod, $parameters);
         }
 
+        if ($this->glideClient instanceof \ValkeyGlideCluster && in_array($normalizedMethod, self::ALL_PRIMARIES_COMMANDS, true)) {
+            return $this->invokeOnAllPrimaries($method, $parameters);
+        }
+
         return call_user_func_array([$this->glideClient, $method], $parameters);
     }
 
@@ -325,6 +335,30 @@ final class ValkeyGlideConnection extends Connection
         }
 
         return $this->glideClient->rawcommand($method, ...$values);
+    }
+
+    /**
+     * Execute a keyless flush on every primary of a cluster.
+     *
+     * Without a route, GLIDE sends the command to a single node, so a flush
+     * would clear only the keys in that node's slots. Laravel calls `flushdb()`
+     * with no arguments (cache store flush) or with phpredis' `'ASYNC'` flag,
+     * which GLIDE takes as a boolean after the route.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return mixed
+     *
+     * @throws \Throwable
+     *
+     * @phpstan-ignore throws.unusedType
+     */
+    private function invokeOnAllPrimaries(string $method, array $parameters): mixed
+    {
+        $flag  = array_values($parameters)[0] ?? null;
+        $async = $flag === true || (is_string($flag) && strtoupper($flag) === 'ASYNC');
+
+        return call_user_func([$this->glideClient, $method], 'allPrimaries', $async);
     }
 
     /**

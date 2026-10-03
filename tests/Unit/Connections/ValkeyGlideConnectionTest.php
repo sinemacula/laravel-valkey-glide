@@ -8,6 +8,7 @@ use Illuminate\Events\Dispatcher;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Redis\Events\CommandFailed;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
@@ -529,6 +530,63 @@ final class ValkeyGlideConnectionTest extends TestCase
         $connection->createSubscription(new \stdClass, static function (): void {
             throw new \LogicException('Callback should not be executed for invalid channels.');
         });
+    }
+
+    /**
+     * Provide flush commands with their phpredis-style arguments.
+     *
+     * @return iterable<string, array{string, array<int, mixed>, bool}>
+     */
+    public static function clusterFlushCommands(): iterable
+    {
+        yield 'flushdb' => ['flushdb', [], false];
+        yield 'flushdb async' => ['flushdb', ['ASYNC'], true];
+        yield 'flushdb sync' => ['flushdb', ['SYNC'], false];
+        yield 'flushdb async bool' => ['flushdb', [true], true];
+        yield 'flushall' => ['flushall', [], false];
+        yield 'flushall async' => ['flushall', ['async'], true];
+    }
+
+    /**
+     * Verify cluster flush commands are routed to every primary.
+     *
+     * @param  string  $method
+     * @param  array<int, mixed>  $parameters
+     * @param  bool  $async
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('clusterFlushCommands')]
+    #[Test]
+    public function clusterFlushCommandsRunOnAllPrimaries(string $method, array $parameters, bool $async): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn($method, true);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertTrue($connection->command($method, $parameters));
+        self::assertSame([['allPrimaries', $async]], $client->callsFor($method));
+    }
+
+    /**
+     * Verify standalone flush commands are passed through unchanged.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function standaloneFlushCommandsPassThroughUnchanged(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('flushdb', true);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertTrue($connection->command('flushdb', ['ASYNC']));
+        self::assertSame([['ASYNC']], $client->callsFor('flushdb'));
     }
 
     /**
