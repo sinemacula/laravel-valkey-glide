@@ -183,6 +183,10 @@ Configure a cluster the standard Laravel way:
 Raw commands (`EVAL` / `EVALSHA`, phpredis-style `SET` with options) are routed to the primary that owns the affected
 key's slot.
 
+`FLUSHDB` and `FLUSHALL` called with no arguments or a phpredis-style `'ASYNC'` / `'SYNC'` flag (as Laravel's
+`Cache::flush()` and `cache:clear` do) run on every primary, so the whole keyspace is cleared. Calls that pass an
+explicit GLIDE route are sent unchanged.
+
 ## ElastiCache Serverless
 
 AWS ElastiCache Serverless runs in cluster mode (single logical database, TLS required) and exposes the primary on port

@@ -543,6 +543,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         yield 'flushdb async' => ['flushdb', ['ASYNC'], true];
         yield 'flushdb sync' => ['flushdb', ['SYNC'], false];
         yield 'flushdb async bool' => ['flushdb', [true], true];
+        yield 'flushdb sync bool' => ['flushdb', [false], false];
         yield 'flushall' => ['flushall', [], false];
         yield 'flushall async' => ['flushall', ['async'], true];
     }
@@ -568,6 +569,65 @@ final class ValkeyGlideConnectionTest extends TestCase
 
         self::assertTrue($connection->command($method, $parameters));
         self::assertSame([['allPrimaries', $async]], $client->callsFor($method));
+    }
+
+    /**
+     * Provide cluster flush calls that already carry an explicit GLIDE route.
+     *
+     * @return iterable<string, array{string, array<array-key, mixed>}>
+     */
+    public static function clusterFlushCommandsWithExplicitRoute(): iterable
+    {
+        yield 'all primaries async' => ['flushdb', ['allPrimaries', true]];
+        yield 'random node' => ['flushdb', ['randomNode']];
+        yield 'host and port' => ['flushdb', [['host' => '10.0.0.1', 'port' => 6379]]];
+        yield 'slot key route' => ['flushall', [['type' => 'primarySlotKey', 'key' => 'key'], true]];
+        yield 'flag with extra argument' => ['flushdb', ['ASYNC', 'extra']];
+        yield 'non-list flag' => ['flushdb', [1 => 'ASYNC']];
+        yield 'null flag' => ['flushdb', [null]];
+    }
+
+    /**
+     * Verify cluster flush calls with an explicit route are passed through
+     * unchanged.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('clusterFlushCommandsWithExplicitRoute')]
+    #[Test]
+    public function clusterFlushCommandsWithExplicitRoutePassThroughUnchanged(string $method, array $parameters): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn($method, true);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertTrue($connection->command($method, $parameters));
+        self::assertSame([array_values($parameters)], $client->callsFor($method));
+    }
+
+    /**
+     * Verify cluster flush calls with named arguments are passed through with
+     * their names intact.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterFlushCommandsWithNamedArgumentsPassThroughUnchanged(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('flushdb', true);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertTrue($connection->command('flushdb', ['route' => 'randomNode', 'async' => true]));
+        self::assertSame([['route' => 'randomNode', 'async' => true]], $client->callsFor('flushdb'));
     }
 
     /**
