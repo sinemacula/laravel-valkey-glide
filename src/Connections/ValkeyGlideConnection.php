@@ -55,6 +55,18 @@ final class ValkeyGlideConnection extends Connection
         'ZSCORE',
     ];
 
+    /** @var array<int, string> Keyless commands a cluster client must run on every primary. */
+    private const array ALL_PRIMARIES_COMMANDS = [
+        'FLUSHALL',
+        'FLUSHDB',
+    ];
+
+    /** @var array<int, string> phpredis-style flush mode flags. */
+    private const array FLUSH_MODE_FLAGS = [
+        'ASYNC',
+        'SYNC',
+    ];
+
     /** @var array<int, string> Error fragments treated as transient transport faults. */
     private const array TRANSIENT_ERROR_FRAGMENTS = [
         'connection reset by peer',
@@ -281,6 +293,10 @@ final class ValkeyGlideConnection extends Connection
             return $this->invokeAsRawCommand($normalizedMethod, $parameters);
         }
 
+        if ($this->shouldInvokeOnAllPrimaries($normalizedMethod, $parameters)) {
+            return $this->invokeOnAllPrimaries($method, $parameters);
+        }
+
         return call_user_func_array([$this->glideClient, $method], $parameters);
     }
 
@@ -328,6 +344,70 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Determine whether a flush must be routed to every cluster primary.
+     *
+     * Only the phpredis-style call shapes Laravel uses qualify: no arguments,
+     * or a single `'ASYNC'` / `'SYNC'` / boolean flag. Any other arguments are
+     * treated as an explicit GLIDE route and passed through untouched, so a
+     * caller targeting a specific node is never widened to all primaries.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return bool
+     */
+    private function shouldInvokeOnAllPrimaries(string $method, array $parameters): bool
+    {
+        if (!$this->glideClient instanceof \ValkeyGlideCluster || !in_array($method, self::ALL_PRIMARIES_COMMANDS, true)) {
+            return false;
+        }
+
+        if ($parameters === []) {
+            return true;
+        }
+
+        return array_is_list($parameters) && count($parameters) === 1 && $this->isFlushModeFlag($parameters[0]);
+    }
+
+    /**
+     * Determine whether a value is a phpredis-style flush mode flag.
+     *
+     * Booleans follow GLIDE's semantics, where `true` requests an asynchronous
+     * flush on both the standalone and cluster clients.
+     *
+     * @param  mixed  $value
+     * @return bool
+     */
+    private function isFlushModeFlag(mixed $value): bool
+    {
+        return is_bool($value)
+            || (is_string($value) && in_array(strtoupper($value), self::FLUSH_MODE_FLAGS, true));
+    }
+
+    /**
+     * Execute a keyless flush on every primary of a cluster.
+     *
+     * Without a route, GLIDE does not fan the command out across the cluster,
+     * so a flush would not clear every slot. Laravel calls `flushdb()` with no
+     * arguments (cache store flush) or with phpredis' `'ASYNC'` flag, which
+     * GLIDE takes as a boolean after the route.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return mixed
+     *
+     * @throws \Throwable
+     *
+     * @phpstan-ignore throws.unusedType
+     */
+    private function invokeOnAllPrimaries(string $method, array $parameters): mixed
+    {
+        $flag  = $parameters[0] ?? null;
+        $async = $flag === true || (is_string($flag) && strtoupper($flag) === 'ASYNC');
+
+        return call_user_func([$this->glideClient, $method], 'allPrimaries', $async);
+    }
+
+    /**
      * Resolve the cluster route for a raw command.
      *
      * Keyed write/script commands (EVAL, EVALSHA, phpredis-style
@@ -350,9 +430,9 @@ final class ValkeyGlideConnection extends Connection
     private function resolveClusterRoute(string $method, array $values): array|string
     {
         $keyIndex = match ($method) {
-            'SET' => 0,
+            'SET'             => 0,
             'EVAL', 'EVALSHA' => (Cast::toNonNegativeInt($values[1] ?? null) ?? 0) >= 1 ? 2 : null,
-            default => null,
+            default           => null,
         };
 
         $key = $keyIndex !== null ? ($values[$keyIndex] ?? null) : null;
