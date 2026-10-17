@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres
 to [Semantic Versioning](https://semver.org/).
 
+## [1.1.1](https://github.com/sinemacula/laravel-valkey-glide/compare/v1.1.0...v1.1.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* run FLUSHDB and FLUSHALL on every cluster primary ([#72](https://github.com/sinemacula/laravel-valkey-glide/issues/72)) ([9d88483](https://github.com/sinemacula/laravel-valkey-glide/commit/9d88483b001ea43fa3a4c3e36cd078636dd16dab))
+
 ## [1.1.0](https://github.com/sinemacula/laravel-valkey-glide/compare/v1.0.0...v1.1.0) (2026-07-22)
 
 
