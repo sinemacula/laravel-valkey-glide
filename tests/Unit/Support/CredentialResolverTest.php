@@ -171,79 +171,105 @@ final class CredentialResolverTest extends TestCase
     }
 
     /**
-     * Verify resolve returns null when IAM config is missing the username
-     * field.
+     * Provide incomplete IAM blocks with the keys the exception must name.
      *
-     * @return void
+     * @return iterable<string, array{0: array<string, mixed>, 1: string}>
      */
-    #[Test]
-    public function resolveReturnsNullWhenIamUsernameMissing(): void
+    public static function incompleteIamProvider(): iterable
     {
-        $credentials = CredentialResolver::resolve([
-            'iam' => [
-                'cluster_name' => 'cluster-a',
-                'region'       => 'eu-west-1',
-            ],
-        ]);
+        yield 'username missing' => [
+            ['cluster_name' => 'cluster-a', 'region' => 'eu-west-1'],
+            'username',
+        ];
 
-        self::assertNull($credentials);
+        yield 'username empty' => [
+            ['username' => '', 'cluster_name' => 'cluster-a', 'region' => 'eu-west-1'],
+            'username',
+        ];
+
+        yield 'cluster_name empty' => [
+            ['username' => 'iam-user', 'cluster_name' => '', 'region' => 'eu-west-1'],
+            'cluster_name',
+        ];
+
+        yield 'region null' => [
+            ['username' => 'iam-user', 'cluster_name' => 'cluster-a', 'region' => null],
+            'region',
+        ];
+
+        yield 'cluster_name and region missing' => [
+            ['username' => 'iam-user'],
+            'cluster_name, region',
+        ];
+
+        yield 'only refresh_interval set' => [
+            ['refresh_interval' => 60],
+            'username, cluster_name, region',
+        ];
     }
 
     /**
-     * Verify resolve returns null when IAM username is empty.
+     * Verify resolve throws naming the missing keys when the IAM block is
+     * incomplete.
      *
+     * @param  array<string, mixed>  $iam
+     * @param  string  $missingKeys
      * @return void
      */
+    #[DataProvider('incompleteIamProvider')]
     #[Test]
-    public function resolveReturnsNullWhenIamUsernameIsEmpty(): void
+    public function resolveThrowsWhenIamConfigIsIncomplete(array $iam, string $missingKeys): void
     {
-        $credentials = CredentialResolver::resolve([
-            'iam' => [
-                'username'     => '',
-                'cluster_name' => 'cluster-a',
-                'region'       => 'eu-west-1',
-            ],
-        ]);
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage(sprintf('Incomplete IAM configuration; missing or empty iam keys [%s].', $missingKeys));
 
-        self::assertNull($credentials);
+        CredentialResolver::resolve(['iam' => $iam]);
     }
 
     /**
-     * Verify resolve returns null when IAM cluster_name is empty.
+     * Verify an incomplete IAM block throws rather than falling back to
+     * password credentials.
      *
      * @return void
      */
     #[Test]
-    public function resolveReturnsNullWhenIamClusterNameIsEmpty(): void
+    public function resolveThrowsForIncompleteIamEvenWhenPasswordIsSet(): void
     {
-        $credentials = CredentialResolver::resolve([
-            'iam' => [
-                'username'     => 'iam-user',
-                'cluster_name' => '',
-                'region'       => 'eu-west-1',
-            ],
-        ]);
+        $this->expectException(\InvalidArgumentException::class);
 
-        self::assertNull($credentials);
+        CredentialResolver::resolve([
+            'password' => 'secret',
+            'iam'      => ['username' => 'iam-user'],
+        ]);
     }
 
     /**
-     * Verify resolve returns null when IAM region is empty.
+     * Provide IAM values that must be treated as absent.
      *
+     * @return iterable<string, array{0: mixed}>
+     */
+    public static function absentIamValueProvider(): iterable
+    {
+        yield 'null' => [null];
+        yield 'empty array' => [[]];
+    }
+
+    /**
+     * Verify a null or empty IAM value falls back to password credentials.
+     *
+     * @param  mixed  $iam
      * @return void
      */
+    #[DataProvider('absentIamValueProvider')]
     #[Test]
-    public function resolveReturnsNullWhenIamRegionIsEmpty(): void
+    public function resolveFallsBackToPasswordWhenIamIsNullOrEmpty(mixed $iam): void
     {
         $credentials = CredentialResolver::resolve([
-            'iam' => [
-                'username'     => 'iam-user',
-                'cluster_name' => 'cluster-a',
-                'region'       => '',
-            ],
+            'password' => 'secret',
+            'iam'      => $iam,
         ]);
 
-        self::assertNull($credentials);
+        self::assertSame(['password' => 'secret'], $credentials);
     }
 
     /**
@@ -362,18 +388,18 @@ final class CredentialResolverTest extends TestCase
             ],
         ];
 
-        yield 'empty iam array' => [['iam' => []]];
+        yield 'incomplete iam block' => [['iam' => ['username' => 'iam-user']]];
     }
 
     /**
-     * Verify hasIam returns true when the iam key holds an array.
+     * Verify hasIam returns true when the iam key holds a non-empty array.
      *
      * @param  array<string, mixed>  $config
      * @return void
      */
     #[DataProvider('iamPresentProvider')]
     #[Test]
-    public function hasIamReturnsTrueWhenIamKeyIsArray(array $config): void
+    public function hasIamReturnsTrueWhenIamKeyIsNonEmptyArray(array $config): void
     {
         self::assertTrue(CredentialResolver::hasIam($config));
     }
@@ -389,17 +415,19 @@ final class CredentialResolverTest extends TestCase
         yield 'iam is a string' => [['iam' => 'not-array']];
         yield 'iam is an integer' => [['iam' => 1]];
         yield 'iam is null' => [['iam' => null]];
+        yield 'empty iam array' => [['iam' => []]];
     }
 
     /**
-     * Verify hasIam returns false when the iam key is absent or not an array.
+     * Verify hasIam returns false when the iam key is absent, empty, or not an
+     * array.
      *
      * @param  array<string, mixed>  $config
      * @return void
      */
     #[DataProvider('iamAbsentProvider')]
     #[Test]
-    public function hasIamReturnsFalseWhenIamKeyIsAbsentOrNotArray(array $config): void
+    public function hasIamReturnsFalseWhenIamKeyIsAbsentEmptyOrNotArray(array $config): void
     {
         self::assertFalse(CredentialResolver::hasIam($config));
     }
