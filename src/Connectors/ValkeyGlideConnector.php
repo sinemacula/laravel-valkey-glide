@@ -153,7 +153,7 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
             ?? static fn (array $arguments): \ValkeyGlideCluster => new \ValkeyGlideCluster(...$arguments);
 
         try {
-            return $factory(Config::connectArguments($config));
+            return $factory(Config::clusterClientArguments($config));
         } catch (ConnectionException $exception) {
             throw $exception;
         } catch (\Throwable $exception) {

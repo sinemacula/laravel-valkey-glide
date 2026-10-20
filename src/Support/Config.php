@@ -4,6 +4,7 @@ declare(strict_types = 1);
 
 namespace SineMacula\Valkey\Support;
 
+use SineMacula\Valkey\Enums\PeriodicChecks;
 use SineMacula\Valkey\Enums\ReadFrom;
 
 /**
@@ -75,7 +76,28 @@ final class Config
             'addresses' => $seedAddresses,
         ]);
 
-        return self::connectArguments($merged);
+        return self::clusterClientArguments($merged);
+    }
+
+    /**
+     * Build GLIDE cluster constructor arguments from a resolved config.
+     *
+     * Extends connectArguments() with the options only the cluster client
+     * accepts; the standalone connect() has no periodic_checks parameter.
+     *
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    public static function clusterClientArguments(#[\SensitiveParameter] array $config): array
+    {
+        $arguments      = self::connectArguments($config);
+        $periodicChecks = self::periodicChecks($config['periodic_checks'] ?? null);
+
+        if ($periodicChecks !== null) {
+            $arguments['periodic_checks'] = $periodicChecks;
+        }
+
+        return $arguments;
     }
 
     /**
@@ -181,6 +203,17 @@ final class Config
     private static function readFrom(mixed $value): ?int
     {
         return ReadFrom::tryFromMixed($value)?->value;
+    }
+
+    /**
+     * Resolve a mixed periodic-checks value to its GLIDE integer constant.
+     *
+     * @param  mixed  $value
+     * @return int|null
+     */
+    private static function periodicChecks(mixed $value): ?int
+    {
+        return PeriodicChecks::tryFromMixed($value)?->value;
     }
 
     /**
