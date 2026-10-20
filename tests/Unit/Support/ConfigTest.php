@@ -1106,4 +1106,124 @@ final class ConfigTest extends TestCase
 
         self::assertSame(\ValkeyGlideCluster::PERIODIC_CHECK_DISABLED, $arguments['periodic_checks']);
     }
+
+    /**
+     * Verify a configured reconnect strategy is forwarded to GLIDE.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsForwardsReconnectStrategy(): void
+    {
+        $arguments = Config::connectArguments([
+            'reconnect_strategy' => ['num_of_retries' => '8', 'factor' => 250],
+        ]);
+
+        self::assertSame(['num_of_retries' => 8, 'factor' => 250], $arguments['reconnect_strategy']);
+    }
+
+    /**
+     * Verify an absent reconnect strategy is omitted so GLIDE keeps its
+     * defaults.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsAbsentReconnectStrategy(): void
+    {
+        $arguments = Config::connectArguments([]);
+
+        self::assertArrayNotHasKey('reconnect_strategy', $arguments);
+    }
+
+    /**
+     * Verify an invalid reconnect strategy is rejected.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsRejectsInvalidReconnectStrategy(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        Config::connectArguments(['reconnect_strategy' => ['jitter_percent' => 150]]);
+    }
+
+    /**
+     * Provide lazy_connect values with the flag each one resolves to.
+     *
+     * @return iterable<string, array{mixed, bool}>
+     */
+    public static function lazyConnectValues(): iterable
+    {
+        yield 'true' => [true, true];
+        yield 'false' => [false, false];
+        yield 'integer one' => [1, true];
+        yield 'integer zero' => [0, false];
+        yield 'string true' => ['true', true];
+        yield 'string false' => ['false', false];
+        yield 'string one' => ['1', true];
+        yield 'string zero' => ['0', false];
+        yield 'empty string' => ['', false];
+    }
+
+    /**
+     * Verify lazy_connect is forwarded as a boolean, keeping false.
+     *
+     * @param  mixed  $value
+     * @param  bool  $expected
+     * @return void
+     */
+    #[DataProvider('lazyConnectValues')]
+    #[Test]
+    public function connectArgumentsForwardsLazyConnectAsBoolean(mixed $value, bool $expected): void
+    {
+        $arguments = Config::connectArguments(['lazy_connect' => $value]);
+
+        self::assertArrayHasKey('lazy_connect', $arguments);
+        self::assertSame($expected, $arguments['lazy_connect']);
+    }
+
+    /**
+     * Verify an absent or null lazy_connect is omitted so GLIDE connects
+     * eagerly as before.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsAbsentLazyConnect(): void
+    {
+        self::assertArrayNotHasKey('lazy_connect', Config::connectArguments([]));
+        self::assertArrayNotHasKey('lazy_connect', Config::connectArguments(['lazy_connect' => null]));
+    }
+
+    /**
+     * Provide lazy_connect values that are not booleans.
+     *
+     * @return iterable<string, array{mixed, string}>
+     */
+    public static function invalidLazyConnectValues(): iterable
+    {
+        yield 'word' => ['sometimes', 'string'];
+        yield 'integer two' => [2, 'int'];
+        yield 'float' => [1.0, 'float'];
+        yield 'array' => [[true], 'array'];
+    }
+
+    /**
+     * Verify lazy_connect values that are not booleans are rejected.
+     *
+     * @param  mixed  $value
+     * @param  string  $type
+     * @return void
+     */
+    #[DataProvider('invalidLazyConnectValues')]
+    #[Test]
+    public function connectArgumentsRejectsNonBooleanLazyConnect(mixed $value, string $type): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage(sprintf('The [lazy_connect] option must be a boolean, received [%s].', $type));
+
+        Config::connectArguments(['lazy_connect' => $value]);
+    }
 }

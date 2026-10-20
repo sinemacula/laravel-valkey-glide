@@ -48,6 +48,7 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
      * @param  array<array-key, mixed>  $options
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
      *
+     * @throws \InvalidArgumentException
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
     #[\Override]
@@ -66,6 +67,7 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
      * @param  array<array-key, mixed>  $options
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
      *
+     * @throws \InvalidArgumentException
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
     #[\Override]
@@ -85,11 +87,13 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
      * @param  array<string, mixed>  $resolvedConfig
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
      *
+     * @throws \InvalidArgumentException
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
     private function createConnection(array $resolvedConfig): ValkeyGlideConnection
     {
-        $connector = fn (): \ValkeyGlide => $this->createClient($resolvedConfig);
+        $arguments = Config::connectArguments($resolvedConfig);
+        $connector = fn (): \ValkeyGlide => $this->createClient($arguments);
 
         return new ValkeyGlideConnection($connector(), $connector, $resolvedConfig);
     }
@@ -101,11 +105,13 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
      * @param  array<string, mixed>  $resolvedConfig
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
      *
+     * @throws \InvalidArgumentException
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
     private function createClusterConnection(array $resolvedConfig): ValkeyGlideConnection
     {
-        $connector = fn (): \ValkeyGlideCluster => $this->createClusterClient($resolvedConfig);
+        $arguments = Config::clusterClientArguments($resolvedConfig);
+        $connector = fn (): \ValkeyGlideCluster => $this->createClusterClient($arguments);
 
         return new ValkeyGlideConnection($connector(), $connector, $resolvedConfig);
     }
@@ -113,12 +119,12 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
     /**
      * Create and connect the underlying GLIDE client instance.
      *
-     * @param  array<string, mixed>  $config
+     * @param  array<string, mixed>  $arguments
      * @return \ValkeyGlide
      *
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
-    private function createClient(#[\SensitiveParameter] array $config): \ValkeyGlide
+    private function createClient(#[\SensitiveParameter] array $arguments): \ValkeyGlide
     {
         $this->validateGlideExtension();
 
@@ -126,7 +132,7 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
         $client        = $clientFactory();
 
         try {
-            $client->connect(...Config::connectArguments($config));
+            $client->connect(...$arguments);
         } catch (ConnectionException $exception) { // @phpstan-ignore catch.neverThrown
             throw $exception;
         } catch (\Throwable $exception) { // @phpstan-ignore catch.neverThrown
@@ -139,12 +145,12 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
     /**
      * Create the underlying GLIDE cluster client instance via its constructor.
      *
-     * @param  array<string, mixed>  $config
+     * @param  array<string, mixed>  $arguments
      * @return \ValkeyGlideCluster
      *
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      */
-    private function createClusterClient(#[\SensitiveParameter] array $config): \ValkeyGlideCluster
+    private function createClusterClient(#[\SensitiveParameter] array $arguments): \ValkeyGlideCluster
     {
         $this->validateGlideExtension();
         $this->validateClusterClass();
@@ -153,7 +159,7 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
             ?? static fn (array $arguments): \ValkeyGlideCluster => new \ValkeyGlideCluster(...$arguments);
 
         try {
-            return $factory(Config::clusterClientArguments($config));
+            return $factory($arguments);
         } catch (ConnectionException $exception) {
             throw $exception;
         } catch (\Throwable $exception) {

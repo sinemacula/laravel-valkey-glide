@@ -91,6 +91,8 @@ The connector normalizes Laravel config into GLIDE connect arguments:
 - `context` -> `context` (TLS stream context; array or resource)
 - `timeout` (seconds) -> `request_timeout` (milliseconds)
 - `connection_timeout` (seconds) -> `advanced_config.connection_timeout` (milliseconds)
+- `reconnect_strategy` -> `reconnect_strategy` (backoff for GLIDE's own reconnects; see Reconnect Strategy)
+- `lazy_connect` -> `lazy_connect` (defer connecting until the first command)
 - `periodic_checks` -> `periodic_checks` (cluster connections only; see Periodic Topology Checks)
 
 Cluster-style configs are normalized into seed `addresses` and connected through the dedicated `ValkeyGlideCluster`
@@ -101,6 +103,7 @@ client via `connectToCluster()`.
 Command execution goes through `ValkeyGlideConnection::command()`.
 
 - Idempotent commands can retry once on recognized transient connection errors
+- The retry runs on a fresh client; the replaced client is closed, and any error from closing it is ignored
 - Non-idempotent commands are not retried
 - Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`)
 - `executeRaw()` is supported via `rawcommand`, with a route added on cluster connections (see Cluster Connections)
@@ -163,6 +166,52 @@ key. Both a config-array and a pre-built `stream_context_create()` resource are 
     ],
 ],
 ```
+
+## Reconnect Strategy
+
+GLIDE reconnects dropped sockets in the background with exponential backoff. Tune that backoff per connection with
+`reconnect_strategy`; any key left out keeps its GLIDE default, and leaving the block out keeps GLIDE's behavior
+unchanged:
+
+| Key              | GLIDE default | Accepted values | Meaning                                                    |
+|------------------|---------------|-----------------|------------------------------------------------------------|
+| `num_of_retries` | `5`           | `1` - `100`     | Number of increasing delays before the delay stops growing |
+| `factor`         | `100`         | `1` - `3600000` | Delay multiplier, in milliseconds                          |
+| `exponent_base`  | `2`           | `1` - `3600000` | Base the delay grows by on each attempt                    |
+| `jitter_percent` | `20`          | `0` - `100`     | Random spread on the increasing delays, as a percentage    |
+
+The delay before attempt `n` is about `factor * exponent_base^n` milliseconds, spread by `jitter_percent`. With the
+defaults that is 200ms, 400ms, 800ms, 1.6s, then 3.2s. A standalone client's first connection gives up after
+`num_of_retries` retries or `connection_timeout`, whichever comes first. Once a connection drops, GLIDE retries at
+once, then after each of the increasing delays, then keeps retrying at the last delay, `factor *
+exponent_base^num_of_retries` milliseconds, without jitter, until the connection comes back.
+
+That last delay must not exceed one hour (3600000ms), with GLIDE's defaults standing in for any key left out. GLIDE
+itself accepts any product, saturating one that overflows, so a larger delay would leave a dropped connection waiting
+months or years between attempts. An `exponent_base` of `1` gives a constant delay of `factor`.
+
+The key names are the extension's: `num_of_retries`, not the GLIDE core's `number_of_retries`. Values must be integers;
+digit-only strings, as read from the environment, are accepted. The extension silently ignores unknown keys and
+non-integer values, so the driver throws an `InvalidArgumentException` for them instead, and for values out of range,
+when the connection is created.
+
+Set `lazy_connect` to `true` to defer connecting until the first command (GLIDE default: `false`). Booleans and their
+environment forms (`'true'`, `'false'`, `'1'`, `'0'`) are accepted.
+
+```php
+'default' => [
+    'host' => env('REDIS_HOST', '127.0.0.1'),
+    'port' => (int) env('REDIS_PORT', 6379),
+    'reconnect_strategy' => [
+        'num_of_retries' => 8,
+        'factor' => 50,
+        'jitter_percent' => 20,
+    ],
+    'lazy_connect' => env('REDIS_LAZY_CONNECT', false),
+],
+```
+
+For clusters, set both keys on the first node or in the cluster's `options`, like the other connection keys.
 
 ## Cluster Connections
 
