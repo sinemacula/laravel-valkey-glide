@@ -39,6 +39,8 @@ final class KeyPrefixerTest extends TestCase
         yield 'all-key command skips non-scalar entries' => ['app:', 'del', ['a', ['x'], 'c'], ['app:a', ['x'], 'app:c']];
         yield 'double-key command prefixes both keys' => ['app:', 'rename', ['old', 'new'], ['app:old', 'app:new']];
         yield 'double-key command tolerates missing second key' => ['app:', 'rename', ['old'], ['app:old']];
+        yield 'bitop prefixes the destination and source keys' => ['app:', 'bitop', ['AND', 'dest', 'a', 'b'], ['AND', 'app:dest', 'app:a', 'app:b']];
+        yield 'bitop with only an operation is left untouched' => ['app:', 'bitop', ['NOT'], ['NOT']];
         yield 'unknown command is left untouched' => ['app:', 'ping', ['payload'], ['payload']];
         yield 'eval prefixes one declared key' => ['app:', 'eval', ['return 1', 1, 'queue', 'arg'], ['return 1', 1, 'app:queue', 'arg']];
         yield 'eval prefixes multiple declared keys' => ['app:', 'eval', ['return 1', 2, 'k1', 'k2', 'arg'], ['return 1', 2, 'app:k1', 'app:k2', 'arg']];

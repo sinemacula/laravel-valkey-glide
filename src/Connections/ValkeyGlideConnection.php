@@ -96,6 +96,9 @@ final class ValkeyGlideConnection extends Connection
     /** @var \SineMacula\Valkey\Connections\KeyPrefixer Key prefixer instance for command parameter normalization. */
     private readonly KeyPrefixer $prefixer;
 
+    /** @var \SineMacula\Valkey\Connections\ClusterRouter Route resolver for raw commands on cluster clients. */
+    private readonly ClusterRouter $router;
+
     /** @var \Closure(int, int): int Random integer generator callback. */
     private readonly \Closure $randomIntGenerator;
 
@@ -116,6 +119,7 @@ final class ValkeyGlideConnection extends Connection
         $this->connector          = $connector;
         $this->config             = $config;
         $this->prefixer           = new KeyPrefixer($this->resolvePrefix($config['prefix'] ?? null));
+        $this->router             = new ClusterRouter;
         $this->randomIntGenerator = $this->resolveRandomIntGenerator($config['random_int'] ?? null);
         $this->sleepCallback      = $this->resolveSleepCallback($config['sleep'] ?? null);
     }
@@ -219,6 +223,9 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Execute a raw command against the underlying GLIDE client.
      *
+     * A cluster client's rawcommand() takes a route before the command, so one
+     * is resolved from the command.
+     *
      * @param  array<array-key, mixed>  $parameters
      * @return mixed
      *
@@ -226,6 +233,10 @@ final class ValkeyGlideConnection extends Connection
      */
     public function executeRaw(array $parameters): mixed
     {
+        if ($this->glideClient instanceof \ValkeyGlideCluster) {
+            $parameters = [$this->router->route($parameters), ...array_values($parameters)];
+        }
+
         return $this->command('rawcommand', $parameters);
     }
 
@@ -415,9 +426,9 @@ final class ValkeyGlideConnection extends Connection
      * Using `primarySlotKey` tells GLIDE to compute the slot from the supplied
      * key and route there, preserving the same per-key semantics as standalone.
      * Fan-out routes (`allPrimaries`, `allNodes`) would execute the write on
-     * every shard; `randomNode` would hit an arbitrary slot owner. `randomNode`
-     * is the correct fallback only for keyless cases where no slot must be
-     * honoured.
+     * every shard. A keyless call, or one whose key is empty or not valid UTF-8
+     * and so cannot travel in a GLIDE route, goes to `randomNode`, and GLIDE
+     * follows the node's `MOVED` redirect to the key's owner.
      *
      * The parameters array is already prefix-normalised before this method
      * runs, so the key used for routing is identical to the key the command
@@ -435,11 +446,7 @@ final class ValkeyGlideConnection extends Connection
             default           => null,
         };
 
-        $key = $keyIndex !== null ? ($values[$keyIndex] ?? null) : null;
-
-        return is_scalar($key) || $key instanceof \Stringable
-            ? ['type' => 'primarySlotKey', 'key' => (string) $key]
-            : 'randomNode';
+        return $this->router->routeKey($keyIndex !== null ? ($values[$keyIndex] ?? null) : null);
     }
 
     /**

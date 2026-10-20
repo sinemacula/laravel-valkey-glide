@@ -107,7 +107,6 @@ final readonly class KeyPrefixer
 
     /** @var array<int, string> Commands with key arguments at indexes 0 and 1. */
     private const array DOUBLE_KEY_COMMANDS = [
-        'BITOP',
         'BRPOPLPUSH',
         'COPY',
         'RENAME',
@@ -154,6 +153,7 @@ final readonly class KeyPrefixer
         }
 
         return match (true) {
+            $normalizedMethod === 'BITOP'                                => $this->prefixBitopKeys($parameters),
             in_array($normalizedMethod, self::ALL_KEY_COMMANDS, true)    => $this->prefixAllParameters($parameters),
             in_array($normalizedMethod, self::DOUBLE_KEY_COMMANDS, true) => $this->prefixParameterAt(
                 $this->prefixParameterAt($parameters, 0),
@@ -258,6 +258,20 @@ final readonly class KeyPrefixer
         }
 
         return $parameters;
+    }
+
+    /**
+     * Prefix BITOP key parameters.
+     *
+     * Every argument is prefixed, then the operation at index 0 is restored, as
+     * the union keeps its left-hand entries.
+     *
+     * @param  array<array-key, mixed>  $parameters
+     * @return array<array-key, mixed>
+     */
+    private function prefixBitopKeys(array $parameters): array
+    {
+        return array_slice($parameters, 0, 1, true) + $this->prefixAllParameters($parameters);
     }
 
     /**
