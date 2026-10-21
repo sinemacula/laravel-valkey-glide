@@ -13,6 +13,15 @@ if (class_exists(ValkeyGlideCluster::class, false)) {
     return;
 }
 
+/**
+ * Stream commands sent to the client directly, declared for static analysis
+ * only; at runtime they reach the client's own methods, or __call() here.
+ *
+ * @method self|string|false xadd(string $key, string $id, array<string, mixed> $values, int $maxlen = 0, bool $approx = false)
+ * @method self|array<string, array<string, string>>|bool xrange(string $key, string $start, string $end, int $count = -1)
+ * @method self|int|false xdel(string $key, array<int, string> $ids)
+ * @method self|int|false xtrim(string $key, string $threshold, bool $approx = false, bool $minid = false, int $limit = -1)
+ */
 class ValkeyGlideCluster
 {
     /** Periodic topology check constants. */
