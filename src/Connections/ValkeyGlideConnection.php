@@ -221,6 +221,20 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Get the key prefix this connection applies to command keys.
+     *
+     * GLIDE has no client-side prefix, so code that builds key patterns, such
+     * as a SCAN MATCH pattern, reads the prefix here. Empty when none is
+     * configured.
+     *
+     * @return string
+     */
+    public function getPrefix(): string
+    {
+        return $this->prefixer->prefix();
+    }
+
+    /**
      * Execute a raw command against the underlying GLIDE client.
      *
      * A cluster client's rawcommand() takes a route before the command, so one
@@ -248,6 +262,26 @@ final class ValkeyGlideConnection extends Connection
     public function disconnect(): void
     {
         $this->glideClient->close();
+    }
+
+    /**
+     * Parse the command's parameters for event dispatching.
+     *
+     * A cluster scan takes a ClusterScanCursor, which cannot be cast to a
+     * string, so listeners that format the parameters would fail on it. The
+     * event carries the cursor id it scans from instead, as a standalone scan
+     * carries its cursor; the client still receives the object.
+     *
+     * @param  array<array-key, mixed>  $parameters
+     * @return array<array-key, mixed>
+     */
+    #[\Override]
+    protected function parseParametersForEvent(array $parameters): array
+    {
+        return array_map(
+            static fn (mixed $parameter): mixed => $parameter instanceof \ClusterScanCursor ? $parameter->getCursor() : $parameter,
+            $parameters,
+        );
     }
 
     /**
@@ -308,7 +342,30 @@ final class ValkeyGlideConnection extends Connection
             return $this->invokeOnAllPrimaries($method, $parameters);
         }
 
-        return call_user_func_array([$this->glideClient, $method], $parameters);
+        return call_user_func_array([$this->glideClient, $method], $this->routeClusterPing($normalizedMethod, $parameters));
+    }
+
+    /**
+     * Add a route to a ping on a cluster client that carries none.
+     *
+     * `ValkeyGlideCluster::ping()` takes a route before the optional message
+     * and returns false without one, so a bare `ping()`, as health checks call
+     * it, would report a healthy cluster as down. It goes to every primary, the
+     * route GLIDE gives `PING` and the one `executeRaw()` adds. Any arguments
+     * are taken as a route, as phpredis' `RedisCluster::ping()` takes them, and
+     * passed through untouched.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return array<array-key, mixed>
+     */
+    private function routeClusterPing(string $method, array $parameters): array
+    {
+        if ($method !== 'PING' || $parameters !== [] || !$this->glideClient instanceof \ValkeyGlideCluster) {
+            return $parameters;
+        }
+
+        return [$this->router->route(['PING'])];
     }
 
     /**

@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Cache;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Test;
 use SineMacula\Valkey\Cache\ValkeyGlideStore;
+use SineMacula\Valkey\Cache\ValkeyGlideTaggedCache;
 use SineMacula\Valkey\Connectors\ValkeyGlideConnector;
 use SineMacula\Valkey\ValkeyGlideServiceProvider;
 use Tests\TestCase;
@@ -60,6 +61,30 @@ final class ValkeyGlideServiceProviderTest extends TestCase
             $resolvedManager,
             RedisManager::class,
         );
+
+        self::assertInstanceOf(ValkeyGlideConnector::class, $resolver());
+    }
+
+    /**
+     * Verify the connector creator is registered on a Redis manager resolved
+     * before the provider registers.
+     *
+     * @return void
+     */
+    #[Test]
+    public function registerAddsValkeyGlideConnectorCreatorToARedisManagerResolvedFirst(): void
+    {
+        $app = $this->app;
+
+        self::assertNotNull($app);
+
+        $redis = new RedisManager($app, 'valkey-glide', []);
+
+        $app->instance('redis', $redis);
+
+        (new ValkeyGlideServiceProvider($app))->register();
+
+        $resolver = \Closure::bind(fn (): mixed => $this->connector(), $redis, RedisManager::class);
 
         self::assertInstanceOf(ValkeyGlideConnector::class, $resolver());
     }
@@ -191,6 +216,23 @@ final class ValkeyGlideServiceProviderTest extends TestCase
         ]);
 
         self::assertInstanceOf(ValkeyGlideStore::class, Cache::store('glide')->getStore());
+    }
+
+    /**
+     * Verify the redis cache store's tags use the GLIDE-aware tagged cache,
+     * without connecting.
+     *
+     * @return void
+     */
+    #[Test]
+    public function redisCacheStoreTagsUseTheGlideTaggedCache(): void
+    {
+        config(['cache.stores.redis' => ['driver' => 'redis']]);
+
+        $repository = Cache::store('redis');
+
+        self::assertInstanceOf(Repository::class, $repository);
+        self::assertInstanceOf(ValkeyGlideTaggedCache::class, $repository->tags(['a']));
     }
 
     /**

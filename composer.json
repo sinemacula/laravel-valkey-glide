@@ -51,6 +51,7 @@
             "Tests\\": "tests/"
         },
         "files": [
+            "stubs/ClusterScanCursor.php",
             "stubs/ValkeyGlide.php",
             "stubs/ValkeyGlideCluster.php"
         ]

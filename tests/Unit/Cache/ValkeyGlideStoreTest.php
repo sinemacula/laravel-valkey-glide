@@ -4,13 +4,22 @@ declare(strict_types = 1);
 
 namespace Tests\Unit\Cache;
 
+use Illuminate\Cache\RedisTaggedCache;
 use Illuminate\Contracts\Redis\Factory;
+use Illuminate\Events\Dispatcher;
 use Illuminate\Redis\Connections\Connection;
+use Illuminate\Redis\Events\CommandExecuted;
+use Illuminate\Support\LazyCollection;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Cache\ValkeyGlideStore;
+use SineMacula\Valkey\Cache\ValkeyGlideTagSet;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use Tests\Fakes\LaravelConnectionFake;
+use Tests\Fakes\RedisFactoryFake;
+use Tests\Fakes\ValkeyGlideClusterFake;
+use Tests\Fakes\ValkeyGlideFake;
 
 /**
  * GLIDE-aware cache store test case.
@@ -114,6 +123,273 @@ final class ValkeyGlideStoreTest extends TestCase
     }
 
     /**
+     * Verify tags() gives the GLIDE-aware tagged cache for a list of names.
+     *
+     * @return void
+     */
+    #[Test]
+    public function tagsReturnsAGlideTaggedCacheForAListOfNames(): void
+    {
+        $cache = $this->store(new ValkeyGlideFake)->tags(['a', 'b']);
+
+        self::assertInstanceOf(RedisTaggedCache::class, $cache);
+        self::assertInstanceOf(ValkeyGlideTagSet::class, $cache->getTags());
+        self::assertSame(['a', 'b'], $cache->getTags()->getNames());
+    }
+
+    /**
+     * Verify tags() accepts the names as separate arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function tagsAcceptsVariadicNames(): void
+    {
+        self::assertSame(['a', 'b'], $this->store(new ValkeyGlideFake)->tags('a', 'b')->getTags()->getNames());
+    }
+
+    /**
+     * Verify tags() does not resolve the connection, so no connection is made
+     * until a tag operation runs.
+     *
+     * @return void
+     */
+    #[Test]
+    public function tagsDoesNotResolveTheConnection(): void
+    {
+        $redis = new class implements Factory {
+            /**
+             * Fail the test when a connection is resolved.
+             *
+             * @param  string|\UnitEnum|null  $name
+             * @return \Illuminate\Redis\Connections\Connection
+             *
+             * @throws \LogicException
+             */
+            #[\Override]
+            public function connection($name = null): Connection
+            {
+                throw new \LogicException('The connection must not be resolved.');
+            }
+        };
+
+        self::assertSame(['a'], (new ValkeyGlideStore($redis, 'cache:'))->tags(['a'])->getTags()->getNames());
+    }
+
+    /**
+     * Verify flushStaleTags() scans a standalone server for the tags' sorted
+     * sets from cursor '0' until GLIDE writes '0' back, and prunes each one.
+     *
+     * @return void
+     */
+    #[Test]
+    public function flushStaleTagsScansAStandaloneServerForEveryTagSet(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [
+            ['17', ['conn:cache:tag:a:entries', 'conn:cache:tag:b:entries']],
+            ['0', ['conn:cache:tag:c:entries']],
+        ]);
+
+        $this->store($client, 'conn:')->flushStaleTags();
+
+        self::assertSame([
+            ['0', 'conn:cache:tag:*:entries', 1000, 'zset'],
+            ['17', 'conn:cache:tag:*:entries', 1000, 'zset'],
+        ], $client->callsFor('scan'));
+        self::assertSame(
+            ['conn:cache:tag:a:entries', 'conn:cache:tag:b:entries', 'conn:cache:tag:c:entries'],
+            array_column($client->callsFor('zremrangebyscore'), 0),
+        );
+    }
+
+    /**
+     * Verify flushStaleTags() scans every primary of a cluster, building a new
+     * cursor from each next cursor id.
+     *
+     * @return void
+     */
+    #[Test]
+    public function flushStaleTagsWalksEveryClusterNode(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [
+            ['id-1', ['conn:cache:tag:a:entries']],
+            ['id-2', []],
+            ['0', ['conn:cache:tag:c:entries']],
+        ]);
+
+        $this->store($client, 'conn:')->flushStaleTags();
+
+        self::assertSame([
+            ['0', 'conn:cache:tag:*:entries', 1000, 'zset'],
+            ['id-1', 'conn:cache:tag:*:entries', 1000, 'zset'],
+            ['id-2', 'conn:cache:tag:*:entries', 1000, 'zset'],
+        ], $client->callsFor('scan'));
+        self::assertSame(
+            ['conn:cache:tag:a:entries', 'conn:cache:tag:c:entries'],
+            array_column($client->callsFor('zremrangebyscore'), 0),
+        );
+    }
+
+    /**
+     * Verify each cluster scan of flushStaleTags() dispatches a command event
+     * carrying the cursor id it scans from.
+     *
+     * @return void
+     */
+    #[Test]
+    public function flushStaleTagsReportsEachClusterScanCursorId(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [
+            ['id-1', ['conn:cache:tag:a:entries']],
+            ['0', []],
+        ]);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'conn:']);
+        $dispatcher = new Dispatcher;
+        $scans      = [];
+
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$scans): void {
+            if ($event->command !== 'scan') {
+                return;
+            }
+
+            $scans[] = implode(' ', $event->parameters);
+        });
+
+        $connection->setEventDispatcher($dispatcher);
+
+        (new ValkeyGlideStore(new RedisFactoryFake($connection), 'cache:'))->flushStaleTags();
+
+        self::assertSame([
+            '0 conn:cache:tag:*:entries 1000 zset',
+            'id-1 conn:cache:tag:*:entries 1000 zset',
+        ], $scans);
+    }
+
+    /**
+     * Verify the glob characters of both prefixes are escaped in the SCAN
+     * pattern, while the tag name is still read from the key.
+     *
+     * @return void
+     */
+    #[Test]
+    public function flushStaleTagsEscapesGlobCharactersInThePrefixes(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [['0', ['a*b?[c]\x:tag:t:entries']]]);
+
+        $this->store($client, 'a*b?[c]\\', 'x:')->flushStaleTags();
+
+        self::assertSame([['0', 'a\*b\?\[c\]\\\x:tag:*:entries', 1000, 'zset']], $client->callsFor('scan'));
+        self::assertSame(['a*b?[c]\x:tag:t:entries'], array_column($client->callsFor('zremrangebyscore'), 0));
+    }
+
+    /**
+     * Verify the SCAN pattern is the bare tag pattern when neither prefix is
+     * set.
+     *
+     * @return void
+     */
+    #[Test]
+    public function flushStaleTagsWithoutAnyPrefix(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [['0', ['tag:t:entries']]]);
+
+        $this->store($client, '', '')->flushStaleTags();
+
+        self::assertSame([['0', 'tag:*:entries', 1000, 'zset']], $client->callsFor('scan'));
+        self::assertSame(['tag:t:entries'], array_column($client->callsFor('zremrangebyscore'), 0));
+    }
+
+    /**
+     * Verify a failed standalone scan throws at once.
+     *
+     * @return void
+     */
+    #[Test]
+    public function flushStaleTagsThrowsWhenAStandaloneScanFails(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [['0', false]]);
+
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('Expected array response from scan on [conn:cache:tag:*:entries], received [bool].');
+
+        try {
+            $this->store($client, 'conn:')->flushStaleTags();
+        } finally {
+            self::assertCount(1, $client->callsFor('scan'));
+        }
+    }
+
+    /**
+     * Verify a failed cluster scan throws at once, rather than ending the scan
+     * as if it were complete.
+     *
+     * @return void
+     */
+    #[Test]
+    public function flushStaleTagsThrowsWhenAClusterScanFails(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [['id-1', false]]);
+
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('Expected array response from scan on [conn:cache:tag:*:entries], received [bool].');
+
+        try {
+            $this->store($client, 'conn:')->flushStaleTags();
+        } finally {
+            self::assertCount(1, $client->callsFor('scan'));
+        }
+    }
+
+    /**
+     * Verify the chunk size is the COUNT hint of each scan, defaulting to a
+     * thousand when it is not a number.
+     *
+     * @return void
+     */
+    #[Test]
+    public function currentTagsUsesTheChunkSizeAsTheScanCount(): void
+    {
+        $client      = new ValkeyGlideFake;
+        $store       = $this->store($client, 'conn:');
+        $currentTags = new \ReflectionMethod($store, 'currentTags');
+        $sizedTags   = $currentTags->invoke($store, '500');
+        $defaultTags = $currentTags->invoke($store, 'x');
+
+        self::assertInstanceOf(LazyCollection::class, $sizedTags);
+        self::assertInstanceOf(LazyCollection::class, $defaultTags);
+
+        $sizedTags->all();
+        $defaultTags->all();
+
+        self::assertSame([500, 1000], array_column($client->callsFor('scan'), 2));
+    }
+
+    /**
+     * Verify any other connection runs Laravel's scan and prune.
+     *
+     * @return void
+     */
+    #[Test]
+    public function flushStaleTagsRunsLaravelsOverOtherConnections(): void
+    {
+        $connection = new LaravelConnectionFake;
+        $connection->willReturn('scan', ['0', ['cache:tag:a:entries']]);
+
+        (new ValkeyGlideStore(new RedisFactoryFake($connection), 'cache:'))->flushStaleTags();
+
+        self::assertSame(['scan', ['0', ['match' => 'cache:tag:*:entries', 'count' => 1000]]], $connection->commands[0]);
+        self::assertSame('pipeline', $connection->commands[1][0]);
+    }
+
+    /**
      * Build a cluster client answering each SETEX with the given replies, in
      * turn.
      *
@@ -154,35 +430,14 @@ final class ValkeyGlideStoreTest extends TestCase
      * Build a store over a connection to the given client.
      *
      * @param  \ValkeyGlide|\ValkeyGlideCluster  $client
+     * @param  string  $connectionPrefix
+     * @param  string  $cachePrefix
      * @return \SineMacula\Valkey\Cache\ValkeyGlideStore
      */
-    private function store(\ValkeyGlide|\ValkeyGlideCluster $client): ValkeyGlideStore
+    private function store(\ValkeyGlide|\ValkeyGlideCluster $client, string $connectionPrefix = '', string $cachePrefix = 'cache:'): ValkeyGlideStore
     {
-        $redis = new readonly class (new ValkeyGlideConnection($client)) implements Factory {
-            /**
-             * Create a factory answering with the given connection.
-             *
-             * @param  \Illuminate\Redis\Connections\Connection  $connection
-             */
-            public function __construct(
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => $connectionPrefix]);
 
-                /** The connection given for every name. */
-                private Connection $connection,
-            ) {}
-
-            /**
-             * Return the connection, whatever its name.
-             *
-             * @param  string|\UnitEnum|null  $name
-             * @return \Illuminate\Redis\Connections\Connection
-             */
-            #[\Override]
-            public function connection($name = null): Connection
-            {
-                return $this->connection;
-            }
-        };
-
-        return new ValkeyGlideStore($redis, 'cache:');
+        return new ValkeyGlideStore(new RedisFactoryFake($connection), $cachePrefix);
     }
 }
