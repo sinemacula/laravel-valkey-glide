@@ -65,6 +65,30 @@ final class ValkeyGlideServiceProviderTest extends TestCase
     }
 
     /**
+     * Verify the connector creator is registered on a Redis manager resolved
+     * before the provider registers.
+     *
+     * @return void
+     */
+    #[Test]
+    public function registerAddsValkeyGlideConnectorCreatorToARedisManagerResolvedFirst(): void
+    {
+        $app = $this->app;
+
+        self::assertNotNull($app);
+
+        $redis = new RedisManager($app, 'valkey-glide', []);
+
+        $app->instance('redis', $redis);
+
+        (new ValkeyGlideServiceProvider($app))->register();
+
+        $resolver = \Closure::bind(fn (): mixed => $this->connector(), $redis, RedisManager::class);
+
+        self::assertInstanceOf(ValkeyGlideConnector::class, $resolver());
+    }
+
+    /**
      * Verify the redis cache driver builds the GLIDE-aware store from the
      * store's configuration, as Laravel's own driver does.
      *
