@@ -69,6 +69,10 @@ vendor/bin/phpunit tests/Unit/Support/ConfigTest.php
 vendor/bin/phpunit --filter connectArgumentsEnablesTlsWhenConfigured tests/Unit/Support/ConfigTest.php
 ```
 
+The external suite (`composer test:external`) needs `ext-valkey_glide` and a live Valkey server; see the README's
+Testing section for its environment variables. CI runs it on every pull request, against a standalone server and a
+cluster, so changes that touch the extension's behaviour should add or update an external test.
+
 ### Standards
 
 - PHPStan level 8 compliance

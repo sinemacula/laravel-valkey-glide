@@ -1024,6 +1024,9 @@ The external suite reads connection details from optional environment variables:
 The TLS and credential variables apply to the standalone server only: the cluster cases connect without TLS or
 credentials, so they need a cluster that accepts plain, unauthenticated connections.
 
+CI runs the external suite against a standalone server and a three-node cluster (the `external` job in
+`.github/workflows/tests.yml`).
+
 All available Composer scripts:
 
 ```sh
