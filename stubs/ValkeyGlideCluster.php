@@ -92,6 +92,36 @@ class ValkeyGlideCluster
     public function close(): bool {}
 
     /**
+     * Iterate the members of a sorted set.
+     *
+     * The cursor is written back through the reference, and is '0' once the
+     * scan is complete. An explicit null pattern throws a TypeError.
+     *
+     * @param  string  $key
+     * @param  string|null  $iterator
+     * @param  string|null  $pattern
+     * @param  int  $count
+     * @return array<array-key, mixed>|bool|self
+     */
+    public function zscan(string $key, ?string &$iterator, ?string $pattern = null, int $count = 0): array|bool|self {}
+
+    /**
+     * Iterate the keyspace of every primary, one node after another.
+     *
+     * The scan writes the next cursor id into the cursor, read with
+     * getNextCursor(). Build a new ClusterScanCursor from that id for every
+     * call: passing the same object again rescans the first node. The scan is
+     * complete once the new cursor reports isFinished().
+     *
+     * @param  \ClusterScanCursor  $iterator
+     * @param  string|null  $pattern
+     * @param  int  $count
+     * @param  string|null  $type
+     * @return array<int, string>|bool
+     */
+    public function scan(ClusterScanCursor $iterator, ?string $pattern = null, int $count = 0, ?string $type = null): array|bool {}
+
+    /**
      * Get the value of a key.
      *
      * @param  string  $key

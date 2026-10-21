@@ -221,6 +221,20 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Get the key prefix this connection applies to command keys.
+     *
+     * GLIDE has no client-side prefix, so code that builds key patterns, such
+     * as a SCAN MATCH pattern, reads the prefix here. Empty when none is
+     * configured.
+     *
+     * @return string
+     */
+    public function getPrefix(): string
+    {
+        return $this->prefixer->prefix();
+    }
+
+    /**
      * Execute a raw command against the underlying GLIDE client.
      *
      * A cluster client's rawcommand() takes a route before the command, so one
