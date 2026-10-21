@@ -14,7 +14,7 @@ use SineMacula\Valkey\Support\Cast;
  */
 final readonly class KeyPrefixer
 {
-    /** @var array<int, string> Commands with a single key argument at index 0. */
+    /** @var array<int, string> Commands with a single key argument at index 0; a member scan's by-reference cursor at index 1 is left as it is. */
     private const array SINGLE_KEY_COMMANDS = [
         'APPEND',
         'DECR',
@@ -39,6 +39,7 @@ final readonly class KeyPrefixer
         'HKEYS',
         'HLEN',
         'HMGET',
+        'HSCAN',
         'HSET',
         'HSETNX',
         'HSTRLEN',
@@ -78,6 +79,7 @@ final readonly class KeyPrefixer
         'SMEMBERS',
         'SPOP',
         'SREM',
+        'SSCAN',
         'STRLEN',
         'TTL',
         'TYPE',
@@ -89,6 +91,11 @@ final readonly class KeyPrefixer
         'ZRANGEBYSCORE',
         'ZRANK',
         'ZREM',
+        'ZREMRANGEBYRANK',
+        'ZREMRANGEBYSCORE',
+        'ZREVRANGEBYSCORE',
+        'ZREVRANK',
+        'ZSCAN',
         'ZSCORE',
     ];
 
@@ -128,6 +135,16 @@ final readonly class KeyPrefixer
         /** The key prefix applied to every outgoing Redis command. */
         private string $prefix,
     ) {}
+
+    /**
+     * Get the configured key prefix; empty when prefixing is disabled.
+     *
+     * @return string
+     */
+    public function prefix(): string
+    {
+        return $this->prefix;
+    }
 
     /**
      * Apply the configured prefix to command parameters.

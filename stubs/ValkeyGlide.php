@@ -191,6 +191,34 @@ class ValkeyGlide
     public function rawcommand(string $command, mixed ...$args): mixed {}
 
     /**
+     * Iterate the members of a sorted set.
+     *
+     * The cursor is written back through the reference, and is '0' once the
+     * scan is complete. An explicit null pattern throws a TypeError.
+     *
+     * @param  string  $key
+     * @param  string|null  $iterator
+     * @param  string|null  $pattern
+     * @param  int  $count
+     * @return array<array-key, mixed>|false|self
+     */
+    public function zscan(string $key, ?string &$iterator, ?string $pattern = null, int $count = 0): array|false|self {}
+
+    /**
+     * Iterate the keyspace.
+     *
+     * The cursor is written back through the reference, and is '0' once the
+     * scan is complete. An explicit null pattern throws a TypeError.
+     *
+     * @param  string|null  $iterator
+     * @param  string|null  $pattern
+     * @param  int  $count
+     * @param  string|null  $type
+     * @return array<int, string>|false
+     */
+    public function scan(?string &$iterator, ?string $pattern = null, int $count = 0, ?string $type = null): array|false {}
+
+    /**
      * Get the value of a key.
      *
      * @param  string  $key
