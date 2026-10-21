@@ -43,6 +43,10 @@ final class ValkeyGlideConnectionTest extends TestCase
     private const string UNSUPPORTED_KEY_LIST_MESSAGE = '[%s] takes its keys as separate arguments or as a single list of keys, not a list beside other'
         . ' arguments or a list of lists, which GLIDE would send as the key "Array" or drop.';
 
+    /** @var string Message for a cluster INFO called without a route. */
+    private const string UNROUTED_CLUSTER_INFO_MESSAGE = '[INFO] on a cluster connection needs a route, as each node reports only itself;'
+        . ' pass one first, such as info(\'randomNode\') or info(\'randomNode\', \'memory\').';
+
     /** @var string Message for a command GLIDE cannot buffer inside a transaction. */
     private const string IMMEDIATE_IN_TRANSACTION_MESSAGE = '[%s] cannot run inside a transaction, as GLIDE sends it at once, outside the MULTI block,'
         . ' so the transaction would not be atomic; use pipeline() instead.';
@@ -956,6 +960,257 @@ final class ValkeyGlideConnectionTest extends TestCase
 
         self::assertTrue($connection->command('ping'));
         self::assertSame([[]], $client->callsFor('ping'));
+    }
+
+    /**
+     * Provide cluster commands called without a route, with the route GLIDE
+     * gives each one and the arguments the client should receive.
+     *
+     * @return iterable<string, array{string, array<int, mixed>, mixed, array<int, mixed>}>
+     */
+    public static function clusterCommandsWithoutRoute(): iterable
+    {
+        yield 'dbsize sums every primary' => ['dbsize', [], 42, ['allPrimaries']];
+        yield 'randomkey asks every primary' => ['randomkey', [], 'user:1', ['allPrimaries']];
+        yield 'time asks a random node' => ['time', [], ['1700000000', '123'], ['randomNode']];
+        yield 'echo asks a random node' => ['echo', ['hello'], 'hello', ['randomNode', 'hello']];
+    }
+
+    /**
+     * Verify cluster keyless commands called without a route take the route
+     * GLIDE gives them.
+     *
+     * @param  string  $method
+     * @param  array<int, mixed>  $parameters
+     * @param  mixed  $reply
+     * @param  array<int, mixed>  $expectedArguments
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('clusterCommandsWithoutRoute')]
+    #[Test]
+    public function clusterCommandWithoutRouteTakesGlideDefaultRoute(string $method, array $parameters, mixed $reply, array $expectedArguments): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn($method, $reply);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame($reply, $connection->command($method, $parameters));
+        self::assertSame([$expectedArguments], $client->callsFor($method));
+    }
+
+    /**
+     * Verify a routed cluster command's events carry the caller's arguments,
+     * not the route added to them.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterCommandWithoutRouteReportsCallerArgumentsToListeners(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('echo', 'hello');
+
+        $dispatcher = new Dispatcher;
+        $events     = [];
+
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$events): void {
+            $events[] = $event;
+        });
+
+        $connection = new ValkeyGlideConnection($client);
+        $connection->setEventDispatcher($dispatcher);
+
+        $connection->command('echo', ['hello']);
+
+        self::assertCount(1, $events);
+        self::assertSame('echo', $events[0]->command);
+        self::assertSame(['hello'], $events[0]->parameters);
+    }
+
+    /**
+     * Provide cluster commands that already carry an explicit GLIDE route.
+     *
+     * @return iterable<string, array{string, array<array-key, mixed>}>
+     */
+    public static function clusterCommandsWithExplicitRoute(): iterable
+    {
+        yield 'dbsize on a random node' => ['dbsize', ['randomNode']];
+        yield 'dbsize on a node by address' => ['dbsize', [['type' => 'routeByAddress', 'host' => '10.0.0.1', 'port' => 6379]]];
+        yield 'dbsize on the primary of a key' => ['dbsize', ['user:1']];
+        yield 'randomkey on a random node' => ['randomkey', ['randomNode']];
+        yield 'time on every node' => ['time', ['allNodes']];
+        yield 'echo on a node by address' => ['echo', [['type' => 'routeByAddress', 'host' => '10.0.0.1', 'port' => 6379], 'hello']];
+        yield 'echo with named arguments' => ['echo', ['route' => 'randomNode', 'msg' => 'hello']];
+        yield 'info on a random node' => ['info', ['randomNode']];
+        yield 'info sections on a node by address' => ['info', [['type' => 'routeByAddress', 'host' => '10.0.0.1', 'port' => 6379], 'memory', 'cpu']];
+    }
+
+    /**
+     * Verify cluster commands with an explicit route are passed through
+     * unchanged.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('clusterCommandsWithExplicitRoute')]
+    #[Test]
+    public function clusterCommandWithExplicitRoutePassesThroughUnchanged(string $method, array $parameters): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn($method, 'reply');
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame('reply', $connection->command($method, $parameters));
+        self::assertSame([$parameters], $client->callsFor($method));
+    }
+
+    /**
+     * Verify a cluster command called with named arguments is passed through
+     * unchanged, even when it has as many as a call without a route.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterCommandWithNamedArgumentsPassesThroughUnchanged(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->command('echo', ['msg' => 'hello']);
+
+        self::assertSame([['msg' => 'hello']], $client->callsFor('echo'));
+    }
+
+    /**
+     * Provide standalone keyless commands, which take no route.
+     *
+     * @return iterable<string, array{string, array<int, mixed>}>
+     */
+    public static function standaloneKeylessCommands(): iterable
+    {
+        yield 'dbsize' => ['dbsize', []];
+        yield 'randomkey' => ['randomkey', []];
+        yield 'time' => ['time', []];
+        yield 'echo' => ['echo', ['hello']];
+        yield 'info' => ['info', []];
+        yield 'info sections' => ['info', ['memory']];
+    }
+
+    /**
+     * Verify standalone keyless commands are passed through unchanged.
+     *
+     * @param  string  $method
+     * @param  array<int, mixed>  $parameters
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('standaloneKeylessCommands')]
+    #[Test]
+    public function standaloneKeylessCommandPassesThroughUnchanged(string $method, array $parameters): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn($method, 'reply');
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame('reply', $connection->command($method, $parameters));
+        self::assertSame([$parameters], $client->callsFor($method));
+    }
+
+    /**
+     * Verify a cluster INFO without a route is refused before anything is sent,
+     * as no single reply could describe the cluster.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterInfoWithoutRouteIsRefusedBeforeSending(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+
+        $dispatcher = new Dispatcher;
+        $events     = [];
+
+        $dispatcher->listen([CommandExecuted::class, CommandFailed::class], static function (object $event) use (&$events): void {
+            $events[] = $event;
+        });
+
+        $connection = new ValkeyGlideConnection($client);
+        $connection->setEventDispatcher($dispatcher);
+
+        try {
+            $connection->command('info');
+            self::fail('Expected an unrouted cluster INFO to be refused.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertSame(self::UNROUTED_CLUSTER_INFO_MESSAGE, $exception->getMessage());
+        }
+
+        self::assertSame([], $client->callsFor('info'));
+        self::assertSame([], $events);
+    }
+
+    /**
+     * Verify a cluster pipeline runs a keyless command without a route on the
+     * route GLIDE gives it, in call order.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterPipelineRunsKeylessCommandWithoutRouteOnGlideDefaultRoute(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('dbsize', 42);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $results = $connection->pipeline(static fn (ValkeyGlideBatch $pipe): ValkeyGlideBatch => $pipe->set('a', '1')->dbsize()->set('b', '2'));
+
+        self::assertSame([true, 42, true], $results);
+        self::assertSame([['allPrimaries']], $client->callsFor('dbsize'));
+    }
+
+    /**
+     * Verify a cluster pipeline refuses an INFO without a route before anything
+     * it buffered is sent.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterPipelineRefusesInfoWithoutRouteBeforeSending(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->pipeline(static fn (ValkeyGlideBatch $pipe): ValkeyGlideBatch => $pipe->set('a', '1')->info());
+            self::fail('Expected an unrouted cluster INFO to be refused.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertSame(self::UNROUTED_CLUSTER_INFO_MESSAGE, $exception->getMessage());
+        }
+
+        self::assertSame([], $client->callsFor('info'));
+        self::assertSame([], $client->callsFor('exec'));
+        self::assertFalse($connection->hasOpenBatch());
     }
 
     /**

@@ -76,6 +76,15 @@ final class ValkeyGlideConnection extends Connection
         'FLUSHDB',
     ];
 
+    /** @var array<string, int> Keyless commands a cluster client takes a leading route for, by the argument count of a call that carries none. */
+    private const array CLUSTER_ROUTED_COMMANDS = [
+        'DBSIZE'    => 0,
+        'ECHO'      => 1,
+        'PING'      => 0,
+        'RANDOMKEY' => 0,
+        'TIME'      => 0,
+    ];
+
     /** @var array<int, string> phpredis-style flush mode flags. */
     private const array FLUSH_MODE_FLAGS = [
         'ASYNC',
@@ -147,6 +156,10 @@ final class ValkeyGlideConnection extends Connection
     /** @var string Message for a key-list command given a key list in a form GLIDE does not take as keys. */
     private const string UNSUPPORTED_KEY_LIST_MESSAGE = '[%s] takes its keys as separate arguments or as a single list of keys, not a list beside other'
         . ' arguments or a list of lists, which GLIDE would send as the key "Array" or drop.';
+
+    /** @var string Message for a cluster INFO called without a route. */
+    private const string UNROUTED_CLUSTER_INFO_MESSAGE = '[INFO] on a cluster connection needs a route, as each node reports only itself;'
+        . ' pass one first, such as info(\'randomNode\') or info(\'randomNode\', \'memory\').';
 
     /** @var string Message for a command GLIDE refused to buffer. */
     private const string BUFFER_REFUSED_MESSAGE = 'GLIDE refused to buffer [%s], most likely due to its arguments, so it was not added to the batch.';
@@ -500,6 +513,7 @@ final class ValkeyGlideConnection extends Connection
 
         $this->assertBatchNotEnded($normalizedMethod);
         $this->assertSupportedKeyList($normalizedMethod, $parameters);
+        $this->assertClusterInfoRouted($normalizedMethod, $parameters);
 
         if (in_array(strtoupper($normalizedMethod), self::BATCH_CONTROL_COMMANDS, true)) {
             return $this->controlBatch($normalizedMethod, $parameters);
@@ -647,6 +661,29 @@ final class ValkeyGlideConnection extends Connection
     {
         if ($this->prefixer->hasUnsupportedKeyList($method, $parameters)) {
             throw new \InvalidArgumentException(sprintf(self::UNSUPPORTED_KEY_LIST_MESSAGE, strtoupper($method)));
+        }
+    }
+
+    /**
+     * Assert that a cluster INFO carries a route.
+     *
+     * `ValkeyGlideCluster::info()` takes a route before its sections and
+     * returns false without one. Each node reports only its own memory, clients
+     * and keyspace, and GLIDE's own route, every primary, returns each node's
+     * report in one list, so no route would give the single report the call
+     * expects. It is refused before anything is sent, inside a batch or outside
+     * one, as phpredis' `RedisCluster::info()` refuses a call without a node.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return void
+     *
+     * @throws \InvalidArgumentException
+     */
+    private function assertClusterInfoRouted(string $method, array $parameters): void
+    {
+        if ($parameters === [] && strtoupper($method) === 'INFO' && $this->glideClient instanceof \ValkeyGlideCluster) {
+            throw new \InvalidArgumentException(self::UNROUTED_CLUSTER_INFO_MESSAGE);
         }
     }
 
@@ -1806,30 +1843,37 @@ final class ValkeyGlideConnection extends Connection
             return $this->invokeOnAllPrimaries($method, $parameters);
         }
 
-        return $this->dispatchToClient($method, $this->routeClusterPing($normalizedMethod, $parameters));
+        return $this->dispatchToClient($method, $this->routeClusterCommand($normalizedMethod, $parameters));
     }
 
     /**
-     * Add a route to a ping on a cluster client that carries none.
+     * Add a route to a keyless cluster command that carries none.
      *
-     * `ValkeyGlideCluster::ping()` takes a route before the optional message
-     * and returns false without one, so a bare `ping()`, as health checks call
-     * it, would report a healthy cluster as down. It goes to every primary, the
-     * route GLIDE gives `PING` and the one `executeRaw()` adds. Any arguments
-     * are taken as a route, as phpredis' `RedisCluster::ping()` takes them, and
-     * passed through untouched.
+     * `ValkeyGlideCluster::ping()`, `dbSize()`, `randomKey()`, `time()` and
+     * `echo()` take a route before their other arguments and return false
+     * without one, so a bare `ping()`, as health checks call it, would report a
+     * healthy cluster as down. A call with only the arguments the command takes
+     * besides its route, such as `echo($message)`, takes the route GLIDE gives
+     * the command, as `executeRaw()` does: `PING` and `DBSIZE` go to every
+     * primary, which GLIDE answers with one reply, summing the key counts;
+     * `RANDOMKEY` goes to every primary too, and GLIDE returns a key from the
+     * first that has one; `TIME` and `ECHO` go to a random node. Any other call
+     * is taken to carry its route first, as phpredis' `RedisCluster` methods
+     * take one, and is passed through untouched.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
      * @return array<array-key, mixed>
      */
-    private function routeClusterPing(string $method, array $parameters): array
+    private function routeClusterCommand(string $method, array $parameters): array
     {
-        if ($method !== 'PING' || $parameters !== [] || !$this->glideClient instanceof \ValkeyGlideCluster) {
+        $arity = self::CLUSTER_ROUTED_COMMANDS[$method] ?? null;
+
+        if ($arity === null || count($parameters) !== $arity || !array_is_list($parameters) || !$this->glideClient instanceof \ValkeyGlideCluster) {
             return $parameters;
         }
 
-        return [$this->router->route(['PING'])];
+        return [$this->router->route([$method]), ...$parameters];
     }
 
     /**
