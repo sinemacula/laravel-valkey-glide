@@ -105,6 +105,9 @@ final class ValkeyGlideConnection extends Connection
     /** @var \Closure(int): void Sleep callback. */
     private readonly \Closure $sleepCallback;
 
+    /** @var array<string, true> Cluster scan cursor ids this connection returned and has not yet resumed from. */
+    private array $clusterScanCursors = [];
+
     /**
      * Create a new Valkey GLIDE Laravel connection wrapper.
      *
@@ -188,6 +191,87 @@ final class ValkeyGlideConnection extends Connection
             static fn (false|string $value): ?string => $value !== false ? $value : null,
             $results,
         );
+    }
+
+    /**
+     * Set the given key if it does not exist.
+     *
+     * GLIDE answers with a bool; the result is returned as 1 or 0, as phpredis
+     * returns it through Laravel, since Laravel's and Horizon's locks compare
+     * it with 1.
+     *
+     * @param  string  $key
+     * @param  mixed  $value
+     * @return int
+     *
+     * @throws \Throwable
+     */
+    public function setnx(string $key, mixed $value): int
+    {
+        return $this->command('setnx', [$key, $value]) === true ? 1 : 0;
+    }
+
+    /**
+     * Return a range of a sorted set's members by index, from the highest score
+     * to the lowest.
+     *
+     * GLIDE has no ZREVRANGE, so the range is read with ZRANGE ... REV, which
+     * returns the same members in the same order. Scores are included when
+     * `$scores` is true or an options array whose `withscores` is true, as
+     * phpredis takes it.
+     *
+     * @param  string  $key
+     * @param  int|string  $start
+     * @param  int|string  $end
+     * @param  mixed  $scores
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    public function zrevrange(string $key, int|string $start, int|string $end, mixed $scores = null): mixed
+    {
+        $withScores = is_array($scores) ? ($scores['withscores'] ?? false) : $scores;
+
+        return $this->command('zRange', [$key, $start, $end, ['rev' => true, 'withscores' => (bool) $withScores]]);
+    }
+
+    /**
+     * Scan the keyspace for one page of keys, with Laravel's options array.
+     *
+     * As with Laravel's phpredis connection, the scan starts from cursor '0'
+     * (or `null`), takes the `match` pattern, unprefixed, and the `count` hint
+     * from the options, and returns the next cursor and the page's keys. The
+     * cursor is '0' again once the scan is complete. GLIDE takes the cursor by
+     * reference on a server and as a ClusterScanCursor on a cluster, so each is
+     * translated here. A failed scan throws, as it does through phpredis,
+     * rather than reading as an empty last page. A ClusterScanCursor, or
+     * GLIDE's own pattern, count and type arguments, are passed to GLIDE
+     * unchanged.
+     *
+     * @param  mixed  $cursor
+     * @param  mixed  $options
+     * @param  mixed  ...$arguments
+     * @return ($cursor is \ClusterScanCursor ? mixed : ($options is array ? array{0: string, 1: array<int, string>} : mixed))
+     *
+     * @throws \Throwable
+     */
+    public function scan(mixed $cursor, mixed $options = [], mixed ...$arguments): mixed
+    {
+        if ($cursor instanceof \ClusterScanCursor || !is_array($options)) {
+            return $this->command('scan', func_get_args());
+        }
+
+        $cursor  = Cast::toNonEmptyString($cursor)                   ?? '0';
+        $pattern = Cast::toNonEmptyString($options['match'] ?? null) ?? '*';
+        $count   = Cast::toNonNegativeInt($options['count'] ?? null) ?? 10;
+
+        if ($this->glideClient instanceof \ValkeyGlideCluster) {
+            return $this->scanCluster($cursor, $pattern, $count);
+        }
+
+        $keys = $this->command('scan', [&$cursor, $pattern, $count]);
+
+        return [$cursor, self::scannedKeys($keys, $pattern)];
     }
 
     /**
@@ -299,6 +383,63 @@ final class ValkeyGlideConnection extends Connection
             static fn (mixed $parameter): mixed => $parameter instanceof \ClusterScanCursor ? $parameter->getCursor() : $parameter,
             $parameters,
         );
+    }
+
+    /**
+     * Scan every primary of a cluster for one page of keys, from a cursor id.
+     *
+     * Each call builds a ClusterScanCursor from the id the last one returned,
+     * since passing the same cursor again rescans the first node. GLIDE aborts
+     * the process when it resumes from an id it never returned, or from one
+     * whose scan has ended, so only an id this connection returned is resumed,
+     * and only once. The scan goes through command(), so its command events
+     * carry the id it scans from, as parseParametersForEvent() reports it.
+     *
+     * @param  string  $cursor
+     * @param  string  $pattern
+     * @param  int  $count
+     * @return array{0: string, 1: array<int, string>}
+     *
+     * @throws \InvalidArgumentException
+     */
+    private function scanCluster(string $cursor, string $pattern, int $count): array
+    {
+        if ($cursor !== '0' && !isset($this->clusterScanCursors[$cursor])) {
+            throw new \InvalidArgumentException(sprintf('Cannot resume a cluster scan from cursor [%s]: only a cursor this connection returned can be resumed, once.', $cursor));
+        }
+
+        unset($this->clusterScanCursors[$cursor]);
+
+        $iterator = new \ClusterScanCursor($cursor);
+        $keys     = self::scannedKeys($this->command('scan', [$iterator, $pattern, $count]), $pattern);
+        $next     = $iterator->getNextCursor();
+
+        $this->clusterScanCursors[$next] = true;
+
+        return [$next, $keys];
+    }
+
+    /**
+     * Return the keys of a scanned page, or throw for a failed scan.
+     *
+     * GLIDE answers an empty page with an empty array and a failed scan with
+     * false, so the failure is raised rather than read as an empty page, which
+     * would end the caller's scan loop early as though it had completed.
+     *
+     * @param  mixed  $keys
+     * @param  string  $pattern
+     * @return array<int, string>
+     *
+     * @throws \UnexpectedValueException
+     */
+    private static function scannedKeys(mixed $keys, string $pattern): array
+    {
+        if (!is_array($keys)) {
+            throw new \UnexpectedValueException(sprintf('Expected array response from %s on [%s], received [%s].', 'scan', $pattern, get_debug_type($keys)));
+        }
+
+        /** @var array<int, string> $keys */
+        return $keys;
     }
 
     /**

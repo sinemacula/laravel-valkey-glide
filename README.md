@@ -31,6 +31,7 @@ application business code.
 - Optional single retry for idempotent commands on transient transport errors
 - Key prefix compatibility for supported command families, including key-list handling for `MGET`
 - Laravel compatibility fallback for phpredis-style `SET` and `EVAL` command argument shapes
+- Phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, as Laravel's locks and Horizon call them
 - Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
   standalone and cluster connections
 - External test lane for extension and real Redis connectivity validation
@@ -111,6 +112,15 @@ Command execution goes through `ValkeyGlideConnection::command()`.
   `ClusterScanCursor` scans from in place of the cursor, so listeners can turn the parameters into strings
 - `executeRaw()` is supported via `rawcommand`, with a route added on cluster connections (see Cluster Connections)
 - Phpredis-style `SET`/`EVAL` argument shapes are normalized through `rawcommand`
+- `setnx()` returns `1` or `0`, as phpredis does through Laravel, so Laravel's lock without an expiry and Horizon's lock,
+  which compare it with `1`, can be taken
+- `zrevrange()`, which GLIDE lacks, reads the range with `ZRANGE ... REV`; pass `true` or `['withscores' => true]` as its
+  fourth argument for the scores
+- `scan($cursor, ['match' => ..., 'count' => ...])` takes Laravel's options array and returns `[$cursor, $keys]`, as
+  Laravel's phpredis connection does: start from `'0'` and stop once the cursor is `'0'` again. The `match` pattern is
+  not prefixed, and `count` defaults to 10. A scan that fails throws an `UnexpectedValueException` rather than
+  returning an empty last page. On a cluster, GLIDE's own `ClusterScanCursor` is still passed to it unchanged (see
+  Cluster Connections)
 - `disconnect()` delegates to GLIDE `close()`
 
 With `ext-valkey_glide` 1.1.2, most commands that fail return `false` rather than throwing, including while a node is
@@ -268,7 +278,24 @@ its keys must share a slot, so give them a common hash tag (`{user:1}:name`, `{u
 `CROSSSLOT`.
 
 A raw `SCAN` through `executeRaw()` is refused, because a cursor `SCAN` walks a single node and would miss keys on the
-others. Scan a cluster with GLIDE's `ClusterScanCursor` through the connection's `scan()`:
+others. Scan a cluster through the connection's `scan()`. With Laravel's options array, it scans every primary in turn,
+and its cursor is a string, as on a standalone server:
+
+```php
+$cursor = '0';
+
+do {
+    [$cursor, $keys] = Redis::connection()->scan($cursor, ['match' => 'user:*', 'count' => 100]);
+
+    // ...
+} while ($cursor !== '0');
+```
+
+GLIDE aborts the PHP process when a cluster scan resumes from a cursor it did not return, or from one whose scan has
+ended, so the connection resumes only from a cursor it returned, and only once, and throws an
+`InvalidArgumentException` for any other. Never keep a cursor to resume later, in another process or on another
+connection. Each page dispatches command events like any command, carrying the cursor id it scans from. GLIDE's own
+`ClusterScanCursor` is passed to it unchanged:
 
 ```php
 $cursor = new ClusterScanCursor;
@@ -392,7 +419,8 @@ do {
 } while ($cursor !== '0');
 ```
 
-The phpredis-style `zscan($key, $cursor, $options)` shape is not supported.
+Unlike the keyspace `scan()` (see Runtime Behavior), the phpredis-style `zscan($key, $cursor, $options)` shape is not
+supported.
 
 - The `SCAN` and `ZSCAN` calls dispatch `CommandExecuted` like any command. On a cluster the event carries the id the
   `ClusterScanCursor` scans from, not the cursor itself.
@@ -477,6 +505,7 @@ External integration coverage includes:
   and a cluster (tagged writes, `flush()`, `flushStale()` and `cache:prune-stale-tags`)
 - Laravel queue push/pop behavior and physical queue key writes
 - Laravel session roundtrip behavior and physical session key writes
+- phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, on a standalone server and a cluster
 
 The external suite reads connection details from optional environment variables:
 
@@ -487,6 +516,9 @@ The external suite reads connection details from optional environment variables:
 - `VALKEY_GLIDE_TEST_PASSWORD`
 - `VALKEY_GLIDE_TEST_CLUSTER_HOST` and `VALKEY_GLIDE_TEST_CLUSTER_PORT`: a seed node of a Valkey/Redis cluster; the
   cluster cases are skipped when either is unset
+
+The TLS and credential variables apply to the standalone server only: the cluster cases connect without TLS or
+credentials, so they need a cluster that accepts plain, unauthenticated connections.
 
 All available Composer scripts:
 
