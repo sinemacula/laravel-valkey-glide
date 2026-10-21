@@ -756,6 +756,79 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify a cluster ping without arguments is routed to every primary.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterPingWithoutArgumentsRunsOnAllPrimaries(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('ping', true);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertTrue($connection->command('ping'));
+        self::assertSame([['allPrimaries']], $client->callsFor('ping'));
+    }
+
+    /**
+     * Provide cluster ping calls that already carry an explicit GLIDE route.
+     *
+     * @return iterable<string, array{array<array-key, mixed>}>
+     */
+    public static function clusterPingsWithExplicitRoute(): iterable
+    {
+        yield 'random node' => [['randomNode']];
+        yield 'all nodes with message' => [['allNodes', 'hello']];
+        yield 'host and port' => [[['type' => 'routeByAddress', 'host' => '10.0.0.1', 'port' => 6379]]];
+        yield 'named route' => [['route' => 'randomNode']];
+    }
+
+    /**
+     * Verify cluster ping calls with an explicit route are passed through
+     * unchanged.
+     *
+     * @param  array<array-key, mixed>  $parameters
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('clusterPingsWithExplicitRoute')]
+    #[Test]
+    public function clusterPingWithExplicitRoutePassesThroughUnchanged(array $parameters): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('ping', true);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertTrue($connection->command('ping', $parameters));
+        self::assertSame([$parameters], $client->callsFor('ping'));
+    }
+
+    /**
+     * Verify a standalone ping without arguments is passed through unchanged.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function standalonePingWithoutArgumentsPassesThroughUnchanged(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('ping', true);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertTrue($connection->command('ping'));
+        self::assertSame([[]], $client->callsFor('ping'));
+    }
+
+    /**
      * Verify executeRaw delegates to rawcommand on the wrapped client.
      *
      * @return void

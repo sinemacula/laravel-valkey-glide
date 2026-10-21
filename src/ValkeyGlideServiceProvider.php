@@ -33,7 +33,7 @@ final class ValkeyGlideServiceProvider extends ServiceProvider
     #[\Override]
     public function register(): void
     {
-        $this->app->afterResolving(RedisManager::class, function (RedisManager $redis): void {
+        $this->callAfterResolving(RedisManager::class, function (RedisManager $redis): void {
             $redis->extend('valkey-glide', fn (): ValkeyGlideConnector => new ValkeyGlideConnector);
         });
 
