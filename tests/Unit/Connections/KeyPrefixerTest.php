@@ -65,6 +65,8 @@ final class KeyPrefixerTest extends TestCase
         yield 'keys prefixes its match pattern' => ['app:', 'keys', ['queues:*'], ['app:queues:*']];
         yield 'double-key command prefixes both keys' => ['app:', 'rename', ['old', 'new'], ['app:old', 'app:new']];
         yield 'double-key command tolerates missing second key' => ['app:', 'rename', ['old'], ['app:old']];
+        yield 'double-key command tolerates missing first key' => ['app:', 'rename', [1 => 'new'], [1 => 'app:new']];
+        yield 'double-key command skips a non-scalar first key' => ['app:', 'rename', [['old'], 'new'], [['old'], 'app:new']];
         yield 'bitop prefixes the destination and source keys' => ['app:', 'bitop', ['AND', 'dest', 'a', 'b'], ['AND', 'app:dest', 'app:a', 'app:b']];
         yield 'bitop with only an operation is left untouched' => ['app:', 'bitop', ['NOT'], ['NOT']];
         yield 'unknown command is left untouched' => ['app:', 'ping', ['payload'], ['payload']];
@@ -72,7 +74,7 @@ final class KeyPrefixerTest extends TestCase
         yield 'eval prefixes multiple declared keys' => ['app:', 'eval', ['return 1', 2, 'k1', 'k2', 'arg'], ['return 1', 2, 'app:k1', 'app:k2', 'arg']];
         yield 'eval with zero keys is left untouched' => ['app:', 'eval', ['return 1', 0, 'arg'], ['return 1', 0, 'arg']];
         yield 'eval with missing key count is untouched' => ['app:', 'eval', ['return 1'], ['return 1']];
-        yield 'eval with non-numeric key count untouched' => ['app:', 'eval', ['return 1', 'nope', 'k1'], ['return 1', 'nope', 'k1']];
+        yield 'eval with non-numeric key count untouched' => ['app:', 'eval', ['return 1', 'nope', 'k1', 'k2'], ['return 1', 'nope', 'k1', 'k2']];
         yield 'evalsha prefixes declared keys' => ['app:', 'evalsha', ['sha1', 1, 'queue'], ['sha1', 1, 'app:queue']];
         yield 'tag pruning zremrangebyscore prefixes its key' => ['app:', 'zremrangebyscore', ['t', '0', '9'], ['app:t', '0', '9']];
         yield 'zremrangebyrank used by tags prefixes its key' => ['app:', 'zremrangebyrank', ['t', 0, -1], ['app:t', 0, -1]];
@@ -82,6 +84,21 @@ final class KeyPrefixerTest extends TestCase
         yield 'sscan prefixes only its key' => ['app:', 'sscan', ['t', '0', '*', 10], ['app:t', '0', '*', 10]];
         yield 'hscan prefixes only its key' => ['app:', 'hscan', ['t', '0', '*', 10], ['app:t', '0', '*', 10]];
         yield 'scan leaves its cursor and pattern untouched' => ['app:', 'scan', ['0', 'p:*', 10], ['0', 'p:*', 10]];
+        yield 'zunionstore prefixes its destination and keys only' => ['app:', 'zunionstore', ['d', ['a', 'b'], [1, 2], 'SUM'], ['app:d', ['app:a', 'app:b'], [1, 2], 'SUM']];
+        yield 'key array command without a list keeps the argument' => ['app:', 'zunionstore', ['d', 'a'], ['app:d', 'a']];
+        yield 'key array keeps the keys of its list' => ['app:', 'zunion', [['x' => 'a', 'y' => 'b']], [['x' => 'app:a', 'y' => 'app:b']]];
+        yield 'key array skips non-scalar entries' => ['app:', 'zinter', [['a', null]], [['app:a', null]]];
+        yield 'blocking pop with only a timeout is untouched' => ['app:', 'blpop', [5], [5]];
+        yield 'blocking pop keeps its parameter keys' => ['app:', 'bzpopmin', [1 => 'a', 2 => 'b', 3 => 5], [1 => 'app:a', 2 => 'app:b', 3 => 5]];
+        yield 'xread prefixes its stream keys' => ['app:', 'xread', [['s1' => '0', 's2' => '$'], 10], [['app:s1' => '0', 'app:s2' => '$'], 10]];
+        yield 'xreadgroup prefixes its stream keys' => ['app:', 'xReadGroup', ['g', 'c', ['s' => '>'], 1], ['g', 'c', ['app:s' => '>'], 1]];
+        yield 'xreadgroup without a stream map is untouched' => ['app:', 'xreadgroup', ['g', 'c'], ['g', 'c']];
+        yield 'xinfo without a key is untouched' => ['app:', 'xinfo', ['HELP'], ['HELP']];
+        yield 'sort leaves its store key and patterns' => ['app:', 'sort', ['l', ['by' => 'w_*', 'store' => 'd']], ['app:l', ['by' => 'w_*', 'store' => 'd']]];
+        yield 'evalsha_ro prefixes its declared keys' => ['app:', 'evalsha_ro', ['h', [1 => 'k', 2 => 'v'], '1'], ['h', [1 => 'app:k', 2 => 'v'], '1']];
+        yield 'eval_ro with zero keys is untouched' => ['app:', 'eval_ro', ['return 1', ['k'], 0], ['return 1', ['k'], 0]];
+        yield 'eval_ro with non-numeric key count untouched' => ['app:', 'eval_ro', ['return 1', ['k', 'v'], 'x'], ['return 1', ['k', 'v'], 'x']];
+        yield 'eval_ro without an argument list is untouched' => ['app:', 'eval_ro', ['return 1', 'k', 1], ['return 1', 'k', 1]];
     }
 
     /**
@@ -140,11 +157,19 @@ final class KeyPrefixerTest extends TestCase
     public static function singleKeyCommands(): iterable
     {
         yield 'append' => ['append'];
+        yield 'bitcount' => ['bitcount'];
+        yield 'bitpos' => ['bitpos'];
         yield 'decr' => ['decr'];
         yield 'decrby' => ['decrby'];
         yield 'dump' => ['dump'];
         yield 'expire' => ['expire'];
         yield 'expireat' => ['expireat'];
+        yield 'expiretime' => ['expiretime'];
+        yield 'geoadd' => ['geoadd'];
+        yield 'geodist' => ['geodist'];
+        yield 'geohash' => ['geohash'];
+        yield 'geopos' => ['geopos'];
+        yield 'geosearch' => ['geosearch'];
         yield 'get' => ['get'];
         yield 'getbit' => ['getbit'];
         yield 'getdel' => ['getdel'];
@@ -153,18 +178,31 @@ final class KeyPrefixerTest extends TestCase
         yield 'getset' => ['getset'];
         yield 'hdel' => ['hdel'];
         yield 'hexists' => ['hexists'];
+        yield 'hexpire' => ['hexpire'];
+        yield 'hexpireat' => ['hexpireat'];
+        yield 'hexpiretime' => ['hexpiretime'];
         yield 'hget' => ['hget'];
         yield 'hgetall' => ['hgetall'];
+        yield 'hgetex' => ['hgetex'];
         yield 'hincrby' => ['hincrby'];
         yield 'hincrbyfloat' => ['hincrbyfloat'];
         yield 'hkeys' => ['hkeys'];
         yield 'hlen' => ['hlen'];
         yield 'hmget' => ['hmget'];
         yield 'hmset' => ['hmset'];
+        yield 'hpersist' => ['hpersist'];
+        yield 'hpexpire' => ['hpexpire'];
+        yield 'hpexpireat' => ['hpexpireat'];
+        yield 'hpexpiretime' => ['hpexpiretime'];
+        yield 'hpsetex' => ['hpsetex'];
+        yield 'hpttl' => ['hpttl'];
+        yield 'hrandfield' => ['hrandfield'];
         yield 'hscan' => ['hscan'];
         yield 'hset' => ['hset'];
+        yield 'hsetex' => ['hsetex'];
         yield 'hsetnx' => ['hsetnx'];
         yield 'hstrlen' => ['hstrlen'];
+        yield 'httl' => ['httl'];
         yield 'hvals' => ['hvals'];
         yield 'incr' => ['incr'];
         yield 'incrby' => ['incrby'];
@@ -184,8 +222,11 @@ final class KeyPrefixerTest extends TestCase
         yield 'persist' => ['persist'];
         yield 'pexpire' => ['pexpire'];
         yield 'pexpireat' => ['pexpireat'];
+        yield 'pexpiretime' => ['pexpiretime'];
+        yield 'pfadd' => ['pfadd'];
         yield 'psetex' => ['psetex'];
         yield 'pttl' => ['pttl'];
+        yield 'restore' => ['restore'];
         yield 'rpop' => ['rpop'];
         yield 'rpush' => ['rpush'];
         yield 'rpushx' => ['rpushx'];
@@ -198,20 +239,41 @@ final class KeyPrefixerTest extends TestCase
         yield 'setrange' => ['setrange'];
         yield 'sismember' => ['sismember'];
         yield 'smembers' => ['smembers'];
+        yield 'smismember' => ['smismember'];
+        yield 'sort' => ['sort'];
+        yield 'sort_ro' => ['sort_ro'];
         yield 'spop' => ['spop'];
+        yield 'srandmember' => ['srandmember'];
         yield 'srem' => ['srem'];
         yield 'sscan' => ['sscan'];
         yield 'strlen' => ['strlen'];
         yield 'ttl' => ['ttl'];
         yield 'type' => ['type'];
+        yield 'xack' => ['xack'];
+        yield 'xadd' => ['xadd'];
+        yield 'xautoclaim' => ['xautoclaim'];
+        yield 'xclaim' => ['xclaim'];
+        yield 'xdel' => ['xdel'];
+        yield 'xlen' => ['xlen'];
+        yield 'xpending' => ['xpending'];
+        yield 'xrange' => ['xrange'];
+        yield 'xrevrange' => ['xrevrange'];
+        yield 'xtrim' => ['xtrim'];
         yield 'zadd' => ['zadd'];
         yield 'zcard' => ['zcard'];
         yield 'zcount' => ['zcount'];
         yield 'zincrby' => ['zincrby'];
+        yield 'zlexcount' => ['zlexcount'];
+        yield 'zmscore' => ['zmscore'];
+        yield 'zpopmax' => ['zpopmax'];
+        yield 'zpopmin' => ['zpopmin'];
+        yield 'zrandmember' => ['zrandmember'];
         yield 'zrange' => ['zrange'];
+        yield 'zrangebylex' => ['zrangebylex'];
         yield 'zrangebyscore' => ['zrangebyscore'];
         yield 'zrank' => ['zrank'];
         yield 'zrem' => ['zrem'];
+        yield 'zremrangebylex' => ['zremrangebylex'];
         yield 'zremrangebyrank' => ['zremrangebyrank'];
         yield 'zremrangebyscore' => ['zremrangebyscore'];
         yield 'zrevrangebyscore' => ['zrevrangebyscore'];
@@ -244,12 +306,15 @@ final class KeyPrefixerTest extends TestCase
     public static function allKeyCommands(): iterable
     {
         yield 'sdiff' => ['sdiff'];
+        yield 'sdiffstore' => ['sdiffstore'];
         yield 'sunion' => ['sunion'];
+        yield 'sunionstore' => ['sunionstore'];
     }
 
     /**
-     * Verify every all-key command prefixes each argument, but not the keys of
-     * a list argument.
+     * Verify every all-key command prefixes each argument, and reports a list
+     * argument, alone or beside other keys, as a form GLIDE does not take as
+     * keys, as it would send it as the key `Array` or refuse it.
      *
      * @param  string  $method
      * @return void
@@ -263,6 +328,12 @@ final class KeyPrefixerTest extends TestCase
         self::assertSame(['app:a', 'app:b'], $prefixer->apply($method, ['a', 'b']));
         self::assertSame([['a']], $prefixer->apply($method, [['a']]));
         self::assertSame(['a', 'b'], $prefixer->keys($method, ['a', 'b']));
+        self::assertFalse($prefixer->hasUnsupportedKeyList($method, ['a', 'b']));
+
+        foreach ([[['a', 'b']], ['d', ['a', 'b']], ['d', 'a', ['b']], [['d'], 'a']] as $parameters) {
+            self::assertNull($prefixer->keys($method, $parameters));
+            self::assertTrue($prefixer->hasUnsupportedKeyList($method, $parameters));
+        }
     }
 
     /**
@@ -275,7 +346,9 @@ final class KeyPrefixerTest extends TestCase
         yield 'del' => ['del'];
         yield 'exists' => ['exists'];
         yield 'mget' => ['mget'];
+        yield 'pfcount' => ['pfcount'];
         yield 'sinter' => ['sinter'];
+        yield 'sinterstore' => ['sinterstore'];
         yield 'touch' => ['touch'];
         yield 'unlink' => ['unlink'];
         yield 'watch' => ['watch'];
@@ -306,12 +379,17 @@ final class KeyPrefixerTest extends TestCase
      */
     public static function doubleKeyCommands(): iterable
     {
+        yield 'blmove' => ['blmove'];
         yield 'brpoplpush' => ['brpoplpush'];
         yield 'copy' => ['copy'];
+        yield 'geosearchstore' => ['geosearchstore'];
+        yield 'lcs' => ['lcs'];
+        yield 'lmove' => ['lmove'];
         yield 'rename' => ['rename'];
         yield 'renamenx' => ['renamenx'];
         yield 'rpoplpush' => ['rpoplpush'];
         yield 'smove' => ['smove'];
+        yield 'zrangestore' => ['zrangestore'];
     }
 
     /**
@@ -328,6 +406,114 @@ final class KeyPrefixerTest extends TestCase
 
         self::assertSame(['app:a', 'app:b', 'x'], $prefixer->apply($method, ['a', 'b', 'x']));
         self::assertSame(['a', 'b'], $prefixer->keys($method, ['a', 'b', 'x']));
+    }
+
+    /**
+     * Provide every command whose key follows its subcommand.
+     *
+     * @return iterable<string, array{string}>
+     */
+    public static function subcommandKeyCommands(): iterable
+    {
+        yield 'object' => ['object'];
+        yield 'xgroup' => ['xgroup'];
+        yield 'xinfo' => ['xinfo'];
+    }
+
+    /**
+     * Verify every subcommand-key command prefixes its second argument only.
+     *
+     * @param  string  $method
+     * @return void
+     */
+    #[DataProvider('subcommandKeyCommands')]
+    #[Test]
+    public function subcommandKeyCommandsPrefixTheirSecondArgumentOnly(string $method): void
+    {
+        $prefixer = new KeyPrefixer('app:');
+
+        self::assertSame(['CREATE', 'app:k', 'x'], $prefixer->apply($method, ['CREATE', 'k', 'x']));
+        self::assertSame(['k'], $prefixer->keys($method, ['CREATE', 'k', 'x']));
+    }
+
+    /**
+     * Provide every command that takes a list of keys, with the list's index
+     * and whether a destination key comes before it.
+     *
+     * @return iterable<string, array{string, int, bool}>
+     */
+    public static function keyArrayCommands(): iterable
+    {
+        yield 'blmpop' => ['blmpop', 1, false];
+        yield 'bzmpop' => ['bzmpop', 1, false];
+        yield 'fcall' => ['fcall', 1, false];
+        yield 'fcall_ro' => ['fcall_ro', 1, false];
+        yield 'lmpop' => ['lmpop', 0, false];
+        yield 'pfmerge' => ['pfmerge', 1, true];
+        yield 'sintercard' => ['sintercard', 0, false];
+        yield 'zdiff' => ['zdiff', 0, false];
+        yield 'zdiffstore' => ['zdiffstore', 1, true];
+        yield 'zinter' => ['zinter', 0, false];
+        yield 'zintercard' => ['zintercard', 0, false];
+        yield 'zinterstore' => ['zinterstore', 1, true];
+        yield 'zmpop' => ['zmpop', 0, false];
+        yield 'zunion' => ['zunion', 0, false];
+        yield 'zunionstore' => ['zunionstore', 1, true];
+    }
+
+    /**
+     * Verify every key-array command prefixes each key of its list, and its
+     * destination key, if it has one, and nothing else.
+     *
+     * @param  string  $method
+     * @param  int  $index
+     * @param  bool  $destination
+     * @return void
+     */
+    #[DataProvider('keyArrayCommands')]
+    #[Test]
+    public function keyArrayCommandsPrefixTheirListOfKeys(string $method, int $index, bool $destination): void
+    {
+        $prefixer   = new KeyPrefixer('app:');
+        $parameters = $index === 0 ? [['a', 'b'], 'x'] : ['first', ['a', 'b'], 'x'];
+        $expected   = $index === 0 ? [['app:a', 'app:b'], 'x'] : [$destination ? 'app:first' : 'first', ['app:a', 'app:b'], 'x'];
+        $keys       = $destination ? ['first', 'a', 'b'] : ['a', 'b'];
+
+        self::assertSame($expected, $prefixer->apply($method, $parameters));
+        self::assertSame($keys, $prefixer->keys($method, $parameters));
+    }
+
+    /**
+     * Provide every blocking pop.
+     *
+     * @return iterable<string, array{string}>
+     */
+    public static function blockingPopCommands(): iterable
+    {
+        yield 'blpop' => ['blpop'];
+        yield 'brpop' => ['brpop'];
+        yield 'bzpopmax' => ['bzpopmax'];
+        yield 'bzpopmin' => ['bzpopmin'];
+    }
+
+    /**
+     * Verify every blocking pop prefixes its list of keys, or every argument
+     * before its timeout, and not the timeout.
+     *
+     * @param  string  $method
+     * @return void
+     */
+    #[DataProvider('blockingPopCommands')]
+    #[Test]
+    public function blockingPopsPrefixTheirKeysButNotTheirTimeout(string $method): void
+    {
+        $prefixer = new KeyPrefixer('app:');
+
+        self::assertSame([['app:a', 'app:b'], 5], $prefixer->apply($method, [['a', 'b'], 5]));
+        self::assertSame(['app:a', 'app:b', 5], $prefixer->apply($method, ['a', 'b', 5]));
+        self::assertSame(['app:a', 5], $prefixer->apply($method, ['a', 5]));
+        self::assertSame(['a', 'b'], $prefixer->keys($method, ['a', 'b', 5]));
+        self::assertSame(['a', 'b'], $prefixer->keys($method, [['a', 'b'], 5]));
     }
 
     /**
@@ -362,7 +548,8 @@ final class KeyPrefixerTest extends TestCase
         yield 'all-key command' => ['unlink', ['a', 'b', 'c'], ['a', 'b', 'c']];
         yield 'all-key command skips non-scalar entries' => ['unlink', [null, 'a'], ['a']];
         yield 'all-key command without a key list' => ['sdiff', ['a', 'b'], ['a', 'b']];
-        yield 'all-key command ignores a list argument' => ['sunion', [['a'], 'b'], ['b']];
+        yield 'list among the keys of an all-key command is unknown' => ['sunion', [['a'], 'b'], null];
+        yield 'all-key command skips a non-scalar key' => ['sdiffstore', ['d', null, 'a'], ['d', 'a']];
         yield 'touch key list' => ['touch', [['a', 'b']], ['a', 'b']];
         yield 'sinter key list' => ['sinter', [['a', 'b']], ['a', 'b']];
         yield 'key list' => ['del', [['a', 'b']], ['a', 'b']];
@@ -381,7 +568,22 @@ final class KeyPrefixerTest extends TestCase
         yield 'mset without a map is unknown' => ['mset', ['a', '1'], null];
         yield 'mset with a named map' => ['mset', ['map' => ['a' => '1']], ['a']];
         yield 'script keys are unknown' => ['eval', ['return 1', 1, 'k'], null];
-        yield 'unknown command' => ['zinterstore', ['dest', ['a', 'b']], null];
+        yield 'read-only script keys are unknown' => ['eval_ro', ['return 1', ['k'], 1], null];
+        yield 'key array command names its destination and keys' => ['zinterstore', ['dest', ['a', 'b']], ['dest', 'a', 'b']];
+        yield 'key array command without a destination' => ['bzmpop', [1.0, ['a', 'b'], 'MIN'], ['a', 'b']];
+        yield 'key array command without a list' => ['zunionstore', ['dest', 'a'], ['dest']];
+        yield 'key array command skips a destination that is not a key' => ['zunionstore', [null, ['a']], ['a']];
+        yield 'key array with string keys' => ['zunion', [['x' => 'a', 'y' => 'b']], ['a', 'b']];
+        yield 'list inside a key array is unknown' => ['zunion', [[['a'], 'b']], null];
+        yield 'list inside a blocking pop key list is unknown' => ['brpop', [[['a']], 5], null];
+        yield 'list among blocking pop keys is unknown' => ['bzpopmax', ['a', ['b'], 5], null];
+        yield 'blocking pop list before other keys is unknown' => ['bzpopmin', [['a'], 'b', 5], null];
+        yield 'blocking pop key list without a timeout' => ['bzpopmin', [['a', 'b']], ['a', 'b']];
+        yield 'xread names its streams' => ['xread', [['s1' => '0', 's2' => '0']], ['s1', 's2']];
+        yield 'xreadgroup names its streams' => ['xreadgroup', ['g', 'c', ['s' => '>']], ['s']];
+        yield 'xreadgroup without a stream map is unknown' => ['xreadgroup', ['g', 'c'], null];
+        yield 'subcommand key' => ['object', ['encoding', 'k', 'x'], ['k']];
+        yield 'unknown command' => ['jsonset', ['doc', '$', '1'], null];
     }
 
     /**
@@ -418,8 +620,17 @@ final class KeyPrefixerTest extends TestCase
         yield 'mixed sinter' => ['sInter', ['a', ['b']], true];
         yield 'mixed watch' => ['watch', ['a', ['b']], true];
         yield 'method name is upper-cased before matching' => ['Del', ['a', ['b']], true];
-        yield 'command that is not a key-list command' => ['sunion', [['a'], 'b'], false];
+        yield 'command that takes no key list' => ['get', [['a']], false];
         yield 'command whose keys are unknown' => ['eval', ['return 1', 1, 'k'], false];
+        yield 'mixed sinterstore' => ['sinterstore', ['d', ['a']], true];
+        yield 'single sinterstore key list' => ['sinterstore', [['d', 'a']], false];
+        yield 'key array' => ['zunionstore', ['d', ['a', 'b']], false];
+        yield 'key array that is not a list' => ['zinter', ['a'], false];
+        yield 'list inside a key array' => ['zunionstore', ['d', [['a'], 'b']], true];
+        yield 'blocking pop key list' => ['bzpopmin', [['a'], 5], false];
+        yield 'list inside a blocking pop key list' => ['blpop', [[['a']], 5], true];
+        yield 'list among blocking pop keys' => ['bzpopmin', ['a', ['b'], 5], true];
+        yield 'blocking pop list before other keys' => ['bzPopMax', [['a'], 'b', 5], true];
     }
 
     /**

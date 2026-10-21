@@ -1214,27 +1214,22 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
         $connection = $this->connect(self::CLUSTER, ['{a}k'], $this->uniquePrefix(false));
         $physical   = $this->physical(self::CLUSTER);
         $other      = $this->connect(self::CLUSTER, [], $this->prefixOf($connection));
-        $tag        = str_replace('.', '', uniqid('', true));
-        $source     = '{b' . $tag . '}:s1';
-        $target     = '{b' . $tag . '}:dst';
+        $target     = '{b' . str_replace('.', '', uniqid('', true)) . '}:doc';
 
-        $physical->command('sadd', [$source, 'member']);
         $connection->command('set', ['{a}k', '1']);
         $connection->command('watch', ['{a}k']);
         $other->command('set', ['{a}k', '2']);
 
         try {
-            $connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->__call('sinterstore', [$target, $source]));
+            $connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->__call('jsonSet', [$target, '$', '1']));
             self::fail('Expected the command with unknown keys to be refused.');
         } catch (\LogicException $exception) {
-            self::assertStringContainsString('cannot carry [SINTERSTORE]', $exception->getMessage());
+            self::assertStringContainsString('cannot carry [JSONSET]', $exception->getMessage());
         }
 
         self::assertSame(0, $physical->command('exists', [$target]));
         self::assertSame([true], $connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->set('{a}k', 'mine')));
         self::assertSame('mine', $connection->get('{a}k'));
-
-        $physical->command('del', [$source]);
     }
 
     /**
@@ -2152,7 +2147,9 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
      * Verify a key list beside other keys, or a list of key lists, is refused
      * before anything is sent, inside a batch and outside one, so neither the
      * key `Array` that GLIDE would send, which lies outside the prefix, nor any
-     * prefixed key is touched.
+     * prefixed key is touched, including the destination of a set-store
+     * command, which GLIDE 1.1.2 would replace with the result of reading the
+     * key `Array`.
      *
      * @param  string  $topology
      * @return void
@@ -2180,6 +2177,10 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
             'del in a pipeline'      => static fn (): mixed => $connection->pipeline(static fn (ValkeyGlideBatch $pipe) => $pipe->set('a', 'x')->del('a', ['b', 'c'])),
             'del in a transaction'   => static fn (): mixed => $connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->set('a', 'x')->del('a', ['b', 'c'])),
             'touch in a transaction' => static fn (): mixed => $connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->touch([['a'], 'b'])),
+            'sinterstore'            => static fn (): mixed => $connection->command('sinterstore', ['a', ['b', 'c']]),
+            'sunionstore in a pipe'  => static fn (): mixed => $connection->pipeline(static fn (ValkeyGlideBatch $pipe) => $pipe->__call('sunionstore', ['a', ['b', 'c']])),
+            'sdiffstore in a tx'     => static fn (): mixed => $connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->__call('sdiffstore', ['a', ['b', 'c']])),
+            'bzpopmin'               => static fn (): mixed => $connection->command('bzpopmin', [['a'], 'b', 1]),
         ];
 
         foreach ($calls as $label => $call) {
@@ -2187,7 +2188,7 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
                 $call();
                 self::fail(sprintf('Expected the %s to be refused.', $label));
             } catch (\InvalidArgumentException $exception) {
-                self::assertStringContainsString('takes its keys as separate arguments or as a single list of keys', $exception->getMessage(), $label);
+                self::assertStringContainsString('was given a list of keys in a form GLIDE does not take as keys', $exception->getMessage(), $label);
             }
 
             self::assertSame($marker, $physical->get('Array'), $label);

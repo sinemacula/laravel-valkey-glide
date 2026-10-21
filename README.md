@@ -29,8 +29,8 @@ application business code.
 - Connection wrapper extending `Illuminate\Redis\Connections\Connection`
 - Laravel config normalization into GLIDE `connect()` arguments
 - Optional single retry for idempotent commands on transient transport errors
-- Key prefix compatibility for supported command families, including the key lists of `DEL`, `UNLINK`, `EXISTS`,
-  `WATCH`, `TOUCH`, `SINTER` and `MGET`, and the key-value map of `MSET` and `MSETNX`
+- Key prefix compatibility at the key positions phpredis prefixes, including destination keys, key lists, the
+  key-value map of `MSET` and `MSETNX` and the stream map of `XREAD` and `XREADGROUP`
 - `pipeline()` and `transaction()`, plus phpredis-style `multi()` / `exec()` / `discard()` on the connection
 - Laravel compatibility fallback for phpredis-style `SET` and `EVAL` command argument shapes
 - Phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, as Laravel's locks and Horizon call them, and
@@ -256,15 +256,19 @@ under Pipelines and Transactions). Some failures still return `false`, as GLIDE 
 Prefixing is handled in the connection wrapper for supported command families:
 
 - single-key commands (`GET`, `SET`, `HGET`, `HMSET`, `PSETEX`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`,
-  `ZREVRANGEBYSCORE`, `ZREVRANK`, etc.)
+  `ZREVRANGEBYSCORE`, `ZREVRANK`, `XADD`, `GEOADD`, etc.)
 - all-key commands (`MGET`, `DEL`, `UNLINK`, `EXISTS`, `WATCH`, `TOUCH`, `SINTER`, etc.), including a single key-list
   argument such as `del(['a', 'b'])` or `sinter(['a', 'b'])`. GLIDE takes a key list only as the command's only
   argument: beside other keys, as in `del('a', ['b', 'c'])`, it sends the list as the key `Array`, outside the prefix,
   or drops the keys after it, so such a call, or a list of key lists, throws an `InvalidArgumentException` before
   anything is sent, inside a batch or outside one, as phpredis' typed signatures refuse it with a `TypeError`
-- the keys of the key-value map `MSET` and `MSETNX` take, as in `mset(['a' => 1, 'b' => 2])`
-- two-key commands (`RENAME`, etc.)
-- `EVAL` / `EVALSHA` key segments
+- the keys of the key-value map `MSET` and `MSETNX` take, as in `mset(['a' => 1, 'b' => 2])`, and the streams of the
+  map `XREAD` and `XREADGROUP` take
+- two-key commands (`RENAME`, `LMOVE`, etc.)
+- the destination key and list of keys of multi-key commands (`ZUNIONSTORE`, `ZINTER`, `PFMERGE`, `LMPOP`, `FCALL`,
+  etc.), the keys of blocking pops (`BLPOP`, `BZPOPMIN`, etc.) and the key after the subcommand of `OBJECT`, `XGROUP`
+  and `XINFO`
+- `EVAL` / `EVALSHA` key segments, and the declared keys of `EVAL_RO` / `EVALSHA_RO`
 
 `SCAN` `MATCH` patterns are not prefixed, as phpredis only prefixes them when asked to.
 
@@ -279,6 +283,17 @@ Prefixing is handled in the connection wrapper for supported command families:
 > `KeyPrefixer::mgetKeys()` is deprecated: its result must no longer be passed to `command('mget', ...)`, which now
 > prefixes the list itself. A key list beside other keys was sent as it was, so GLIDE wrote or read the key `Array`
 > instead of the listed keys; it now throws.
+>
+> The other multi-key commands, such as `ZUNIONSTORE`, `PFMERGE`, `LMOVE`, `BLPOP` and `XREAD`, and some single-key
+> commands, such as the `GEO*`, stream and hash-field expiry commands, were sent unprefixed in 1.2.x and earlier too;
+> they are now prefixed at every key position phpredis prefixes. A list of keys GLIDE would send as the key `Array` now
+> throws for these commands as well, as in `sunionstore('destination', ['a', 'b'])` or `bzpopmin(['a'], 'b', 5)`; pass
+> the keys as separate arguments.
+>
+> The most visible effect is on Laravel's Redis queue with `block_for` set. Its pop waits in
+> `blpop([$queue.':notify'], $blockFor)` for the push script to add to the notify list, which the script prefixed while
+> the `BLPOP` did not, so on a prefixed connection a blocking worker picked up a new job only once `block_for` ran out,
+> or, with a `block_for` of `0`, never. It now wakes as soon as a job is pushed.
 
 ## Pipelines and Transactions
 
@@ -539,7 +554,7 @@ write idempotent, for example by recording a unique operation id in the same tra
   sent. While keys are watched, the transaction is bound to the watched keys' slot from the start, and the message names
   them; keys left over by a failed `UNWATCH` keep that slot until the driver sends one that succeeds. Give the keys a
   common hash tag (`{user:1}:name`, `{user:1}:email`). A command GLIDE refuses to buffer binds the transaction to no
-  slot. Commands whose key positions the driver does not know, such as `SINTERSTORE` or `FCALL`, are left to the server,
+  slot. Commands whose key positions the driver does not know, such as GLIDE's JSON commands, are left to the server,
   which fails a transaction whose keys cross slots.
 - A cluster transaction that watched keys refuses, with a `LogicException` before anything is sent, every command whose
   keys the driver does not know or that has none. GLIDE sends a cluster transaction by its commands' own keys, or to
@@ -990,11 +1005,12 @@ External integration coverage includes:
 
 - extension/client availability and connect/close behavior
 - connector/connection roundtrip behavior and retry semantics
-- command-prefix behavior, including list-style key commands (`MGET`)
+- command-prefix behavior, including list-style key commands (`MGET`) and the keys of the multi-key commands, on a
+  standalone server and a cluster, inside and outside batches
 - Laravel cache roundtrip behavior, physical key writes, locks, TTL edge cases, and cache tags on a standalone server
   and a cluster (tagged writes, `flush()`, `flushStale()` and `cache:prune-stale-tags`), including a standalone flush
   racing a second process that rewrites the flushed keys
-- Laravel queue push/pop behavior and physical queue key writes
+- Laravel queue push/pop behavior, physical queue key writes, and a blocking pop waiting on the prefixed notify key
 - Laravel session roundtrip behavior and physical session key writes
 - phpredis-compatible `setnx()`, `hsetnx()`, `zrevrange()` and options-array `scan()`, `zscan()`, `hscan()` and
   `sscan()`, including Laravel's own `RedisTagSet::entries()`, on a standalone server and a cluster
