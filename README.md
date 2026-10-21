@@ -91,6 +91,7 @@ The connector normalizes Laravel config into GLIDE connect arguments:
 - `context` -> `context` (TLS stream context; array or resource)
 - `timeout` (seconds) -> `request_timeout` (milliseconds)
 - `connection_timeout` (seconds) -> `advanced_config.connection_timeout` (milliseconds)
+- `periodic_checks` -> `periodic_checks` (cluster connections only; see Periodic Topology Checks)
 
 Cluster-style configs are normalized into seed `addresses` and connected through the dedicated `ValkeyGlideCluster`
 client via `connectToCluster()`.
@@ -187,6 +188,38 @@ key's slot.
 `Cache::flush()` and `cache:clear` do) run on every primary, so the whole keyspace is cleared. Calls that pass an
 explicit GLIDE route are sent unchanged.
 
+### Periodic Topology Checks
+
+The cluster client periodically checks the cluster topology so it can follow slot migrations and failovers. Set
+`periodic_checks` on a cluster connection to control this (both the string name and the `ValkeyGlideCluster` constant
+are accepted):
+
+| Setting                                  | Value | Behavior                                               |
+|------------------------------------------|-------|--------------------------------------------------------|
+| `enabled_default_configs` (or `enabled`) | `0`   | Periodic checks with GLIDE's default configuration     |
+| `disabled`                               | `1`   | No periodic checks; slots refresh on `MOVED` redirects |
+
+When `periodic_checks` is omitted, nothing is passed and the extension's default applies. The option is ignored for
+standalone connections, whose `connect()` has no such parameter.
+
+```php
+'clusters' => [
+    'default' => [
+        [
+            'host' => env('REDIS_HOST'),
+            'port' => (int) env('REDIS_PORT', 6379),
+            'periodic_checks' => env('REDIS_PERIODIC_CHECKS', 'disabled'),
+        ],
+    ],
+],
+```
+
+> [!WARNING]
+> In `ext-valkey_glide` 1.1.2, an unset or `enabled` value sends the GLIDE core a zero-second check interval instead of
+> its 60-second default, so every idle cluster client re-checks the topology continuously and burns CPU
+> ([valkey-glide-php#344](https://github.com/valkey-io/valkey-glide-php/issues/344)). Until a release includes the fix,
+> set `'periodic_checks' => 'disabled'` on cluster connections.
+
 ## ElastiCache Serverless
 
 AWS ElastiCache Serverless runs in cluster mode (single logical database, TLS required) and exposes the primary on port
@@ -204,6 +237,7 @@ AWS ElastiCache Serverless runs in cluster mode (single logical database, TLS re
                 'tls' => true,
                 'read_from' => 'prefer_replica',
                 'timeout' => 3.0,
+                'periodic_checks' => 'disabled',
             ],
         ],
     ],
@@ -212,6 +246,10 @@ AWS ElastiCache Serverless runs in cluster mode (single logical database, TLS re
 
 Keep the database index at `0` - cluster mode exposes only database 0. When using replica read routing, ensure the
 security group allows both port 6379 (read/write) and 6380 (read-only).
+
+With `ext-valkey_glide` 1.1.2, idle cluster clients use about 5% of a CPU core each against ElastiCache Serverless
+unless periodic checks are disabled (see Periodic Topology Checks). Serverless serves the whole keyspace behind one
+endpoint, and GLIDE still refreshes slots when it receives a `MOVED` redirect.
 
 ## Testing
 
