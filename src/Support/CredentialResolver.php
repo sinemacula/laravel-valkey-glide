@@ -18,12 +18,13 @@ final class CredentialResolver
     /**
      * Resolve GLIDE credentials from the given connection config.
      *
-     * Returns IAM credentials when an IAM block is present and complete,
-     * password credentials when a password string is set, or null when neither
-     * applies.
+     * Returns IAM credentials when an IAM block is present, password
+     * credentials when a password string is set, or null when neither applies.
      *
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>|null
+     *
+     * @throws \InvalidArgumentException
      */
     public static function resolve(#[\SensitiveParameter] array $config): ?array
     {
@@ -52,22 +53,26 @@ final class CredentialResolver
     /**
      * Determine whether IAM auth config is present in the given config array.
      *
+     * A null or empty iam value counts as absent, so IAM can be toggled per
+     * environment.
+     *
      * @param  array<string, mixed>  $config
      * @return bool
      */
     public static function hasIam(#[\SensitiveParameter] array $config): bool
     {
-        return isset($config['iam']) && is_array($config['iam']);
+        return isset($config['iam']) && is_array($config['iam']) && $config['iam'] !== [];
     }
 
     /**
      * Build IAM credentials in GLIDE's expected shape.
      *
-     * Returns null when IAM config is absent or when any required field is
-     * empty after normalization.
+     * Returns null when IAM config is absent.
      *
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>|null
+     *
+     * @throws \InvalidArgumentException
      */
     private static function iamCredentials(#[\SensitiveParameter] array $config): ?array
     {
@@ -77,19 +82,23 @@ final class CredentialResolver
 
         $iam = $config['iam'];
 
-        $username    = Cast::toNonEmptyString($iam['username'] ?? null)     ?? '';
-        $clusterName = Cast::toNonEmptyString($iam['cluster_name'] ?? null) ?? '';
-        $region      = Cast::toNonEmptyString($iam['region'] ?? null)       ?? '';
+        $required = [
+            'username'     => Cast::toNonEmptyString($iam['username'] ?? null),
+            'cluster_name' => Cast::toNonEmptyString($iam['cluster_name'] ?? null),
+            'region'       => Cast::toNonEmptyString($iam['region'] ?? null),
+        ];
 
-        if ($username === '' || $clusterName === '' || $region === '') {
-            return null;
+        $missing = array_keys(array_filter($required, is_null(...)));
+
+        if ($missing !== []) {
+            throw new \InvalidArgumentException(sprintf('Incomplete IAM configuration; missing or empty iam keys [%s].', implode(', ', $missing)));
         }
 
         return [
-            'username'  => $username,
+            'username'  => $required['username'],
             'iamConfig' => [
-                'clusterName'            => $clusterName,
-                'region'                 => $region,
+                'clusterName'            => $required['cluster_name'],
+                'region'                 => $required['region'],
                 'service'                => 'Elasticache',
                 'refreshIntervalSeconds' => self::iamRefreshInterval($iam['refresh_interval'] ?? null),
             ],

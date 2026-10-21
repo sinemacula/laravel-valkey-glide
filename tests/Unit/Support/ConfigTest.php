@@ -241,23 +241,42 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify incomplete IAM definitions are ignored for credentials.
+     * Verify incomplete IAM definitions throw instead of connecting without
+     * credentials.
      *
      * @return void
      */
     #[Test]
-    public function connectArgumentsDropsIncompleteIamCredentials(): void
+    public function connectArgumentsThrowsForIncompleteIamCredentials(): void
     {
-        $arguments = Config::connectArguments([
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Incomplete IAM configuration; missing or empty iam keys [cluster_name].');
+
+        Config::connectArguments([
             'iam' => [
                 'username'     => 'iam-user',
                 'cluster_name' => '',
                 'region'       => 'us-east-1',
             ],
         ]);
+    }
 
-        self::assertArrayNotHasKey('credentials', $arguments);
-        self::assertTrue($arguments['use_tls']);
+    /**
+     * Verify an empty IAM block neither forces TLS nor replaces password
+     * credentials.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsTreatsEmptyIamConfigurationAsAbsent(): void
+    {
+        $arguments = Config::connectArguments([
+            'password' => 'secret',
+            'iam'      => [],
+        ]);
+
+        self::assertArrayNotHasKey('use_tls', $arguments);
+        self::assertSame(['password' => 'secret'], $arguments['credentials']);
     }
 
     /**

@@ -83,7 +83,7 @@ The connector normalizes Laravel config into GLIDE connect arguments:
 - `addresses` (array) -> `addresses`
 - `tls` or `scheme=tls` -> `use_tls=true`
 - `username` + `password` -> ACL credentials
-- `iam` block -> IAM credentials + `use_tls=true`
+- `iam` block -> IAM credentials + `use_tls=true` (see IAM Authentication)
 - `database` -> `database_id`
 - `name` -> `client_name`
 - `read_from` -> `read_from` (replica read routing; see Read Routing)
@@ -338,6 +338,28 @@ security group allows both port 6379 (read/write) and 6380 (read-only).
 With `ext-valkey_glide` 1.1.2, idle cluster clients use about 5% of a CPU core each against ElastiCache Serverless
 unless periodic checks are disabled (see Periodic Topology Checks). Serverless serves the whole keyspace behind one
 endpoint, and GLIDE still refreshes slots when it receives a `MOVED` redirect.
+
+## IAM Authentication
+
+ElastiCache IAM authentication is configured with an `iam` block on the connection (for clusters, on the first node).
+GLIDE generates and refreshes the auth token itself, and TLS is enabled automatically:
+
+```php
+'iam' => env('REDIS_IAM_USERNAME') ? [
+    'username' => env('REDIS_IAM_USERNAME'),
+    'cluster_name' => env('REDIS_IAM_CLUSTER_NAME'),
+    'region' => env('AWS_DEFAULT_REGION'),
+    'refresh_interval' => 300,
+] : null,
+```
+
+- `username`, `cluster_name`, and `region` are required
+- `refresh_interval` (seconds) is optional and defaults to `300`
+- IAM credentials take precedence over `password`
+
+An `iam` value of `null` or `[]` is treated as absent, so the block can be switched off per environment as above. Any
+other `iam` array that is missing a required key, or holds an empty value for one, throws an `InvalidArgumentException`
+naming those keys rather than connecting without IAM credentials.
 
 ## Testing
 

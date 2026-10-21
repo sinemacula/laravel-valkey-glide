@@ -371,6 +371,74 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
+     * Verify an incomplete IAM block surfaces as an unwrapped
+     * InvalidArgumentException before any client is created.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectThrowsInvalidArgumentForIncompleteIamWithoutCreatingClient(): void
+    {
+        $clientCreated = false;
+
+        $connector = new ValkeyGlideConnector(
+            clientFactory: static function () use (&$clientCreated): \ValkeyGlide {
+                $clientCreated = true;
+
+                return new ValkeyGlideFake;
+            },
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        try {
+            $connector->connect(['iam' => ['username' => 'iam-user']], []);
+            self::fail('Expected InvalidArgumentException to be thrown.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertSame('Incomplete IAM configuration; missing or empty iam keys [cluster_name, region].', $exception->getMessage());
+        }
+
+        self::assertFalse($clientCreated);
+    }
+
+    /**
+     * Verify an incomplete IAM block on a cluster seed node surfaces as an
+     * unwrapped InvalidArgumentException before the cluster client is created.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterThrowsInvalidArgumentForIncompleteIamWithoutCreatingClient(): void
+    {
+        $clientCreated = false;
+
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static function (array $args) use (&$clientCreated): \ValkeyGlideCluster {
+                $clientCreated = true;
+
+                return new ValkeyGlideClusterFake;
+            },
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        try {
+            $connector->connectToCluster(
+                [
+                    ['host' => 'node-1', 'port' => 6379, 'iam' => ['username' => 'iam-user', 'cluster_name' => 'cache']],
+                ],
+                [],
+                [],
+            );
+            self::fail('Expected InvalidArgumentException to be thrown.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertSame('Incomplete IAM configuration; missing or empty iam keys [region].', $exception->getMessage());
+        }
+
+        self::assertFalse($clientCreated);
+    }
+
+    /**
      * Verify reconnect callback is wired by retrying an idempotent command.
      *
      * @return void
