@@ -37,7 +37,7 @@ application business code.
 ## Requirements
 
 - PHP `^8.3`
-- Laravel components with `illuminate/redis` and `illuminate/cache` `^11.0 || ^12.0 || ^13.0`
+- Laravel components with `illuminate/redis` and `illuminate/cache` `^12.45 || ^13.0`
 - `ext-valkey_glide` in runtime environments that use this driver
 
 `ext-valkey_glide` is declared in `suggest` so this package can still be installed in environments that do not run the

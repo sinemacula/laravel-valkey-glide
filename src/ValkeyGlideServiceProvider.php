@@ -46,8 +46,8 @@ final class ValkeyGlideServiceProvider extends ServiceProvider
      * Build the "redis" cache driver as CacheManager::createRedisDriver() does,
      * over the GLIDE-aware store.
      *
-     * The closure is not static: Laravel 11 and 12 bind every driver closure to
-     * the manager, which a static closure refuses. Laravel 11 takes no
+     * The closure is not static: Laravel 12 binds every driver closure to the
+     * manager, which a static closure refuses. Laravel before 12.53 takes no
      * serializable classes, and ignores the argument.
      *
      * @param  \Illuminate\Cache\CacheManager  $cache
