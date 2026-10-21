@@ -8,8 +8,10 @@ declare(strict_types = 1);
  *
  * Loaded only when the extension class is unavailable. Unlike the client stubs
  * it works, because unit tests run without the extension: the cursor id the
- * object was built with decides isFinished(), and the next id is written by
- * ValkeyGlideCluster::scan(), as the extension does.
+ * object was built with decides isFinished(). The extension's
+ * ValkeyGlideCluster::scan() writes the next id into the cursor it scans with;
+ * this stub only holds it, so getNextCursor() returns '0' until something
+ * writes it.
  *
  * @see https://github.com/valkey-io/valkey-glide-php
  */

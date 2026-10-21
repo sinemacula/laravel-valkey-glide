@@ -265,6 +265,26 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Parse the command's parameters for event dispatching.
+     *
+     * A cluster scan takes a ClusterScanCursor, which cannot be cast to a
+     * string, so listeners that format the parameters would fail on it. The
+     * event carries the cursor id it scans from instead, as a standalone scan
+     * carries its cursor; the client still receives the object.
+     *
+     * @param  array<array-key, mixed>  $parameters
+     * @return array<array-key, mixed>
+     */
+    #[\Override]
+    protected function parseParametersForEvent(array $parameters): array
+    {
+        return array_map(
+            static fn (mixed $parameter): mixed => $parameter instanceof \ClusterScanCursor ? $parameter->getCursor() : $parameter,
+            $parameters,
+        );
+    }
+
+    /**
      * Execute a normalized command with one retry for transient failures.
      *
      * @param  string  $method

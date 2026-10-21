@@ -130,10 +130,8 @@ final class ValkeyGlideStore extends RedisStore
      */
     private function scanTagSets(ValkeyGlideConnection $connection, string $pattern, int $count): \Generator
     {
-        $client = $connection->client();
-
-        if ($client instanceof \ValkeyGlideCluster) {
-            return $this->scanCluster($client, $pattern, $count);
+        if ($connection->client() instanceof \ValkeyGlideCluster) {
+            return $this->scanCluster($connection, $pattern, $count);
         }
 
         return $this->scanServer($connection, $pattern, $count);
@@ -142,26 +140,25 @@ final class ValkeyGlideStore extends RedisStore
     /**
      * Scan every primary of a cluster for the keys matching the pattern.
      *
-     * The cluster SCAN is sent to GLIDE directly: a `ClusterScanCursor` among
-     * the parameters of a command event breaks listeners that turn parameters
-     * into strings. Each call needs a new cursor built from the id the last one
-     * was given, since passing the same cursor again rescans the first node,
-     * and a new cursor reports itself finished before any scan, so the check
-     * comes after it.
+     * Each call needs a new cursor built from the id the last one was given,
+     * since passing the same cursor again rescans the first node, and a new
+     * cursor reports itself finished before any scan, so the check comes after
+     * it. The command events of each call carry the id it scans from.
      *
-     * @param  \ValkeyGlideCluster  $client
+     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
      * @param  string  $pattern
      * @param  int  $count
      * @return \Generator<int, string>
      *
      * @throws \UnexpectedValueException
      */
-    private function scanCluster(\ValkeyGlideCluster $client, string $pattern, int $count): \Generator
+    private function scanCluster(ValkeyGlideConnection $connection, string $pattern, int $count): \Generator
     {
         $cursor = new \ClusterScanCursor;
 
         do {
-            $keys = $client->scan($cursor, $pattern, $count, 'zset');
+            /** @var array<int, string>|false $keys */
+            $keys = $connection->command('scan', [$cursor, $pattern, $count, 'zset']);
 
             if (!is_array($keys)) {
                 throw new \UnexpectedValueException(sprintf('Expected array response from %s on [%s], received [%s].', 'scan', $pattern, get_debug_type($keys)));
