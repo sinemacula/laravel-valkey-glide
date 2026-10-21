@@ -136,6 +136,23 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Determine if the connection is a cluster connection.
+     *
+     * Laravel 13.5 added isCluster() to its base connection, and its Redis
+     * queue and concurrency limiter use it to hash-tag their keys into a single
+     * slot. Laravel 12 and 13.0 to 13.4 do not define it, so the method carries
+     * no #[\Override] attribute.
+     *
+     * @return bool
+     *
+     * @phpstan-ignore method.missingOverride
+     */
+    public function isCluster(): bool
+    {
+        return $this->glideClient instanceof \ValkeyGlideCluster;
+    }
+
+    /**
      * Returns the value of the given key.
      *
      * @param  string  $key

@@ -8,11 +8,13 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Queue\Jobs\RedisJob;
 use Illuminate\Queue\QueueManager;
 use Illuminate\Queue\RedisQueue;
+use Illuminate\Redis\Connections\Connection;
 use Illuminate\Redis\RedisManager;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\Test;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use Tests\External\Concerns\ConnectsToTestServers;
 use Tests\TestCase;
 
 /**
@@ -27,11 +29,19 @@ use Tests\TestCase;
 #[Group('external')]
 final class ValkeyGlideLaravelQueueExternalTest extends TestCase
 {
+    use ConnectsToTestServers;
+
     /** @var string Prefix configured on the Redis queue connection. */
     private const string REDIS_CONNECTION_PREFIX = 'lvkglide:queue:conn:';
 
     /** @var string Default queue name used for Redis queue configuration. */
     private const string DEFAULT_QUEUE_NAME = 'default';
+
+    /** @var string Redis connection configured on the cluster, when one is set. */
+    private const string CLUSTER_REDIS_CONNECTION = 'queue-cluster';
+
+    /** @var string Queue connection configured on the cluster, when one is set. */
+    private const string CLUSTER_QUEUE_CONNECTION = 'redis-cluster';
 
     /**
      * Ensure extension preconditions are met before each external test.
@@ -122,6 +132,74 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
     }
 
     /**
+     * Verify a queue whose name has no hash tag works on a cluster connection.
+     *
+     * The queue's scripts touch several keys at once, so they only run on a
+     * cluster when Laravel hash-tags the queue name into one slot, which it
+     * does from 13.5 for connections whose isCluster() returns true.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterQueuePushPopRoundtripSucceedsWithoutAHashTag(): void
+    {
+        $this->skipUnlessTopologyIsConfigured(self::CLUSTER);
+
+        if (!(new \ReflectionClass(Connection::class))->hasMethod('isCluster')) {
+            self::markTestSkipped('Laravel hash-tags queue keys on cluster connections from 13.5.');
+        }
+
+        $queueName = $this->uniqueQueueName('cluster');
+        $queue     = $this->redisQueueConnection(self::CLUSTER_QUEUE_CONNECTION);
+        $payload   = $this->queuePayload();
+
+        $queue->pushRaw($payload, $queueName);
+
+        self::assertSame(1, $queue->size($queueName));
+
+        $job = $queue->pop($queueName);
+
+        self::assertInstanceOf(RedisJob::class, $job);
+        self::assertSame($payload, $job->getRawBody());
+
+        $job->delete();
+
+        self::assertSame(0, $queue->size($queueName));
+        $queue->clear($queueName);
+    }
+
+    /**
+     * Verify a funnel whose name has no hash tag acquires a slot on a cluster
+     * connection.
+     *
+     * The limiter's lock script reads every slot key at once, so it only runs
+     * on a cluster when Laravel hash-tags the funnel name into one slot, which
+     * it does from 13.5 for connections whose isCluster() returns true.
+     *
+     * @return void
+     *
+     * @throws \Illuminate\Contracts\Redis\LimiterTimeoutException
+     */
+    #[Test]
+    public function clusterFunnelAcquiresASlotWithoutAHashTag(): void
+    {
+        $this->skipUnlessTopologyIsConfigured(self::CLUSTER);
+
+        if (!(new \ReflectionClass(Connection::class))->hasMethod('isCluster')) {
+            self::markTestSkipped('Laravel hash-tags funnel keys on cluster connections from 13.5.');
+        }
+
+        $result = $this->redisConnection(self::CLUSTER_REDIS_CONNECTION)
+            ->funnel($this->uniqueQueueName('funnel'))
+            ->limit(2)
+            ->releaseAfter(5)
+            ->block(0)
+            ->then(static fn (): string => 'acquired');
+
+        self::assertSame('acquired', $result);
+    }
+
+    /**
      * Configure Redis and queue defaults used by queue integration tests.
      *
      * @param  \Illuminate\Contracts\Foundation\Application  $app
@@ -132,30 +210,7 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
     {
         parent::defineEnvironment($app);
 
-        $host = getenv('VALKEY_GLIDE_TEST_HOST');
-        $port = getenv('VALKEY_GLIDE_TEST_PORT');
-
-        /** @var array<string, mixed> $redisDefault */
-        $redisDefault = [
-            'host'   => is_string($host) && $host !== '' ? $host : '127.0.0.1',
-            'port'   => is_string($port) && is_numeric($port) ? (int) $port : 6379,
-            'tls'    => $this->resolveBooleanEnv('VALKEY_GLIDE_TEST_TLS', false),
-            'prefix' => self::REDIS_CONNECTION_PREFIX,
-        ];
-
-        $password = getenv('VALKEY_GLIDE_TEST_PASSWORD');
-
-        if (is_string($password) && $password !== '') {
-            $redisDefault['password'] = $password;
-        }
-
-        $username = getenv('VALKEY_GLIDE_TEST_USERNAME');
-
-        if (is_string($username) && $username !== '') {
-            $redisDefault['username'] = $username;
-        }
-
-        $app['config']->set('database.redis.default', $redisDefault);
+        $app['config']->set('database.redis.default', $this->standaloneConfig() + ['prefix' => self::REDIS_CONNECTION_PREFIX]);
         $app['config']->set('database.redis.options', []);
         $app['config']->set('queue.default', 'redis');
         $app['config']->set('queue.connections.redis', [
@@ -166,47 +221,63 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
             'block_for'    => null,
             'after_commit' => false,
         ]);
+
+        if (!$this->isClusterConfigured()) {
+            return;
+        }
+
+        $app['config']->set('database.redis.clusters.' . self::CLUSTER_REDIS_CONNECTION, [$this->clusterSeed()]);
+        $app['config']->set('queue.connections.' . self::CLUSTER_QUEUE_CONNECTION, [
+            'driver'       => 'redis',
+            'connection'   => self::CLUSTER_REDIS_CONNECTION,
+            'queue'        => self::DEFAULT_QUEUE_NAME,
+            'retry_after'  => 90,
+            'block_for'    => null,
+            'after_commit' => false,
+        ]);
     }
 
     /**
-     * Resolve the Redis manager's default connection as the valkey-glide
+     * Resolve one of the Redis manager's connections as the valkey-glide
      * wrapper.
      *
+     * @param  string  $name
      * @return \SineMacula\Valkey\Connections\ValkeyGlideConnection
      *
      * @throws \UnexpectedValueException
      */
-    private function redisConnection(): ValkeyGlideConnection
+    private function redisConnection(string $name = 'default'): ValkeyGlideConnection
     {
         if (!$this->app instanceof Application) {
             throw new \UnexpectedValueException('Application container is unavailable.');
         }
 
         $redis      = $this->app->make(RedisManager::class);
-        $connection = $redis->connection('default');
+        $connection = $redis->connection($name);
 
         if ($connection instanceof ValkeyGlideConnection) {
             return $connection;
         }
 
-        throw new \UnexpectedValueException(sprintf('Expected redis default connection to be [%s], received [%s].', ValkeyGlideConnection::class, get_debug_type($connection)));
+        throw new \UnexpectedValueException(sprintf('Expected redis [%s] connection to be [%s], received [%s].', $name, ValkeyGlideConnection::class, get_debug_type($connection)));
     }
 
     /**
-     * Resolve Laravel's Redis queue connection.
+     * Resolve one of Laravel's Redis queue connections.
      *
+     * @param  string  $name
      * @return \Illuminate\Queue\RedisQueue
      *
      * @throws \UnexpectedValueException
      */
-    private function redisQueueConnection(): RedisQueue
+    private function redisQueueConnection(string $name = 'redis'): RedisQueue
     {
         if (!$this->app instanceof Application) {
             throw new \UnexpectedValueException('Application container is unavailable.');
         }
 
         $manager = $this->app->make(QueueManager::class);
-        $queue   = $manager->connection('redis');
+        $queue   = $manager->connection($name);
 
         if ($queue instanceof RedisQueue) {
             return $queue;
@@ -267,34 +338,5 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
         }
 
         throw new \UnexpectedValueException(sprintf('Expected integer response, received [%s].', get_debug_type($response)));
-    }
-
-    /**
-     * Assert that the Valkey GLIDE extension and class are available.
-     *
-     * @return void
-     */
-    private function assertExtensionIsLoaded(): void
-    {
-        self::assertTrue(extension_loaded('valkey_glide'), 'External tests require ext-valkey_glide.');
-        self::assertTrue(class_exists(\ValkeyGlide::class), 'External tests require the ValkeyGlide class.');
-    }
-
-    /**
-     * Resolve boolean environment variables with a fallback default.
-     *
-     * @param  string  $name
-     * @param  bool  $default
-     * @return bool
-     */
-    private function resolveBooleanEnv(string $name, bool $default): bool
-    {
-        $value = getenv($name);
-
-        if (!is_string($value)) {
-            return $default;
-        }
-
-        return in_array(strtolower($value), ['1', 'true', 'yes', 'on'], true);
     }
 }
