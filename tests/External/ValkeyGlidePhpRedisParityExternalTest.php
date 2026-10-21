@@ -217,8 +217,8 @@ final class ValkeyGlidePhpRedisParityExternalTest extends TestCase
     }
 
     /**
-     * Verify a cluster scan refuses a cursor id the connection did not return
-     * rather than hand it to GLIDE, which aborts the process on it.
+     * Verify a cluster scan refuses a cursor not of the shape its scan writes
+     * before anything is sent to the cluster.
      *
      * @return void
      *
@@ -236,7 +236,7 @@ final class ValkeyGlidePhpRedisParityExternalTest extends TestCase
 
     /**
      * Verify each page of a cluster scan dispatches a command executed event
-     * that a listener can turn into a string, carrying the cursor id the page
+     * that a listener can turn into a string, carrying the cursor the page
      * scans from.
      *
      * @return void

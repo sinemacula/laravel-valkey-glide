@@ -141,6 +141,11 @@ class ValkeyGlideCluster
      * call: passing the same object again rescans the first node. The scan is
      * complete once the new cursor reports isFinished().
      *
+     * In 1.1.2 and 1.2.0-rc1 it aborts the process (zend_mm_heap corrupted)
+     * when a node answers a page with an error, such as NOPERM, or when it is
+     * built from an id it did not return, and does not return when a node
+     * stops answering mid-scan.
+     *
      * @param  \ClusterScanCursor  $iterator
      * @param  string|null  $pattern
      * @param  int  $count

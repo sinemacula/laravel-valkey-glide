@@ -94,8 +94,8 @@ final class ValkeyGlideStore extends RedisStore
      *
      * Over a GLIDE connection the tags' sorted sets are found with a SCAN for
      * sorted sets whose pattern carries the connection and cache prefixes, with
-     * their glob characters escaped. On a cluster every primary is scanned with
-     * a `ClusterScanCursor`.
+     * their glob characters escaped. On a cluster every primary is scanned in
+     * turn, as the connection's `scan()` does.
      *
      * @param  mixed  $chunkSize
      * @return \Illuminate\Support\LazyCollection<int, string>
@@ -129,108 +129,29 @@ final class ValkeyGlideStore extends RedisStore
     }
 
     /**
-     * Scan the server, or every primary of a cluster, for the keys matching the
-     * pattern.
+     * Scan the server, or every primary of a cluster, for the sorted sets
+     * matching the pattern, from cursor '0' until it is '0' again.
+     *
+     * The connection refuses each page while a pipeline or transaction is open
+     * on it; the caller may open a batch between pages.
      *
      * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
      * @param  string  $pattern
      * @param  int  $count
      * @return \Generator<int, string>
      *
-     * @throws \UnexpectedValueException
+     * @throws \Throwable
      */
     private function scanTagSets(ValkeyGlideConnection $connection, string $pattern, int $count): \Generator
-    {
-        if ($connection->client() instanceof \ValkeyGlideCluster) {
-            return $this->scanCluster($connection, $pattern, $count);
-        }
-
-        return $this->scanServer($connection, $pattern, $count);
-    }
-
-    /**
-     * Scan every primary of a cluster for the keys matching the pattern.
-     *
-     * Each call needs a new cursor built from the id the last one was given,
-     * since passing the same cursor again rescans the first node, and a new
-     * cursor reports itself finished before any scan, so the check comes after
-     * it. The command events of each call carry the id it scans from.
-     *
-     * The connection refuses each page while a pipeline or transaction is
-     * open on it, as GLIDE would run the cluster SCAN at once, outside the
-     * batch; the caller may open a batch between pages.
-     *
-     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
-     * @param  string  $pattern
-     * @param  int  $count
-     * @return \Generator<int, string>
-     *
-     * @throws \UnexpectedValueException
-     */
-    private function scanCluster(ValkeyGlideConnection $connection, string $pattern, int $count): \Generator
-    {
-        $cursor = new \ClusterScanCursor;
-
-        do {
-            /** @var array<int, string>|false $keys */
-            $keys = $connection->command('scan', [$cursor, $pattern, $count, 'zset']);
-
-            if (!is_array($keys)) {
-                throw new \UnexpectedValueException(sprintf('Expected array response from %s on [%s], received [%s].', 'scan', $pattern, get_debug_type($keys)));
-            }
-
-            foreach ($keys as $key) {
-                yield $key;
-            }
-
-            $cursor = new \ClusterScanCursor($cursor->getNextCursor());
-        } while (!$cursor->isFinished());
-    }
-
-    /**
-     * Scan a standalone server for the keys matching the pattern, from cursor
-     * '0' until GLIDE writes '0' back.
-     *
-     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
-     * @param  string  $pattern
-     * @param  int  $count
-     * @return \Generator<int, string>
-     *
-     * @throws \UnexpectedValueException
-     */
-    private function scanServer(ValkeyGlideConnection $connection, string $pattern, int $count): \Generator
     {
         $cursor = '0';
 
         do {
-            [$cursor, $keys] = $this->scanPage($connection, $cursor, $pattern, $count);
+            [$cursor, $keys] = $connection->scan($cursor, ['match' => $pattern, 'count' => $count, 'type' => 'zset']);
 
             foreach ($keys as $key) {
                 yield $key;
             }
         } while ($cursor !== '0');
-    }
-
-    /**
-     * Read one page of a standalone SCAN, from the given cursor.
-     *
-     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
-     * @param  string  $cursor
-     * @param  string  $pattern
-     * @param  int  $count
-     * @return array{string, array<int, string>}
-     *
-     * @throws \UnexpectedValueException
-     */
-    private function scanPage(ValkeyGlideConnection $connection, string $cursor, string $pattern, int $count): array
-    {
-        /** @var array<int, string>|false $keys */
-        $keys = $connection->command('scan', [&$cursor, $pattern, $count, 'zset']);
-
-        if (!is_array($keys)) {
-            throw new \UnexpectedValueException(sprintf('Expected array response from %s on [%s], received [%s].', 'scan', $pattern, get_debug_type($keys)));
-        }
-
-        return [$cursor, $keys];
     }
 }

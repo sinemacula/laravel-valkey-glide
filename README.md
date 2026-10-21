@@ -152,8 +152,10 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 - Before each command that reaches the server, a `WATCH` left over from an `UNWATCH` that failed, sent by `unwatch()`
   or when a transaction ended, is unwatched again (see WATCH)
 - Non-idempotent commands are not retried
-- Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`); a cluster `scan()` reports the id its
-  `ClusterScanCursor` scans from in place of the cursor, so listeners can turn the parameters into strings
+- Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`); a cluster `scan()` with Laravel's options
+  array dispatches one `scan` event per page, carrying the cursor it scans from, and one given GLIDE's own
+  `ClusterScanCursor` reports the id it scans from in place of the object, so listeners can turn the parameters into
+  strings
 - `executeRaw()` is supported via `rawcommand`, with a route added on cluster connections (see Cluster Connections)
 - Phpredis-style `SET`/`EVAL` argument shapes are normalized through `rawcommand`, including a `SET` with a single
   string flag such as `set($key, $value, 'NX')`, which GLIDE's own `set()` refuses
@@ -194,9 +196,9 @@ Command execution goes through `ValkeyGlideConnection::command()`.
   `zunionstore()` of a pipeline or transaction take the client's own forms
 - `scan($cursor, ['match' => ..., 'count' => ...])` takes Laravel's options array and returns `[$cursor, $keys]`, as
   Laravel's phpredis connection does: start from `'0'` and stop once the cursor is `'0'` again. The `match` pattern is
-  not prefixed, and `count` defaults to 10. A scan that fails throws an `UnexpectedValueException` rather than
-  returning an empty last page. On a cluster, GLIDE's own `ClusterScanCursor` is still passed to it unchanged (see
-  Cluster Connections)
+  not prefixed, `count` defaults to 10, and a `type` option, such as `'zset'`, keeps only keys of that type. A scan
+  that fails throws an `UnexpectedValueException` rather than returning an empty last page. On a cluster each primary
+  is scanned in turn, and GLIDE's own `ClusterScanCursor` is still passed to GLIDE unchanged (see Cluster Connections)
 - `zscan($key, $cursor, $options)`, `hscan(...)` and `sscan(...)` take the same options array and return
   `[$cursor, $members]`, with the same string cursor, defaults and failure (see Cache Tags)
 - `disconnect()` delegates to GLIDE `close()`; an open pipeline or transaction ends without sending what it buffered, as
@@ -710,7 +712,7 @@ its keys must share a slot, so give them a common hash tag (`{user:1}:name`, `{u
 `CROSSSLOT`.
 
 A raw `SCAN` through `executeRaw()` is refused, because a cursor `SCAN` walks a single node and would miss keys on the
-others. Scan a cluster through the connection's `scan()`. With Laravel's options array, it scans every primary in turn,
+others. Scan a cluster through the connection's `scan()` with Laravel's options array. It scans every primary in turn,
 and its cursor is a string, as on a standalone server:
 
 ```php
@@ -723,11 +725,14 @@ do {
 } while ($cursor !== '0');
 ```
 
-GLIDE aborts the PHP process when a cluster scan resumes from a cursor it did not return, or from one whose scan has
-ended, so the connection resumes only from a cursor it returned, and only once, and throws an
-`InvalidArgumentException` for any other. Never keep a cursor to resume later, in another process or on another
-connection. Each page dispatches command events like any command, carrying the cursor id it scans from. GLIDE's own
-`ClusterScanCursor` is passed to it unchanged:
+Each page reads the primaries with `CLUSTER SLOTS` and sends a plain `SCAN` to one of them by its address, because
+GLIDE's own cluster scan aborts the PHP process (`zend_mm_heap corrupted`, in `ext-valkey_glide` 1.1.2 and 1.2.0-rc1)
+when a node refuses a page, such as with `NOPERM`. A refused page throws an `UnexpectedValueException` instead, and the
+scan can resume from the cursor that page was given, on any connection to the cluster; a cursor not of the scan's shape
+throws an `InvalidArgumentException`. A primary whose slots change mid-scan is scanned again from its start. The user
+needs `CLUSTER SLOTS` as well as `SCAN`. A primary `CLUSTER SLOTS` reports no usable endpoint for, as under
+`cluster-preferred-endpoint-type unknown-endpoint`, cannot be scanned this way and throws an `UnexpectedValueException`.
+GLIDE's own `ClusterScanCursor` is still passed to GLIDE unchanged, with the failures above:
 
 ```php
 $cursor = new ClusterScanCursor;
@@ -825,7 +830,8 @@ Laravel's own code unchanged.
   server. `CacheFlushing` and `CacheFlushed` are dispatched when the installed Laravel version dispatches them for tags.
 - `flushStale()` removes expired entries from each tag's sorted set with `ZREMRANGEBYSCORE`, one command per tag.
 - `cache:prune-stale-tags` finds the tag sets with a `SCAN` for sorted sets whose pattern carries the connection and
-  cache prefixes, with glob characters in them escaped; on a cluster it walks every primary with a `ClusterScanCursor`.
+  cache prefixes, with glob characters in them escaped; on a cluster it scans every primary in turn, as `scan()` does
+  (see Cluster Connections).
 - None of these opens a pipeline or transaction. Called inside one on the store's connection, tagged writes and
   `flushStale()` join the batch, so their replies, failures included, come back in the batch's results rather than as
   the exception described below. `flush()`, reading a tag's entries and `cache:prune-stale-tags` throw a
@@ -900,11 +906,10 @@ do {
 } while ($cursor !== '0');
 ```
 
-- The `SCAN` and `ZSCAN` calls dispatch `CommandExecuted` like any command. On a cluster the event carries the id the
-  `ClusterScanCursor` scans from, not the cursor itself.
-- The user running `cache:prune-stale-tags` needs `SCAN` permission. On a cluster, with 1.1.2 a `SCAN` refused by an
-  ACL aborts the PHP process; on a standalone server the refusal comes back as `false` and the command throws an
-  `UnexpectedValueException`.
+- The `SCAN` and `ZSCAN` calls dispatch `CommandExecuted` like any command; on a cluster each `SCAN` page dispatches
+  one, named `scan`, carrying the cursor it scans from.
+- The user running `cache:prune-stale-tags` needs `SCAN` permission. Without it the command throws an
+  `UnexpectedValueException`, on a cluster as on a standalone server.
 - On a standalone server the user running a tag `flush()` needs `EVAL` permission (the `@scripting` ACL category), as
   with Laravel's own flush over phpredis and Predis. Earlier releases flushed with `DEL` and `ZREM` only, so a user
   denied `EVAL`, or a server with `EVAL` disabled, could flush; now the refused script comes back as `false` and the
@@ -1020,6 +1025,9 @@ The external suite reads connection details from optional environment variables:
 - `VALKEY_GLIDE_TEST_PASSWORD`
 - `VALKEY_GLIDE_TEST_CLUSTER_HOST` and `VALKEY_GLIDE_TEST_CLUSTER_PORT`: a seed node of a Valkey/Redis cluster; the
   cluster cases are skipped when either is unset
+
+The cases of a refused cluster scan create their own uniquely named ACL user denied `SCAN` on every node of the
+cluster, and delete it after the test; they are skipped when the cluster refuses `ACL SETUSER`.
 
 The TLS and credential variables apply to the standalone server only: the cluster cases connect without TLS or
 credentials, so they need a cluster that accepts plain, unauthenticated connections.

@@ -236,6 +236,9 @@ final class ValkeyGlideConnection extends Connection
     /** @var \SineMacula\Valkey\Connections\SortedSetArguments Converter for the scores, members and weights of sorted-set commands. */
     private readonly SortedSetArguments $sortedSetArguments;
 
+    /** @var \SineMacula\Valkey\Connections\ClusterScan Primary-by-primary keyspace scan for cluster clients. */
+    private readonly ClusterScan $clusterScan;
+
     /** @var \SineMacula\Valkey\Connections\BatchState|null The active pipeline or transaction, if any. */
     private ?BatchState $batch = null;
 
@@ -244,9 +247,6 @@ final class ValkeyGlideConnection extends Connection
 
     /** @var bool Whether the watched keys are left over from an UNWATCH that failed once their WATCH was released, by unwatch() or a transaction that ended, rather than watched for one still to run. */
     private bool $watchLeftOver = false;
-
-    /** @var array<string, true> Cluster scan cursor ids this connection returned and has not yet resumed from. */
-    private array $clusterScanCursors = [];
 
     /**
      * Create a new Valkey GLIDE Laravel connection wrapper.
@@ -267,6 +267,7 @@ final class ValkeyGlideConnection extends Connection
         $this->sleepCallback      = $this->resolveSleepCallback($config['sleep'] ?? null);
         $this->batchCommands      = new BatchCommands;
         $this->sortedSetArguments = new SortedSetArguments;
+        $this->clusterScan        = new ClusterScan;
     }
 
     /**
@@ -560,12 +561,15 @@ final class ValkeyGlideConnection extends Connection
      * As with Laravel's phpredis connection, the scan starts from cursor '0'
      * (or `null`), takes the `match` pattern, unprefixed, and the `count` hint
      * from the options, and returns the next cursor and the page's keys. The
-     * cursor is '0' again once the scan is complete. GLIDE takes the cursor by
-     * reference on a server and as a ClusterScanCursor on a cluster, so each is
-     * translated here. A failed scan throws, as it does through phpredis,
-     * rather than reading as an empty last page. A ClusterScanCursor, or
-     * GLIDE's own pattern, count and type arguments, are passed to GLIDE
-     * unchanged.
+     * cursor is '0' again once the scan is complete. A `type` option, such as
+     * `zset`, keeps only keys of that type. A failed scan throws, as it does
+     * through phpredis, rather than reading as an empty last page.
+     *
+     * GLIDE takes the cursor by reference on a server. On a cluster each
+     * primary is scanned in turn with a plain `SCAN` sent to its address (see
+     * ClusterScan), as GLIDE's own cluster scan aborts the process when a node
+     * answers with an error. A ClusterScanCursor, or GLIDE's own pattern, count
+     * and type arguments, are passed to GLIDE unchanged.
      *
      * @param  mixed  $cursor
      * @param  mixed  $options
@@ -576,8 +580,8 @@ final class ValkeyGlideConnection extends Connection
      */
     public function scan(mixed $cursor, mixed $options = [], mixed ...$arguments): mixed
     {
-        // Inside a batch the connection refuses SCAN, which it does before a
-        // cluster cursor id is used up, so the scan can resume once it ends.
+        // Inside a batch the connection refuses SCAN before anything is sent,
+        // so the scan can resume from the same cursor once the batch ends.
         if ($cursor instanceof \ClusterScanCursor || !is_array($options) || $this->batch !== null) {
             return $this->command('scan', func_get_args());
         }
@@ -585,12 +589,18 @@ final class ValkeyGlideConnection extends Connection
         $cursor  = Cast::toNonEmptyString($cursor)                   ?? '0';
         $pattern = Cast::toNonEmptyString($options['match'] ?? null) ?? '*';
         $count   = Cast::toNonNegativeInt($options['count'] ?? null) ?? 10;
+        $type    = Cast::toNonEmptyString($options['type'] ?? null);
+        $filters = $type !== null ? [$pattern, $count, $type] : [$pattern, $count];
+
+        // A client closed by disconnect() is replaced before the cluster scan
+        // takes it; the standalone scan reconnects through command().
+        $this->reconnectAfterDisconnect();
 
         if ($this->glideClient instanceof \ValkeyGlideCluster) {
-            return $this->scanCluster($cursor, $pattern, $count);
+            return $this->scanCluster($this->glideClient, $cursor, $filters);
         }
 
-        $keys = $this->command('scan', [&$cursor, $pattern, $count]);
+        $keys = $this->command('scan', [&$cursor, ...$filters]);
 
         return [$cursor, self::scannedKeys($keys, $pattern)];
     }
@@ -817,10 +827,10 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Parse the command's parameters for event dispatching.
      *
-     * A cluster scan takes a ClusterScanCursor, which cannot be cast to a
-     * string, so listeners that format the parameters would fail on it. The
-     * event carries the cursor id it scans from instead, as a standalone scan
-     * carries its cursor; the client still receives the object.
+     * GLIDE's own cluster scan takes a ClusterScanCursor, which cannot be cast
+     * to a string, so listeners that format the parameters would fail on it.
+     * The event carries the cursor id it scans from instead, as a standalone
+     * scan carries its cursor; the client still receives the object.
      *
      * @param  array<array-key, mixed>  $parameters
      * @return array<array-key, mixed>
@@ -898,40 +908,50 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
-     * Scan every primary of a cluster for one page of keys, from a cursor id.
+     * Scan the primaries of a cluster for one page of keys, from a cursor.
      *
-     * Each call builds a ClusterScanCursor from the id the last one returned,
-     * since passing the same cursor again rescans the first node. GLIDE aborts
-     * the process when it resumes from an id it never returned, or from one
-     * whose scan has ended, so only an id this connection returned is resumed,
-     * and only once. The scan goes through command(), so its command events
-     * carry the id it scans from, as parseParametersForEvent() reports it.
+     * A cursor not of the shape the cluster scan writes is refused before
+     * anything is sent. As before any command, a WATCH left over from an
+     * UNWATCH that failed is unwatched first and the error GLIDE last recorded
+     * is cleared, and a page answered with false throws the error GLIDE
+     * recorded for it, if any. The page dispatches one command event, named
+     * `scan`, carrying the cursor it scans from with the filters, as a
+     * standalone scan does.
      *
+     * @param  \ValkeyGlideCluster  $client
      * @param  string  $cursor
-     * @param  string  $pattern
-     * @param  int  $count
+     * @param  array{0: string, 1: int, 2?: string}  $filters
      * @return array{0: string, 1: array<int, string>}
      *
-     * @throws \InvalidArgumentException
+     * @throws \Throwable
      */
-    private function scanCluster(string $cursor, string $pattern, int $count): array
+    private function scanCluster(\ValkeyGlideCluster $client, string $cursor, array $filters): array
     {
-        if ($cursor !== '0' && !isset($this->clusterScanCursors[$cursor])) {
-            throw new \InvalidArgumentException(sprintf('Cannot resume a cluster scan from cursor [%s]: only a cursor this connection returned can be resumed, once.', $cursor));
+        $state = $this->clusterScan->resume($cursor);
+
+        $this->unwatchLeftOverKeys();
+        $this->clearLastError();
+
+        $parameters = [$cursor, ...$filters];
+        $startedAt  = microtime(true);
+
+        try {
+            [$next, $keys] = $this->clusterScan->page($client, $state, $filters[0], $filters[1], $filters[2] ?? null);
+
+            $error = $keys === false ? $this->lastError() : null;
+
+            if ($error !== null) {
+                throw $error;
+            }
+        } catch (\Throwable $exception) {
+            $this->dispatchCommandFailedEvent('scan', $parameters, $exception);
+
+            throw $exception;
         }
 
-        // A reconnect that fails sends no scan, so it must not use the id up.
-        $this->reconnectAfterDisconnect();
+        $this->dispatchCommandExecutedEvent('scan', $parameters, $startedAt);
 
-        unset($this->clusterScanCursors[$cursor]);
-
-        $iterator = new \ClusterScanCursor($cursor);
-        $keys     = self::scannedKeys($this->command('scan', [$iterator, $pattern, $count]), $pattern);
-        $next     = $iterator->getNextCursor();
-
-        $this->clusterScanCursors[$next] = true;
-
-        return [$next, $keys];
+        return [$next, self::scannedKeys($keys, $filters[0])];
     }
 
     /**

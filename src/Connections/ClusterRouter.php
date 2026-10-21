@@ -174,7 +174,7 @@ final readonly class ClusterRouter
         $subcommand = is_string($arguments[0] ?? null) ? $command . ' ' . strtoupper($arguments[0]) : $command;
 
         if ($command === 'SCAN') {
-            throw new \InvalidArgumentException('A raw SCAN on a cluster connection covers a single node; call scan() with a ClusterScanCursor instead.');
+            throw new \InvalidArgumentException('A raw SCAN on a cluster connection covers a single node; call scan() with Laravel\'s options array instead.');
         }
 
         if (in_array($subcommand, self::SLOT_COMMANDS, true)) {

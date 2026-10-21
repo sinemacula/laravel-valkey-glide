@@ -13,6 +13,7 @@ use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ValkeyGlideBatch;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use SineMacula\Valkey\Exceptions\ConnectionException;
+use Tests\Fakes\ClusterKeyspaceFake;
 use Tests\Fakes\ValkeyGlideClusterFake;
 use Tests\Fakes\ValkeyGlideFake;
 
@@ -155,8 +156,8 @@ final class DisconnectedValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a cluster scan resumed while the reconnect fails keeps its cursor,
-     * as no SCAN was sent, so the scan can resume once the reconnect succeeds.
+     * Verify a cluster scan resumed while the reconnect fails sends no SCAN, so
+     * the scan resumes from the same cursor once the reconnect succeeds.
      *
      * @return void
      *
@@ -165,11 +166,8 @@ final class DisconnectedValkeyGlideConnectionTest extends TestCase
     #[Test]
     public function failedReconnectKeepsTheClusterScanCursor(): void
     {
-        $firstClient = new ValkeyGlideClusterFake;
-        $firstClient->willScan('scan', [['cursor-1', ['a']]]);
-
-        $secondClient = new ValkeyGlideClusterFake;
-        $secondClient->willScan('scan', [['0', ['b']]]);
+        $firstClient  = $this->clusterKeyspace();
+        $secondClient = $this->clusterKeyspace();
 
         $attempts   = 0;
         $connection = new ValkeyGlideConnection($firstClient, static function () use (&$attempts, $secondClient): \ValkeyGlideCluster {
@@ -180,19 +178,23 @@ final class DisconnectedValkeyGlideConnectionTest extends TestCase
             return $secondClient;
         });
 
-        self::assertSame(['cursor-1', ['a']], $connection->scan('0'));
+        [$cursor, $keys] = $connection->scan('0');
+
+        self::assertSame(['a1', 'a2'], $keys);
 
         $connection->disconnect();
 
         try {
-            $connection->scan('cursor-1');
+            $connection->scan($cursor);
             self::fail('Expected the failed reconnect to throw.');
         } catch (ConnectionException $exception) {
             self::assertSame(self::REFUSED_MESSAGE, $exception->getMessage());
         }
 
-        self::assertSame(['0', ['b']], $connection->scan('cursor-1'));
-        self::assertSame([['cursor-1', '*', 10, null]], $secondClient->callsFor('scan'));
+        self::assertCount(1, $firstClient->scans());
+        self::assertCount(1, $firstClient->callsFor('close'));
+        self::assertSame(['0', ['b1']], $connection->scan($cursor));
+        self::assertSame([['10.0.0.2:7001', '0', 'MATCH', '*', 'COUNT', '10']], $secondClient->scans());
     }
 
     /**
@@ -495,5 +497,17 @@ final class DisconnectedValkeyGlideConnectionTest extends TestCase
         } finally {
             self::assertSame([], $client->callsFor('subscribe'));
         }
+    }
+
+    /**
+     * Create a cluster of two primaries, each holding keys in its own slots.
+     *
+     * @return \Tests\Fakes\ClusterKeyspaceFake
+     */
+    private function clusterKeyspace(): ClusterKeyspaceFake
+    {
+        return (new ClusterKeyspaceFake)
+            ->withPrimary('10.0.0.1:7000', [[0, 8191]], ['a1', 'a2'])
+            ->withPrimary('10.0.0.2:7001', [[8192, 16383]], ['b1']);
     }
 }
