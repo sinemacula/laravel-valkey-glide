@@ -1838,7 +1838,9 @@ final class ValkeyGlideConnection extends Connection
      *
      * Scripts take phpredis' argument shape, and so do SET options GLIDE's own
      * set() cannot take or refuses, as in `set($key, $value, 'EX', 60, 'NX')`
-     * or `set($key, $value, 'NX')`.
+     * or `set($key, $value, 'NX')`. GLIDE has no `keys()`, which Laravel's
+     * Redis queue calls to list its queues on any connection but a phpredis
+     * cluster connection.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
@@ -1846,7 +1848,7 @@ final class ValkeyGlideConnection extends Connection
      */
     private function shouldInvokeAsRawCommand(string $method, array $parameters): bool
     {
-        if ($method === 'EVAL' || $method === 'EVALSHA') {
+        if ($method === 'EVAL' || $method === 'EVALSHA' || $method === 'KEYS') {
             return true;
         }
 
@@ -1856,8 +1858,13 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Execute a command through rawcommand with Redis protocol arguments.
      *
-     * Cluster clients require a leading route argument so the command lands on
-     * the primary that owns the key's slot. Standalone clients use the existing
+     * Cluster clients require a leading route argument, which the cluster
+     * router resolves as it does for executeRaw(): a keyed script or SET goes
+     * to the primary that owns its key's slot, a keyless one, or one whose key
+     * cannot travel in a GLIDE route, to `randomNode`, and `KEYS` to every
+     * primary, as each holds only its own slots' keys, and GLIDE joins their
+     * replies into one list. The parameters are already prefixed, so the route
+     * names the key the command targets. Standalone clients use the existing
      * two-argument form (no route).
      *
      * @param  string  $method
@@ -1873,7 +1880,7 @@ final class ValkeyGlideConnection extends Connection
         $values = array_values($parameters);
 
         if ($this->glideClient instanceof \ValkeyGlideCluster) {
-            return $this->glideClient->rawcommand($this->resolveClusterRoute($method, $values), $method, ...$values);
+            return $this->glideClient->rawcommand($this->router->route([$method, ...$values]), $method, ...$values);
         }
 
         return $this->glideClient->rawcommand($method, ...$values);
@@ -1941,50 +1948,6 @@ final class ValkeyGlideConnection extends Connection
         $async = $flag === true || (is_string($flag) && strtoupper($flag) === 'ASYNC');
 
         return call_user_func([$this->glideClient, $method], 'allPrimaries', $async);
-    }
-
-    /**
-     * Resolve the cluster route for a raw command.
-     *
-     * Keyed write/script commands (EVAL, EVALSHA, phpredis-style
-     * SET-with-options) must land on the primary that owns the key's hash slot.
-     * Using `primarySlotKey` tells GLIDE to compute the slot from the supplied
-     * key and route there, preserving the same per-key semantics as standalone.
-     * Fan-out routes (`allPrimaries`, `allNodes`) would execute the write on
-     * every shard. A keyless call, or one whose key is empty or not valid UTF-8
-     * and so cannot travel in a GLIDE route, goes to `randomNode`, and GLIDE
-     * follows the node's `MOVED` redirect to the key's owner.
-     *
-     * The parameters array is already prefix-normalised before this method
-     * runs, so the key used for routing is identical to the key the command
-     * targets.
-     *
-     * @param  string  $method
-     * @param  array<int, mixed>  $values
-     * @return array{type: string, key: string}|string
-     */
-    private function resolveClusterRoute(string $method, array $values): array|string
-    {
-        $keyIndex = match ($method) {
-            'SET'             => 0,
-            'EVAL', 'EVALSHA' => $this->hasScriptKeys($values) ? 2 : null,
-            default           => null,
-        };
-
-        return $this->router->routeKey($keyIndex !== null ? ($values[$keyIndex] ?? null) : null);
-    }
-
-    /**
-     * Determine whether a phpredis-style script call names at least one key.
-     *
-     * @param  array<int, mixed>  $values
-     * @return bool
-     */
-    private function hasScriptKeys(array $values): bool
-    {
-        $keyCount = Cast::toNonNegativeInt($values[1] ?? null);
-
-        return $keyCount !== null && $keyCount > 0;
     }
 
     /**
