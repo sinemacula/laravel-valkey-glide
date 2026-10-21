@@ -7,6 +7,7 @@ namespace SineMacula\Valkey\Connections;
 use Illuminate\Redis\Connections\Connection;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Redis\Events\CommandFailed;
+use SineMacula\Valkey\Exceptions\CommandException;
 use SineMacula\Valkey\Exceptions\ConnectionException;
 use SineMacula\Valkey\Support\Cast;
 
@@ -694,7 +695,11 @@ final class ValkeyGlideConnection extends Connection
             return $this->queueBatchCommand($this->batch, $normalizedMethod, $parameters);
         }
 
-        $this->unwatchLeftOverKeys();
+        // A client-local method reaches no server, so it needs no leftover
+        // UNWATCH, which could replace the error getLastError() reads.
+        if (!$this->batchCommands->runsLocally($normalizedMethod)) {
+            $this->unwatchLeftOverKeys();
+        }
 
         return $this->executeCommandWithRetry(
             $normalizedMethod,
@@ -1694,7 +1699,7 @@ final class ValkeyGlideConnection extends Connection
         $outcome   = $this->executeNativeBatch($batch);
 
         if ($outcome !== true) {
-            throw $this->failBatch($batch, $commands, false, $outcome === null);
+            throw $this->failBatch($batch, $commands, false, $outcome === null, $this->lastError());
         }
 
         $this->dispatchCommandExecutedEvent($this->resolveBatchEventName($batch), $commands, $startedAt);
@@ -1725,9 +1730,10 @@ final class ValkeyGlideConnection extends Connection
      * unwatched transaction throws, as some or all of it may still have been
      * applied; a watched transaction returns false, as phpredis does, unless
      * exec() returned results that do not match its commands, as the server
-     * then ran the EXEC, and it throws instead. The batch has ended before any
-     * listener hears of it, so a listener that throws cannot leave the
-     * connection in batch mode.
+     * then ran the EXEC, or GLIDE recorded an error for it, as it does from 1.2
+     * for a failure but not for a WATCH abort, and it throws instead. The batch
+     * has ended before any listener hears of it, so a listener that throws
+     * cannot leave the connection in batch mode.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @return false|list<mixed>
@@ -1749,8 +1755,9 @@ final class ValkeyGlideConnection extends Connection
         $outcome   = $this->executeNativeBatch($batch);
 
         if ($outcome !== true) {
-            $aborted   = $watched && $outcome === false;
-            $exception = $this->failBatch($batch, $commands, $aborted, $outcome === null);
+            $error     = $this->lastError();
+            $aborted   = $watched && $outcome === false && $error === null;
+            $exception = $this->failBatch($batch, $commands, $aborted, $outcome === null, $error);
 
             if ($aborted) {
                 return false;
@@ -1772,8 +1779,9 @@ final class ValkeyGlideConnection extends Connection
      * applied. Returns true once the results are recorded, false when exec()
      * failed, and null when it returned a result list that does not match what
      * was buffered: the batch was sent, but its results cannot be put in call
-     * order. An exec() that throws ends the batch, and its exception is
-     * rethrown even if the batch's cleanup throws too.
+     * order. The client's last error is cleared first, so what it records
+     * afterwards is the exec()'s own. An exec() that throws ends the batch, and
+     * its exception is rethrown even if the batch's cleanup throws too.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @return bool|null
@@ -1782,6 +1790,8 @@ final class ValkeyGlideConnection extends Connection
      */
     private function executeNativeBatch(BatchState $batch): ?bool
     {
+        $this->clearLastError();
+
         try {
             $results = $this->dispatchToClient('exec', []);
         } catch (\Throwable $exception) {
@@ -1811,15 +1821,18 @@ final class ValkeyGlideConnection extends Connection
      * failure as false, so a WATCH abort cannot be told apart from a timeout or
      * a closed connection, and a batch that timed out may still have been
      * applied; results that do not match the batch's commands mean it was sent.
-     * A cleanup that throws as the batch ends does not replace the failure.
+     * The error GLIDE recorded for the exec(), from 1.2, is the exception's
+     * previous exception. A cleanup that throws as the batch ends does not
+     * replace the failure.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  list<string>  $commands
      * @param  bool  $watched
      * @param  bool  $misaligned
+     * @param  \SineMacula\Valkey\Exceptions\CommandException|null  $error
      * @return \SineMacula\Valkey\Exceptions\ConnectionException
      */
-    private function failBatch(BatchState $batch, array $commands, bool $watched, bool $misaligned): ConnectionException
+    private function failBatch(BatchState $batch, array $commands, bool $watched, bool $misaligned, ?CommandException $error): ConnectionException
     {
         $this->endBatchAfterFailure($batch);
 
@@ -1828,7 +1841,7 @@ final class ValkeyGlideConnection extends Connection
             $watched        => self::WATCHED_TRANSACTION_FAILED_MESSAGE,
             !$batch->atomic => self::PIPELINE_FAILED_MESSAGE,
             default         => self::TRANSACTION_FAILED_MESSAGE,
-        });
+        }, previous: $error);
 
         $this->dispatchCommandFailedEvent($this->resolveBatchEventName($batch), $commands, $exception);
 
@@ -2123,7 +2136,7 @@ final class ValkeyGlideConnection extends Connection
             $startedAt = microtime(true);
 
             try {
-                $result = $this->invokeCommand($method, $parameters);
+                $result = $this->invokeReportingErrors($method, $parameters);
             } catch (\Throwable $exception) {
                 if ($this->shouldRetryAttempt($attempt, $method, $exception)) {
                     $attempt++;
@@ -2145,6 +2158,85 @@ final class ValkeyGlideConnection extends Connection
 
             return $result;
         }
+    }
+
+    /**
+     * Invoke a command, throwing the error GLIDE records when it fails.
+     *
+     * From 1.2, GLIDE records the error of a command that fails and returns
+     * false, which getLastError() reports until it is cleared, while a false
+     * reply, such as a SETNX that sets nothing, records none. The error is
+     * cleared before the command, so one left by an earlier call is not taken
+     * for its own, and a false reply with an error recorded is thrown, so the
+     * retry and the CommandFailed event handle it as any other failure. GLIDE
+     * 1.1.2 records no errors, so its false reply is returned as it is. A
+     * client-local method, getLastError() itself among them, reaches no server
+     * and records nothing, so it runs as it is, leaving the error in place.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return mixed
+     *
+     * @throws \SineMacula\Valkey\Exceptions\CommandException
+     * @throws \Throwable
+     */
+    private function invokeReportingErrors(string $method, array $parameters): mixed
+    {
+        if ($this->batchCommands->runsLocally($method)) {
+            return $this->invokeCommand($method, $parameters);
+        }
+
+        $this->clearLastError();
+
+        $result = $this->invokeCommand($method, $parameters);
+        $error  = $result === false ? $this->lastError() : null;
+
+        if ($error !== null) {
+            throw $error;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Clear the error GLIDE last recorded, on a client that records them.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    private function clearLastError(): void
+    {
+        if (!$this->recordsLastError()) {
+            return;
+        }
+
+        $this->dispatchToClient('clearLastError', []);
+    }
+
+    /**
+     * Return the error GLIDE recorded since it was last cleared, if any.
+     *
+     * @return \SineMacula\Valkey\Exceptions\CommandException|null
+     *
+     * @throws \Throwable
+     */
+    private function lastError(): ?CommandException
+    {
+        $error = $this->recordsLastError() ? $this->dispatchToClient('getLastError', []) : null;
+
+        return is_string($error) ? new CommandException($error) : null;
+    }
+
+    /**
+     * Determine whether the client records the errors of failed commands, as
+     * GLIDE does from 1.2 with getLastError().
+     *
+     * @return bool
+     */
+    private function recordsLastError(): bool
+    {
+        return method_exists($this->glideClient, 'getLastError');
     }
 
     /**
