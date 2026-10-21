@@ -120,6 +120,19 @@ Command execution goes through `ValkeyGlideConnection::command()`.
   which compare it with `1`, can be taken; inside a pipeline or transaction, call it on the batch
 - `zrevrange()`, which GLIDE lacks, reads the range with `ZRANGE ... REV`; pass `true` or `['withscores' => true]` as its
   fourth argument for the scores
+- The scores and members of `zadd()`, and the weights of `zunionstore()`, `zinterstore()`, `zunion()` and `zinter()`
+  (and of `zdiffstore()`, which GLIDE takes a weights list for, though the server refuses it), whether passed by
+  position or as `weights:`, are sent to GLIDE as strings, inside a pipeline or transaction too. `ext-valkey_glide`
+  1.1.2 tracks every integer or float score or weight in a buffer of 20 entries, so one call with more than 20 overflows
+  it ([valkey-glide-php#379](https://github.com/valkey-io/valkey-glide-php/issues/379)), and it frees its buffers twice
+  when a `zadd()` member is not a string, such as the integer `123`
+  ([valkey-glide-php#380](https://github.com/valkey-io/valkey-glide-php/issues/380)); either corrupts the heap and can
+  abort the PHP worker. It also writes floats with six significant digits, so `1234567.5` was stored as `1234570`.
+  Integers are sent as their digits, floats as phpredis sends them, with 17 significant digits so they read back
+  exactly, infinities as `+inf` and `-inf`, and strings as they are; members are converted as phpredis converts them, so
+  `zadd($key, 1, 123)` stores the member `'123'` where GLIDE returned `false`. A score, member or weight with no string
+  form, such as an array, throws an `InvalidArgumentException` before anything is sent, inside a batch or outside one.
+  `CommandExecuted` carries the strings sent
 - `scan($cursor, ['match' => ..., 'count' => ...])` takes Laravel's options array and returns `[$cursor, $keys]`, as
   Laravel's phpredis connection does: start from `'0'` and stop once the cursor is `'0'` again. The `match` pattern is
   not prefixed, and `count` defaults to 10. A scan that fails throws an `UnexpectedValueException` rather than

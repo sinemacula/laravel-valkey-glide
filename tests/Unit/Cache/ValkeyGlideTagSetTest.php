@@ -213,8 +213,8 @@ final class ValkeyGlideTagSetTest extends TestCase
         $this->tagSet($client, ['a', 'b'])->addEntry('item', 60);
 
         self::assertSame([
-            ['conn:cache:tag:a:entries', self::NOW + 60, 'item'],
-            ['conn:cache:tag:b:entries', self::NOW + 60, 'item'],
+            ['conn:cache:tag:a:entries', (string) (self::NOW + 60), 'item'],
+            ['conn:cache:tag:b:entries', (string) (self::NOW + 60), 'item'],
         ], $client->callsFor('zadd'));
     }
 
@@ -230,7 +230,7 @@ final class ValkeyGlideTagSetTest extends TestCase
 
         $this->tagSet($client, ['t'])->addEntry('item');
 
-        self::assertSame([['conn:cache:tag:t:entries', -1, 'item']], $client->callsFor('zadd'));
+        self::assertSame([['conn:cache:tag:t:entries', '-1', 'item']], $client->callsFor('zadd'));
     }
 
     /**
@@ -246,7 +246,7 @@ final class ValkeyGlideTagSetTest extends TestCase
 
         $this->tagSet($client, ['t'])->addEntry('item', updateWhen: 'NX');
 
-        self::assertSame([['conn:cache:tag:t:entries', ['NX'], -1, 'item']], $client->callsFor('zadd'));
+        self::assertSame([['conn:cache:tag:t:entries', ['NX'], '-1', 'item']], $client->callsFor('zadd'));
     }
 
     /**

@@ -213,6 +213,9 @@ final class ValkeyGlideConnection extends Connection
     /** @var \SineMacula\Valkey\Connections\BatchCommands Classifier for commands issued while a batch is active. */
     private readonly BatchCommands $batchCommands;
 
+    /** @var \SineMacula\Valkey\Connections\SortedSetArguments Converter for the scores, members and weights of sorted-set commands. */
+    private readonly SortedSetArguments $sortedSetArguments;
+
     /** @var \SineMacula\Valkey\Connections\BatchState|null The active pipeline or transaction, if any. */
     private ?BatchState $batch = null;
 
@@ -240,6 +243,7 @@ final class ValkeyGlideConnection extends Connection
         $this->randomIntGenerator = $this->resolveRandomIntGenerator($config['random_int'] ?? null);
         $this->sleepCallback      = $this->resolveSleepCallback($config['sleep'] ?? null);
         $this->batchCommands      = new BatchCommands;
+        $this->sortedSetArguments = new SortedSetArguments;
     }
 
     /**
@@ -485,7 +489,10 @@ final class ValkeyGlideConnection extends Connection
      * Execute a Redis command with one safe retry on transient disconnects.
      *
      * While a pipeline or transaction is active, the command is added to it
-     * instead, and the batch is returned.
+     * instead, and the batch is returned. The scores and members of ZADD, and
+     * the weights of ZUNIONSTORE, ZINTERSTORE, ZUNION, ZINTER and ZDIFFSTORE,
+     * are sent as strings, as GLIDE corrupts memory on some other values, and
+     * one with no string form is refused before anything is sent.
      *
      * @param  mixed  $method
      * @param  array<array-key, mixed>  $parameters
@@ -504,6 +511,8 @@ final class ValkeyGlideConnection extends Connection
         if (in_array(strtoupper($normalizedMethod), self::BATCH_CONTROL_COMMANDS, true)) {
             return $this->controlBatch($normalizedMethod, $parameters);
         }
+
+        $parameters = $this->sortedSetArguments->normalize($normalizedMethod, $parameters);
 
         if ($this->batch !== null) {
             return $this->queueBatchCommand($this->batch, $normalizedMethod, $parameters);
