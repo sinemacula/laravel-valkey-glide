@@ -16,6 +16,7 @@ use SineMacula\Valkey\Cache\ValkeyGlideTagSet;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use Tests\Fakes\LaravelConnectionFake;
 use Tests\Fakes\RedisFactoryFake;
+use Tests\Fakes\ValkeyGlideClusterFake;
 use Tests\Fakes\ValkeyGlideFake;
 
 /**
@@ -372,15 +373,16 @@ final class ValkeyGlideTagSetTest extends TestCase
     }
 
     /**
-     * Verify a reset deletes the entries, then removes them from every tag's
-     * sorted set, and leaves the sorted sets themselves to the server.
+     * Verify a reset on a cluster deletes the entries, then removes them from
+     * every tag's sorted set, and leaves the sorted sets themselves to the
+     * server.
      *
      * @return void
      */
     #[Test]
-    public function resetDeletesEntriesThenRemovesThemFromEachTag(): void
+    public function resetOnAClusterDeletesEntriesThenRemovesThemFromEachTag(): void
     {
-        $client     = new ValkeyGlideFake;
+        $client     = new ValkeyGlideClusterFake;
         $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'conn:']);
         $commands   = $this->recordCommands($connection);
 
@@ -397,14 +399,14 @@ final class ValkeyGlideTagSetTest extends TestCase
     }
 
     /**
-     * Verify a reset deletes a thousand entries at a time.
+     * Verify a reset on a cluster deletes a thousand entries at a time.
      *
      * @return void
      */
     #[Test]
-    public function resetDeletesInChunksOfAThousand(): void
+    public function resetOnAClusterDeletesInChunksOfAThousand(): void
     {
-        $client  = new ValkeyGlideFake;
+        $client  = new ValkeyGlideClusterFake;
         $members = array_map(static fn (int $index): string => 'k' . $index, range(0, 1000));
 
         $client->willScan('zscan', [
@@ -435,25 +437,26 @@ final class ValkeyGlideTagSetTest extends TestCase
     #[Test]
     public function resetDoesNothingForEmptyTagSets(): void
     {
-        $client = new ValkeyGlideFake;
+        foreach ([new ValkeyGlideFake, new ValkeyGlideClusterFake] as $client) {
+            $this->tagSet($client, ['a', 'b'])->reset();
 
-        $this->tagSet($client, ['a', 'b'])->reset();
-
-        self::assertCount(2, $client->callsFor('zscan'));
-        self::assertSame([], $client->callsFor('del'));
-        self::assertSame([], $client->callsFor('zrem'));
+            self::assertCount(2, $client->callsFor('zscan'));
+            self::assertSame([], $client->callsFor('del'));
+            self::assertSame([], $client->callsFor('zrem'));
+            self::assertSame([], $client->callsFor('rawcommand'));
+        }
     }
 
     /**
-     * Verify a failed DEL throws before any entry is removed from the tags, so
-     * the entries stay tracked and a retry deletes them.
+     * Verify a failed DEL on a cluster throws before any entry is removed from
+     * the tags, so the entries stay tracked and a retry deletes them.
      *
      * @return void
      */
     #[Test]
-    public function resetThrowsBeforeRemovingMembersWhenDeleteFails(): void
+    public function resetOnAClusterThrowsBeforeRemovingMembersWhenDeleteFails(): void
     {
-        $client = new ValkeyGlideFake;
+        $client = new ValkeyGlideClusterFake;
         $client->willScan('zscan', [['0', ['m1' => '1', 'm2' => '1', 'm3' => '1']]]);
         $client->willReturn('del', false);
 
@@ -468,14 +471,14 @@ final class ValkeyGlideTagSetTest extends TestCase
     }
 
     /**
-     * Verify a failed DEL of a single entry names only that entry.
+     * Verify a failed DEL of a single entry on a cluster names only that entry.
      *
      * @return void
      */
     #[Test]
-    public function resetNamesTheOnlyEntryWhenItsDeleteFails(): void
+    public function resetOnAClusterNamesTheOnlyEntryWhenItsDeleteFails(): void
     {
-        $client = new ValkeyGlideFake;
+        $client = new ValkeyGlideClusterFake;
         $client->willScan('zscan', [['0', ['m1' => '1']]]);
         $client->willReturn('del', false);
 
@@ -486,14 +489,14 @@ final class ValkeyGlideTagSetTest extends TestCase
     }
 
     /**
-     * Verify a failed ZREM throws.
+     * Verify a failed ZREM on a cluster throws.
      *
      * @return void
      */
     #[Test]
-    public function resetThrowsWhenRemovingMembersFails(): void
+    public function resetOnAClusterThrowsWhenRemovingMembersFails(): void
     {
-        $client = new ValkeyGlideFake;
+        $client = new ValkeyGlideClusterFake;
         $client->willScan('zscan', [['0', ['m1' => '1', 'm2' => '1']]]);
         $client->willReturn('zrem', false);
 
