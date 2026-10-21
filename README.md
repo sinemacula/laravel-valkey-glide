@@ -107,7 +107,8 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 - Idempotent commands can retry once on recognized transient connection errors
 - The retry runs on a fresh client; the replaced client is closed, and any error from closing it is ignored
 - Non-idempotent commands are not retried
-- Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`)
+- Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`); a cluster `scan()` reports the id its
+  `ClusterScanCursor` scans from in place of the cursor, so listeners can turn the parameters into strings
 - `executeRaw()` is supported via `rawcommand`, with a route added on cluster connections (see Cluster Connections)
 - Phpredis-style `SET`/`EVAL` argument shapes are normalized through `rawcommand`
 - `disconnect()` delegates to GLIDE `close()`
@@ -384,9 +385,8 @@ do {
 
 The phpredis-style `zscan($key, $cursor, $options)` shape is not supported.
 
-- On a standalone server the `SCAN` and `ZSCAN` calls dispatch `CommandExecuted` like any command. The cluster `SCAN`
-  is sent to GLIDE directly, without command events, because a `ClusterScanCursor` among the event parameters breaks
-  listeners that turn parameters into strings.
+- The `SCAN` and `ZSCAN` calls dispatch `CommandExecuted` like any command. On a cluster the event carries the id the
+  `ClusterScanCursor` scans from, not the cursor itself.
 - The user running `cache:prune-stale-tags` needs `SCAN` permission. On a cluster, with 1.1.2 a `SCAN` refused by an
   ACL aborts the PHP process; on a standalone server the refusal comes back as `false` and the command throws an
   `UnexpectedValueException`.

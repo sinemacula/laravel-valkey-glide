@@ -6,7 +6,9 @@ namespace Tests\Unit\Cache;
 
 use Illuminate\Cache\RedisTaggedCache;
 use Illuminate\Contracts\Redis\Factory;
+use Illuminate\Events\Dispatcher;
 use Illuminate\Redis\Connections\Connection;
+use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Support\LazyCollection;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Test;
@@ -228,6 +230,43 @@ final class ValkeyGlideStoreTest extends TestCase
             ['conn:cache:tag:a:entries', 'conn:cache:tag:c:entries'],
             array_column($client->callsFor('zremrangebyscore'), 0),
         );
+    }
+
+    /**
+     * Verify each cluster scan of flushStaleTags() dispatches a command event
+     * carrying the cursor id it scans from.
+     *
+     * @return void
+     */
+    #[Test]
+    public function flushStaleTagsReportsEachClusterScanCursorId(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [
+            ['id-1', ['conn:cache:tag:a:entries']],
+            ['0', []],
+        ]);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'conn:']);
+        $dispatcher = new Dispatcher;
+        $scans      = [];
+
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$scans): void {
+            if ($event->command !== 'scan') {
+                return;
+            }
+
+            $scans[] = implode(' ', $event->parameters);
+        });
+
+        $connection->setEventDispatcher($dispatcher);
+
+        (new ValkeyGlideStore(new RedisFactoryFake($connection), 'cache:'))->flushStaleTags();
+
+        self::assertSame([
+            '0 conn:cache:tag:*:entries 1000 zset',
+            'id-1 conn:cache:tag:*:entries 1000 zset',
+        ], $scans);
     }
 
     /**

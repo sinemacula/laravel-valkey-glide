@@ -493,6 +493,72 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify a cluster scan reports its cursor id in the command executed event
+     * while the client still receives the cursor object.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandExecutedEventReportsClusterScanCursorId(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [['7', ['user:1']]]);
+
+        $dispatcher = new Dispatcher;
+        $events     = [];
+
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$events): void {
+            $events[] = $event;
+        });
+
+        $connection = new ValkeyGlideConnection($client);
+        $connection->setEventDispatcher($dispatcher);
+
+        $cursor = new \ClusterScanCursor('42');
+
+        self::assertSame(['user:1'], $connection->command('scan', [$cursor, 'user:*', 100]));
+
+        self::assertCount(1, $events);
+        self::assertSame(['42', 'user:*', 100], $events[0]->parameters);
+        self::assertSame('7', $cursor->getNextCursor());
+    }
+
+    /**
+     * Verify a failed cluster scan reports its cursor id in the command failed
+     * event.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandFailedEventReportsClusterScanCursorId(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willThrow('scan', new \RuntimeException('permanent failure'));
+
+        $dispatcher = new Dispatcher;
+        $events     = [];
+
+        $dispatcher->listen(CommandFailed::class, static function (CommandFailed $event) use (&$events): void {
+            $events[] = $event;
+        });
+
+        $connection = new ValkeyGlideConnection($client);
+        $connection->setEventDispatcher($dispatcher);
+
+        try {
+            $connection->command('scan', [new \ClusterScanCursor('42'), 'user:*']);
+            self::fail('Expected runtime exception to be thrown.');
+        } catch (\RuntimeException) {
+            self::assertCount(1, $events);
+            self::assertSame(['42', 'user:*'], $events[0]->parameters);
+        }
+    }
+
+    /**
      * Verify subscribe normalizes callback payload to message and channel.
      *
      * @return void
