@@ -322,6 +322,11 @@ explicit GLIDE route are sent unchanged.
 `ping()` (as health checks call it) runs on every primary instead and returns `true` once each one answers. A `ping()`
 with arguments takes the first as its route, as phpredis' `RedisCluster::ping()` does, and is sent unchanged.
 
+A GLIDE cluster connection's `isCluster()` returns `true`. From Laravel 13.5, the Redis queue and `Redis::funnel()`
+check it and wrap a queue or limiter name that has no hash tag in one (`queues:{default}`), so the keys each of their
+scripts touches share a slot. Laravel 12 and 13.0 to 13.4 do not, so on those give a cluster queue's name a hash tag
+yourself (`'queue' => '{default}'`), as Laravel's queue documentation advises.
+
 ### Cache Store
 
 Laravel's `RedisStore::putMany()` writes in one `MULTI`/`EXEC` transaction unless the connection is one of Laravel's own

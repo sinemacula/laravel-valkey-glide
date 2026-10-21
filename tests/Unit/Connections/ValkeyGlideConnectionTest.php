@@ -53,6 +53,19 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify isCluster() reports whether the wrapped client is a cluster
+     * client.
+     *
+     * @return void
+     */
+    #[Test]
+    public function isClusterReportsWhetherTheClientIsACluster(): void
+    {
+        self::assertFalse((new ValkeyGlideConnection(new ValkeyGlideFake))->isCluster());
+        self::assertTrue((new ValkeyGlideConnection(new ValkeyGlideClusterFake))->isCluster());
+    }
+
+    /**
      * Verify getPrefix() returns the configured key prefix.
      *
      * @return void
