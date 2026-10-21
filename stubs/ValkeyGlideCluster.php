@@ -196,4 +196,61 @@ class ValkeyGlideCluster
      * @return mixed
      */
     public function rawcommand(mixed $route, string $command, mixed ...$args): mixed {}
+
+    /**
+     * Enter pipeline mode: commands are buffered until exec().
+     *
+     * In breach of this declared type, 1.1.2 returns null when the client is
+     * already in batch mode; it returns false when the client is closed.
+     *
+     * @return bool|self
+     */
+    public function pipeline(): bool|self {}
+
+    /**
+     * Enter batch mode: MULTI (atomic) by default, or PIPELINE.
+     *
+     * The cluster class defines no batch constants; use ValkeyGlide::MULTI
+     * and ValkeyGlide::PIPELINE.
+     *
+     * In breach of this declared type, 1.1.2 returns null when the client is
+     * already in batch mode; it returns false when the client is closed.
+     *
+     * @param  int  $value
+     * @return bool|self
+     */
+    public function multi(int $value = 0): bool|self {}
+
+    /**
+     * Send the buffered commands and return their results in queue order.
+     *
+     * Returns false on any failure, and when no command is buffered, in which
+     * case the client stays in batch mode until discard().
+     *
+     * @return array<int, mixed>|false
+     */
+    public function exec(): array|false {}
+
+    /**
+     * Drop the buffered commands and leave batch mode (client-side only).
+     *
+     * @return bool
+     */
+    public function discard(): bool {}
+
+    /**
+     * Watch keys for a following transaction.
+     *
+     * @param  string  $key
+     * @param  string  ...$other_keys
+     * @return bool|self
+     */
+    public function watch(string $key, string ...$other_keys): bool|self {}
+
+    /**
+     * Forget every watched key, on every node.
+     *
+     * @return bool
+     */
+    public function unwatch(): bool {}
 }

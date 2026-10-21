@@ -4,6 +4,8 @@ declare(strict_types = 1);
 
 namespace Tests\Fakes;
 
+use Tests\Fakes\Concerns\EmulatesBatchMode;
+
 /**
  * Deterministic fake implementation for cluster connector and connection tests.
  *
@@ -14,6 +16,8 @@ namespace Tests\Fakes;
  */
 final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
 {
+    use EmulatesBatchMode;
+
     /** @var int The finished-scan answers a scan method gives past its scripted pages before it fails, so a scan loop that never ends fails fast. */
     private const int MAX_UNSCRIPTED_SCAN_PAGES = 100;
 
@@ -45,9 +49,7 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
     #[\Override]
     public function __call(string $name, array $arguments): mixed
     {
-        $this->recordCall($name, $arguments);
-
-        return $this->resolveBehavior($name, null);
+        return $this->handleCommand($name, $arguments, null);
     }
 
     /**
@@ -187,7 +189,11 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
     {
         $this->recordCall('close', []);
 
-        return (bool) $this->resolveBehavior('close', true);
+        $result = (bool) $this->resolveBehavior('close', true);
+
+        $this->markClosed();
+
+        return $result;
     }
 
     /**
@@ -199,9 +205,7 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
     #[\Override]
     public function get(string $key): mixed
     {
-        $this->recordCall('get', [$key]);
-
-        return $this->resolveBehavior('get', null);
+        return $this->handleCommand('get', [$key], null);
     }
 
     /**
@@ -211,13 +215,24 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
      * @param  mixed  $value
      * @param  mixed  $options
      * @return bool|self|string
+     *
+     * @throws \ArgumentCountError
+     * @throws \TypeError
      */
     #[\Override]
     public function set(string $key, mixed $value, mixed $options = null): bool|self|string
     {
-        $this->recordCall('set', [$key, $value, $options]);
+        $this->assertNativeSetArguments(func_get_args());
 
-        $result = $this->resolveBehavior('set', true);
+        if (is_string($options) || (is_array($options) && $this->refusesSetExpiry($options))) {
+            // GLIDE 1.1.2 refuses a string option, and an expiry it cannot read
+            // as a positive number, and writes or buffers nothing.
+            $this->recordCall('set', [$key, $value, $options]);
+
+            return false;
+        }
+
+        $result = $this->handleCommand('set', [$key, $value, $options], true);
 
         if (is_string($result) || is_bool($result) || $result instanceof self) {
             return $result;
@@ -286,9 +301,7 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
     #[\Override]
     public function client(mixed $route, string $opt, mixed ...$args): mixed
     {
-        $this->recordCall('client', [$route, $opt, ...$args]);
-
-        return $this->resolveBehavior('client', true);
+        return $this->handleCommand('client', [$route, $opt, ...$args], true);
     }
 
     /**
@@ -305,9 +318,85 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
     #[\Override]
     public function rawcommand(mixed $route, string $command, mixed ...$args): mixed
     {
-        $this->recordCall('rawcommand', [$route, $command, ...$args]);
+        return $this->handleCommand('rawcommand', [$route, $command, ...$args], null);
+    }
 
-        return $this->resolveBehavior('rawcommand', null);
+    /**
+     * Enter pipeline mode, as ext-valkey_glide 1.1.2 does.
+     *
+     * @return bool|self
+     */
+    #[\Override]
+    public function pipeline(): bool|self
+    {
+        return $this->enterBatch('pipeline', false);
+    }
+
+    /**
+     * Enter batch mode, as ext-valkey_glide 1.1.2 does.
+     *
+     * @param  int  $value
+     * @return bool|self
+     */
+    #[\Override]
+    public function multi(int $value = 0): bool|self
+    {
+        return $this->enterBatch('multi', $value === 0);
+    }
+
+    /**
+     * Send the buffered commands, as ext-valkey_glide 1.1.2 does.
+     *
+     * @return array<int, mixed>|false
+     */
+    #[\Override]
+    public function exec(): array|false
+    {
+        return $this->executeBatch();
+    }
+
+    /**
+     * Drop the buffered commands, as ext-valkey_glide 1.1.2 does.
+     *
+     * @return bool
+     *
+     * @throws \Throwable
+     */
+    #[\Override]
+    public function discard(): bool
+    {
+        return $this->discardBatch();
+    }
+
+    /**
+     * Record a watch invocation and apply batch mode or configured behavior.
+     *
+     * The keys are untyped, as GLIDE checks them itself and returns false for
+     * an integer first key rather than coerce it.
+     *
+     * @param  mixed  $key
+     * @param  mixed  ...$otherKeys
+     * @return bool|self
+     */
+    #[\Override]
+    public function watch(mixed $key, mixed ...$otherKeys): bool|self
+    {
+        $result = $this->handleCommand('watch', [$key, ...$otherKeys], true);
+
+        return $result instanceof self ? $result : (bool) $result;
+    }
+
+    /**
+     * Record an unwatch invocation and apply batch mode or configured behavior.
+     *
+     * @return bool
+     */
+    #[\Override]
+    public function unwatch(): bool
+    {
+        $result = $this->handleCommand('unwatch', [], true);
+
+        return !$result instanceof self && (bool) $result;
     }
 
     /**
@@ -316,6 +405,8 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
      * @param  string  $method
      * @param  array<int|string, mixed>  $arguments
      * @return void
+     *
+     * @throws \LogicException
      */
     private function recordCall(string $method, array $arguments): void
     {
@@ -323,6 +414,9 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
 
         $this->calls[$normalizedMethod] ??= [];
         $this->calls[$normalizedMethod][] = $arguments;
+        $this->callOrder[]                = $normalizedMethod;
+
+        $this->assertWithinBatchBudget($normalizedMethod);
     }
 
     /**

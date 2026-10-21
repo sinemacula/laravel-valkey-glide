@@ -18,6 +18,9 @@ namespace Benchmarks\Support;
  */
 final class BenchClient extends \ValkeyGlide
 {
+    /** @var int Commands dispatched since the last pipeline() call. */
+    private int $dispatched = 0;
+
     /**
      * Return immediately for any dynamically dispatched command.
      *
@@ -28,6 +31,8 @@ final class BenchClient extends \ValkeyGlide
     #[\Override]
     public function __call(string $name, array $arguments): mixed
     {
+        $this->dispatched++;
+
         return null;
     }
 
@@ -55,6 +60,34 @@ final class BenchClient extends \ValkeyGlide
     public function set(string $key, mixed $value, mixed $options = null): bool|self|string
     {
         return true;
+    }
+
+    /**
+     * Enter pipeline mode immediately.
+     *
+     * @return self
+     */
+    #[\Override]
+    public function pipeline(): self
+    {
+        $this->dispatched = 0;
+
+        return $this;
+    }
+
+    /**
+     * Return one result for each command dispatched since pipeline(), as the
+     * connection checks that the results match what it buffered.
+     *
+     * @return array<int, mixed>
+     */
+    #[\Override]
+    public function exec(): array
+    {
+        $results          = array_fill(0, $this->dispatched, null);
+        $this->dispatched = 0;
+
+        return $results;
     }
 
     /**

@@ -16,11 +16,12 @@ use SineMacula\Valkey\Support\Cast;
  *
  * Laravel's tag set reads each tag's sorted set with a phpredis-style
  * `zscan()`, records increments with a string `NX` option and prunes through
- * `pipeline()` with a callback; GLIDE takes the scan cursor by reference,
- * ignores a string option and has no callback pipeline. Over a GLIDE connection
- * each of those paths is sent in the shape GLIDE takes, and a `false` reply,
- * which is how GLIDE reports every failure, throws. Over any other connection
- * Laravel's own code runs.
+ * `pipeline()` with a callback, whose replies it ignores; GLIDE takes the scan
+ * cursor by reference and ignores a string option. Over a GLIDE connection each
+ * of those paths is sent in the shape GLIDE takes, one command at a time
+ * without opening a batch, and outside a batch a `false` reply, which is how
+ * GLIDE reports every failure, throws. Over any other connection Laravel's own
+ * code runs.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -256,7 +257,9 @@ final class ValkeyGlideTagSet extends RedisTagSet
      * Run a write, throwing when GLIDE reports it failed.
      *
      * GLIDE returns `false` for every failure, a server error and a transport
-     * fault alike, so a `false` reply cannot be passed over.
+     * fault alike, so a `false` reply cannot be passed over. Inside a pipeline
+     * or transaction on the connection the write joins the batch, so its reply,
+     * a failure included, comes back in the batch's results instead.
      *
      * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
      * @param  string  $command

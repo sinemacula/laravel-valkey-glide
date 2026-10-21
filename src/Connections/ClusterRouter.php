@@ -19,11 +19,17 @@ use SineMacula\Valkey\Support\Cast;
  * list, which it routes by the subcommand's name as if it were a key, go to a
  * random node.
  *
+ * It also computes the hash slot of a key, which the connection uses to keep a
+ * cluster transaction in one slot.
+ *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
  */
 final readonly class ClusterRouter
 {
+    /** @var int Number of hash slots a cluster divides its keys between. */
+    private const int SLOT_COUNT = 16384;
+
     /** @var array<string, string> Commands GLIDE runs on every node or every primary, combining the replies. */
     private const array FAN_OUT_ROUTES = [
         'ACL DELUSER'          => 'allNodes',
@@ -197,6 +203,26 @@ final readonly class ClusterRouter
     }
 
     /**
+     * Resolve the hash slot that owns a key.
+     *
+     * This is the cluster's own `CRC16(key) mod 16384`, using the XMODEM CRC16
+     * variant. A key that contains a non-empty `{...}` hash tag is hashed by
+     * the tag alone, the text between its first `{` and the first `}` after it,
+     * so keys sharing a tag share a slot.
+     *
+     * @param  string  $key
+     * @return int
+     */
+    public function slot(string $key): int
+    {
+        if (preg_match('/^[^{]*\{([^}]+)\}/', $key, $matches) === 1) {
+            $key = $matches[1];
+        }
+
+        return $this->crc16($key) % self::SLOT_COUNT;
+    }
+
+    /**
      * Resolve the route of a command by its first key.
      *
      * @param  string  $command
@@ -240,6 +266,28 @@ final readonly class ClusterRouter
         $keyCount = Cast::toNonNegativeInt($arguments[$countIndex] ?? null);
 
         return $keyCount !== null && $keyCount > 0 ? $countIndex + 1 : null;
+    }
+
+    /**
+     * Compute the XMODEM CRC16 (polynomial 0x1021, initial value 0) of a
+     * string.
+     *
+     * @param  string  $value
+     * @return int
+     */
+    private function crc16(string $value): int
+    {
+        $crc = 0;
+
+        foreach (str_split($value) as $character) {
+            $crc ^= ord($character) << 8;
+
+            for ($bit = 0; $bit < 8; $bit++) {
+                $crc = (($crc << 1) ^ (($crc & 0x8000) !== 0 ? 0x1021 : 0)) & 0xFFFF;
+            }
+        }
+
+        return $crc;
     }
 
     /**

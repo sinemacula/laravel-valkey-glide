@@ -6,6 +6,7 @@ namespace Benchmarks;
 
 use Benchmarks\Support\BenchClient;
 use PhpBench\Attributes as Bench;
+use SineMacula\Valkey\Connections\ValkeyGlideBatch;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 
 /**
@@ -25,6 +26,9 @@ final readonly class ConnectionBench
 {
     /** @var string Primary sample key reused across the command benchmarks. */
     private const string SAMPLE_KEY = 'user:1';
+
+    /** @var string Job hash key used by the pipeline benchmark. */
+    private const string SAMPLE_JOB_KEY = 'job:1';
 
     /** @var \SineMacula\Valkey\Connections\ValkeyGlideConnection Connection with a configured key prefix. */
     private ValkeyGlideConnection $prefixed;
@@ -132,5 +136,26 @@ final readonly class ConnectionBench
     public function benchLegacySetOptions(): void
     {
         $this->prefixed->command('set', ['lock:1', 'owner', 'EX', 10, 'NX']);
+    }
+
+    /**
+     * Benchmark a Horizon-shaped pipeline: each command is prefixed, counted
+     * and buffered, and the batch is sent with one exec().
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Bench\Iterations(5)]
+    #[Bench\Revs(1000)]
+    #[Bench\Warmup(2)]
+    public function benchPipelineWithPrefix(): void
+    {
+        $this->prefixed->pipeline(static function (ValkeyGlideBatch $pipe): void {
+            $pipe->zadd('recent_jobs', '-1.5', self::SAMPLE_JOB_KEY);
+            $pipe->zadd('pending_jobs', '-1.5', self::SAMPLE_JOB_KEY);
+            $pipe->hmset(self::SAMPLE_JOB_KEY, ['status' => 'pending', 'payload' => '{}']);
+            $pipe->expireat(self::SAMPLE_JOB_KEY, 1700000000);
+        });
     }
 }
