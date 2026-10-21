@@ -290,6 +290,10 @@ cannot name a slot, and on any other node they would read or change that node's 
 `Cache::flush()` and `cache:clear` do) run on every primary, so the whole keyspace is cleared. Calls that pass an
 explicit GLIDE route are sent unchanged.
 
+`ValkeyGlideCluster::ping()` takes a route before its optional message and returns `false` without one, so a bare
+`ping()` (as health checks call it) runs on every primary instead and returns `true` once each one answers. A `ping()`
+with arguments takes the first as its route, as phpredis' `RedisCluster::ping()` does, and is sent unchanged.
+
 ### Cache Store
 
 Laravel's `RedisStore::putMany()` writes in one `MULTI`/`EXEC` transaction unless the connection is one of Laravel's own
