@@ -417,6 +417,29 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Set the given hash field if it does not exist.
+     *
+     * GLIDE answers with a bool; the result is returned as 1 or 0, as phpredis
+     * returns it through Laravel. Refused while a pipeline or transaction is
+     * active, as the result is only known once the batch runs; call `hsetnx()`
+     * on the batch instead.
+     *
+     * @param  string  $key
+     * @param  mixed  $field
+     * @param  mixed  $value
+     * @return int
+     *
+     * @throws \LogicException
+     * @throws \Throwable
+     */
+    public function hsetnx(string $key, mixed $field, mixed $value): int
+    {
+        $this->assertNoActiveBatch('hsetnx', 'call hsetnx() on the batch instead');
+
+        return $this->command('hsetnx', [$key, $field, $value]) === true ? 1 : 0;
+    }
+
+    /**
      * Return a range of a sorted set's members by index, from the highest score
      * to the lowest.
      *
@@ -479,6 +502,74 @@ final class ValkeyGlideConnection extends Connection
         $keys = $this->command('scan', [&$cursor, $pattern, $count]);
 
         return [$cursor, self::scannedKeys($keys, $pattern)];
+    }
+
+    /**
+     * Scan a sorted set for one page of members and their scores, with
+     * Laravel's options array.
+     *
+     * As with Laravel's phpredis connection, the scan starts from cursor '0'
+     * (or `null`), takes the `match` pattern and the `count` hint from the
+     * options, and returns the next cursor and the page, which maps each member
+     * to its score as a float, where GLIDE returns a string. The cursor is '0'
+     * again once the scan is complete. The key is prefixed; the pattern, which
+     * matches members, is not. GLIDE writes the cursor back through a
+     * reference, which a method call cannot carry, so GLIDE's own form goes
+     * through `command()` with the cursor by reference. A failed scan throws,
+     * as the keyspace `scan()` does, rather than reading as an empty last page,
+     * and like the SCAN family the scan is refused inside a pipeline or
+     * transaction.
+     *
+     * @param  string  $key
+     * @param  mixed  $cursor
+     * @param  array<array-key, mixed>  $options
+     * @return array{0: string, 1: array<array-key, float>}
+     *
+     * @throws \Throwable
+     */
+    public function zscan(string $key, mixed $cursor, array $options = []): array
+    {
+        [$cursor, $members] = $this->scanMembers('zscan', $key, $cursor, $options);
+
+        /** @var array<array-key, string> $members */
+        return [$cursor, array_map(self::score(...), $members)];
+    }
+
+    /**
+     * Scan a hash for one page of fields and their values, with Laravel's
+     * options array.
+     *
+     * The page maps each field to its value. The cursor, the options and a
+     * failed scan are handled as `zscan()` handles them.
+     *
+     * @param  string  $key
+     * @param  mixed  $cursor
+     * @param  array<array-key, mixed>  $options
+     * @return array{0: string, 1: array<array-key, mixed>}
+     *
+     * @throws \Throwable
+     */
+    public function hscan(string $key, mixed $cursor, array $options = []): array
+    {
+        return $this->scanMembers('hscan', $key, $cursor, $options);
+    }
+
+    /**
+     * Scan a set for one page of members, with Laravel's options array.
+     *
+     * The page lists the members. The cursor, the options and a failed scan are
+     * handled as `zscan()` handles them.
+     *
+     * @param  string  $key
+     * @param  mixed  $cursor
+     * @param  array<array-key, mixed>  $options
+     * @return array{0: string, 1: array<array-key, mixed>}
+     *
+     * @throws \Throwable
+     */
+    public function sscan(string $key, mixed $cursor, array $options = []): array
+    {
+        return $this->scanMembers('sscan', $key, $cursor, $options);
     }
 
     /**
@@ -725,6 +816,56 @@ final class ValkeyGlideConnection extends Connection
 
         /** @var array<int, string> $keys */
         return $keys;
+    }
+
+    /**
+     * Read a score GLIDE returns as a string as the float phpredis returns.
+     *
+     * The server writes a score as a number PHP's float cast reads, or as an
+     * infinity, such as 'inf' or '-inf', which phpredis reads as infinity, as
+     * C's atof() does, and the cast as 0.
+     *
+     * @param  string  $score
+     * @return float
+     */
+    private static function score(string $score): float
+    {
+        return match ($score) {
+            'inf', '+inf' => INF,
+            '-inf'        => -INF,
+            default       => (float) $score,
+        };
+    }
+
+    /**
+     * Scan a set, sorted set or hash for one page of members, from a cursor.
+     *
+     * The scan goes through command(), so its key is prefixed, it is refused
+     * inside a batch, and GLIDE writes the next cursor back through the
+     * reference. GLIDE answers a missing key with an empty page and a failed
+     * scan with false, which throws.
+     *
+     * @param  string  $method
+     * @param  string  $key
+     * @param  mixed  $cursor
+     * @param  array<array-key, mixed>  $options
+     * @return array{0: string, 1: array<array-key, mixed>}
+     *
+     * @throws \UnexpectedValueException
+     */
+    private function scanMembers(string $method, string $key, mixed $cursor, array $options): array
+    {
+        $cursor  = Cast::toNonEmptyString($cursor)                   ?? '0';
+        $pattern = Cast::toNonEmptyString($options['match'] ?? null) ?? '*';
+        $count   = Cast::toNonNegativeInt($options['count'] ?? null) ?? 10;
+
+        $members = $this->command($method, [$key, &$cursor, $pattern, $count]);
+
+        if (!is_array($members)) {
+            throw new \UnexpectedValueException(sprintf('Expected array response from %s on [%s], received [%s].', $method, $key, get_debug_type($members)));
+        }
+
+        return [$cursor, $members];
     }
 
     /**

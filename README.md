@@ -33,7 +33,8 @@ application business code.
   `WATCH`, `TOUCH`, `SINTER` and `MGET`, and the key-value map of `MSET` and `MSETNX`
 - `pipeline()` and `transaction()`, plus phpredis-style `multi()` / `exec()` / `discard()` on the connection
 - Laravel compatibility fallback for phpredis-style `SET` and `EVAL` command argument shapes
-- Phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, as Laravel's locks and Horizon call them
+- Phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, as Laravel's locks and Horizon call them, and
+  phpredis-compatible `hsetnx()` and options-array `zscan()`, `hscan()` and `sscan()`
 - Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
   standalone and cluster connections
 - External test lane for extension and real Redis connectivity validation
@@ -118,6 +119,8 @@ Command execution goes through `ValkeyGlideConnection::command()`.
   string flag such as `set($key, $value, 'NX')`, which GLIDE's own `set()` refuses
 - `setnx()` returns `1` or `0`, as phpredis does through Laravel, so Laravel's lock without an expiry and Horizon's lock,
   which compare it with `1`, can be taken; inside a pipeline or transaction, call it on the batch
+- `hsetnx()` returns `1` or `0` too, where GLIDE returns `true` or `false`; inside a pipeline or transaction, call it on
+  the batch, where its result is GLIDE's `true` or `false`, as phpredis' pipelines return it
 - `zrevrange()`, which GLIDE lacks, reads the range with `ZRANGE ... REV`; pass `true` or `['withscores' => true]` as its
   fourth argument for the scores
 - `scan($cursor, ['match' => ..., 'count' => ...])` takes Laravel's options array and returns `[$cursor, $keys]`, as
@@ -125,6 +128,8 @@ Command execution goes through `ValkeyGlideConnection::command()`.
   not prefixed, and `count` defaults to 10. A scan that fails throws an `UnexpectedValueException` rather than
   returning an empty last page. On a cluster, GLIDE's own `ClusterScanCursor` is still passed to it unchanged (see
   Cluster Connections)
+- `zscan($key, $cursor, $options)`, `hscan(...)` and `sscan(...)` take the same options array and return
+  `[$cursor, $members]`, with the same string cursor, defaults and failure (see Cache Tags)
 - `disconnect()` delegates to GLIDE `close()`; an open pipeline or transaction ends without sending what it buffered, as
   GLIDE drops it on close, and any `WATCH` is forgotten
 
@@ -152,9 +157,11 @@ success. The retry above applies only to errors the extension throws. `getLastEr
 > and write different keys than before (delete or rename the unprefixed keys if they matter), code that types the
 > result as the GLIDE client or calls client methods such as `getOption()` on it no longer works, and one `pipeline` or
 > `transaction` event replaces the per-command events (see Pipelines and Transactions).
-
-GLIDE 1.1.2's `hsetnx()` returns `true` or `false` where Laravel's phpredis connection returns `1` or `0`, so code that
-checks it for `1` never succeeds; `setnx()` is converted (see What Is Implemented).
+>
+> In 1.2.x and earlier, `hsetnx()` on the connection returned GLIDE's `true` or `false`; it now returns `1` or `0`, so
+> code that compares it with `true` must compare it with `1`. Called on the connection while a pipeline or transaction
+> is open, it now throws a `LogicException` rather than joining the batch; call it on the batch instead. `zscan()`,
+> `hscan()` and `sscan()` with Laravel's options array threw an `ErrorException`, as GLIDE takes the cursor by reference.
 
 ## Prefix Compatibility
 
@@ -727,8 +734,36 @@ as `WRONGTYPE` on a tag's key.
 
 The connection prefixes the keys these paths use: `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, `ZREVRANGEBYSCORE` and
 `ZREVRANK`, and the key (only) of `ZSCAN`, `SSCAN` and `HSCAN`. Earlier releases sent those seven commands unprefixed,
-so on a prefixed connection they missed the keys the other commands wrote. A member scan writes its cursor back by
-reference, so call it through `command()` with a reference in the argument list:
+so on a prefixed connection they missed the keys the other commands wrote.
+
+The member scans take Laravel's options array, as Laravel's phpredis connection does, and return the next cursor and
+the page, so a loop written for Laravel's connections runs unchanged:
+
+```php
+$cursor = '0';
+
+do {
+    [$cursor, $members] = Redis::connection()->zscan('leaderboard', $cursor, ['match' => 'user:*', 'count' => 100]);
+
+    // ...
+} while ($cursor !== '0');
+```
+
+- Start from `'0'` (or `null`) and stop once the cursor is `'0'` again. The cursor is a string, where phpredis gives
+  an integer, and `match` (default `*`) and `count` (default 10) are sent as given: the key is prefixed, the pattern,
+  which matches members, is not.
+- `zscan()` maps each member to its score as a float, as phpredis does, where GLIDE gives a string (`INF` or `-INF`
+  for an infinite score); `hscan()` maps each field to its value; `sscan()` lists the members. A page can be empty
+  before the scan is complete, so keep going until the cursor is `'0'`.
+- A missing key returns `['0', []]`. A scan that fails, such as one of a key of another type, throws an
+  `UnexpectedValueException` rather than returning an empty page, as the keyspace `scan()` does.
+- On a cluster each member scan runs on a node that holds its key, so its cursor is a plain string; it needs no
+  `ClusterScanCursor`.
+- Inside a pipeline or transaction they throw a `LogicException` before anything is sent, as `ZSCAN`, `HSCAN` and
+  `SSCAN` do (see Commands GLIDE Cannot Buffer).
+
+GLIDE's own form, with the cursor written back by reference, still works through `command()`, and returns each score
+as GLIDE gives it, a string:
 
 ```php
 $cursor = '0';
@@ -739,9 +774,6 @@ do {
     // ...
 } while ($cursor !== '0');
 ```
-
-Unlike the keyspace `scan()` (see Runtime Behavior), the phpredis-style `zscan($key, $cursor, $options)` shape is not
-supported.
 
 - The `SCAN` and `ZSCAN` calls dispatch `CommandExecuted` like any command. On a cluster the event carries the id the
   `ClusterScanCursor` scans from, not the cursor itself.
@@ -826,7 +858,8 @@ External integration coverage includes:
   and a cluster (tagged writes, `flush()`, `flushStale()` and `cache:prune-stale-tags`)
 - Laravel queue push/pop behavior and physical queue key writes
 - Laravel session roundtrip behavior and physical session key writes
-- phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, on a standalone server and a cluster
+- phpredis-compatible `setnx()`, `hsetnx()`, `zrevrange()` and options-array `scan()`, `zscan()`, `hscan()` and
+  `sscan()`, including Laravel's own `RedisTagSet::entries()`, on a standalone server and a cluster
 - pipelines and transactions on a standalone server and a cluster: result order, physical prefixed keys, empty and
   nested batches with and without callbacks, `EVAL` in a batch, `WATCH`, cross-slot transactions, closed clients,
   throwing event listeners and a 5,000-command pipeline
