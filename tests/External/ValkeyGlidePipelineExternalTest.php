@@ -520,7 +520,7 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
     {
         $connection = $this->connect($topology, []);
 
-        $connection->disconnect();
+        $connection->client()->close();
 
         $this->expectException(ConnectionException::class);
         $this->expectExceptionMessage('GLIDE refused batch mode');
@@ -890,7 +890,7 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
         $connection = $this->connect($topology, []);
         $other      = $this->connect($topology, ['k'], $this->prefixOf($connection));
 
-        $connection->disconnect();
+        $connection->client()->close();
         $connection->command('multi');
 
         try {
