@@ -23,7 +23,7 @@ use SineMacula\Valkey\Support\Cast;
  * The store also makes cache tags work on GLIDE connections: its tagged cache
  * and tag set (see `ValkeyGlideTaggedCache`) keep the tags' sorted sets in the
  * shapes GLIDE takes, and `flushStaleTags()` finds those sets with a SCAN of
- * the server, or of every primary of a cluster.
+ * the server's primary, or of every primary of a cluster.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -94,8 +94,9 @@ final class ValkeyGlideStore extends RedisStore
      *
      * Over a GLIDE connection the tags' sorted sets are found with a SCAN for
      * sorted sets whose pattern carries the connection and cache prefixes, with
-     * their glob characters escaped. On a cluster every primary is scanned in
-     * turn, as the connection's `scan()` does.
+     * their glob characters escaped. The SCAN reads the primaries, whatever the
+     * connection's read_from: a standalone server's primary, or every primary
+     * of a cluster in turn, as the connection's `scan()` does.
      *
      * @param  mixed  $chunkSize
      * @return \Illuminate\Support\LazyCollection<int, string>
@@ -129,8 +130,8 @@ final class ValkeyGlideStore extends RedisStore
     }
 
     /**
-     * Scan the server, or every primary of a cluster, for the sorted sets
-     * matching the pattern, from cursor '0' until it is '0' again.
+     * Scan the server's primary, or every primary of a cluster, for the sorted
+     * sets matching the pattern, from cursor '0' until it is '0' again.
      *
      * The connection refuses each page while a pipeline or transaction is open
      * on it; the caller may open a batch between pages.
@@ -144,10 +145,13 @@ final class ValkeyGlideStore extends RedisStore
      */
     private function scanTagSets(ValkeyGlideConnection $connection, string $pattern, int $count): \Generator
     {
-        $cursor = '0';
+        $cluster = $connection->client() instanceof \ValkeyGlideCluster;
+        $cursor  = '0';
 
         do {
-            [$cursor, $keys] = $connection->scan($cursor, ['match' => $pattern, 'count' => $count, 'type' => 'zset']);
+            [$cursor, $keys] = $cluster
+                ? $connection->scan($cursor, ['match' => $pattern, 'count' => $count, 'type' => 'zset'])
+                : $connection->scanOnPrimary($cursor, $pattern, $count, 'zset');
 
             foreach ($keys as $key) {
                 yield $key;

@@ -18,9 +18,10 @@ use SineMacula\Valkey\Support\Cast;
  * `zscan()`, records increments with a string `NX` option and prunes through
  * `pipeline()` with a callback, whose replies it ignores; GLIDE takes the scan
  * cursor by reference and ignores a string option. Over a GLIDE connection each
- * of those paths is sent in the shape GLIDE takes, without opening a batch, and
- * outside a batch a `false` reply, which is how GLIDE reports every failure,
- * throws. Over any other connection Laravel's own code runs.
+ * of those paths is sent in the shape GLIDE takes, without opening a batch on
+ * the connection, and outside a batch a `false` reply, which is how GLIDE
+ * reports every failure, throws. Over any other connection Laravel's own code
+ * runs.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -101,9 +102,9 @@ final class ValkeyGlideTagSet extends RedisTagSet
     /**
      * Get all of the cache entry keys for the tag set.
      *
-     * Over a GLIDE connection each tag's sorted set is read with ZSCAN from
-     * cursor '0' until GLIDE writes '0' back, so no command runs until the
-     * collection is iterated.
+     * Over a GLIDE connection each tag's sorted set is read on the primary with
+     * ZSCAN from cursor '0' until GLIDE writes '0' back, so no command runs
+     * until the collection is iterated.
      *
      * @return \Illuminate\Support\LazyCollection<int, string>
      */
@@ -271,8 +272,6 @@ final class ValkeyGlideTagSet extends RedisTagSet
      * Scan every tag's sorted set for its members, each from cursor '0' until
      * GLIDE writes '0' back.
      *
-     * Members PHP turned into integer array keys are yielded as strings.
-     *
      * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
      * @return \Generator<int, string>
      *
@@ -284,34 +283,13 @@ final class ValkeyGlideTagSet extends RedisTagSet
             $cursor = '0';
 
             do {
-                [$cursor, $page] = $this->scanPage($connection, $setKey, $cursor);
+                [$cursor, $members] = $connection->zscanOnPrimary($setKey, $cursor, self::SCAN_COUNT);
 
-                foreach (array_keys($page) as $member) {
-                    yield (string) $member;
+                foreach ($members as $member) {
+                    yield $member;
                 }
             } while ($cursor !== '0');
         }
-    }
-
-    /**
-     * Read one page of a tag's sorted set, from the given cursor.
-     *
-     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
-     * @param  string  $setKey
-     * @param  string  $cursor
-     * @return array{string, array<array-key, mixed>}
-     *
-     * @throws \UnexpectedValueException
-     */
-    private function scanPage(ValkeyGlideConnection $connection, string $setKey, string $cursor): array
-    {
-        $page = $connection->command('zscan', [$setKey, &$cursor, '*', self::SCAN_COUNT]);
-
-        if (!is_array($page)) {
-            throw new \UnexpectedValueException(sprintf('Expected array response from %s on [%s], received [%s].', 'zscan', $setKey, get_debug_type($page)));
-        }
-
-        return [$cursor, $page];
     }
 
     /**

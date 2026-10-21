@@ -30,9 +30,10 @@ namespace Tests\Fakes\Concerns;
  * 1.1.2 returns null in breach of its own declared return type, the fakes
  * return what a PHP override can: true from a nested multi() or pipeline(), a
  * value that is neither the client nor the false of a closed client, and false
- * from a buffered unwatch(). A fake that receives more exec() and discard()
- * calls than any test sends throws, so a connection that loops on them fails a
- * test instead of hanging it.
+ * from a buffered unwatch(). A buffered scan writes its cursor back through the
+ * caller's iterator only when exec() runs. A fake that receives more exec() and
+ * discard() calls than any test sends throws, so a connection that loops on
+ * them fails a test instead of hanging it.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -99,6 +100,9 @@ trait EmulatesBatchMode
 
     /** @var array<string, true> Methods refused, as for invalid arguments, while batching. */
     private array $refusedInBatch = [];
+
+    /** @var list<array{iterator: string|null, cursor: string}> Buffered scans' iterators, by reference, with the cursor exec() writes back to each. */
+    private array $pendingScanCursors = [];
 
     /**
      * Refuse a method while batching, as GLIDE does when it rejects a command's
@@ -399,6 +403,40 @@ trait EmulatesBatchMode
     }
 
     /**
+     * Buffer a scan page in batch mode, as ext-valkey_glide 1.1.2 does: the
+     * page is the scan's exec() result, and its cursor is written back through
+     * the caller's iterator only when exec() runs.
+     *
+     * @param  string  $method
+     * @param  string|null  $iterator
+     * @param  array{0: string, 1: mixed}  $page
+     * @return self
+     */
+    private function bufferScan(string $method, ?string &$iterator, array $page): self
+    {
+        $pending             = ['cursor' => $page[0]];
+        $pending['iterator'] = &$iterator;
+
+        $this->pendingScanCursors[] = $pending;
+        $this->buffered[]           = [$method, $page[1]];
+
+        return $this;
+    }
+
+    /**
+     * Write each buffered scan's cursor back through its iterator, as exec()
+     * does in ext-valkey_glide 1.1.2.
+     *
+     * @return void
+     */
+    private function writePendingScanCursors(): void
+    {
+        foreach ($this->pendingScanCursors as $pending) {
+            $pending['iterator'] = $pending['cursor'];
+        }
+    }
+
+    /**
      * Enter batch mode.
      *
      * @param  string  $method
@@ -448,6 +486,7 @@ trait EmulatesBatchMode
         $buffered = $this->buffered;
         $watched  = $this->atomicBatch && in_array('watch', array_column($buffered, 0), true);
 
+        $this->writePendingScanCursors();
         $this->clearBatch();
 
         if ($watched) {
@@ -514,8 +553,9 @@ trait EmulatesBatchMode
      */
     private function clearBatch(): void
     {
-        $this->batching    = false;
-        $this->atomicBatch = false;
-        $this->buffered    = [];
+        $this->batching           = false;
+        $this->atomicBatch        = false;
+        $this->buffered           = [];
+        $this->pendingScanCursors = [];
     }
 }

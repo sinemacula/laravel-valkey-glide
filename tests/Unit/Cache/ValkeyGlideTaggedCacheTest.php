@@ -57,7 +57,8 @@ final class ValkeyGlideTaggedCacheTest extends TestCase
 
     /**
      * Verify a flush on a cluster deletes the tags' entries with DEL and ZREM,
-     * without a script.
+     * without a script, reading the tag's sorted set with a raw ZSCAN routed to
+     * its primary.
      *
      * @return void
      */
@@ -68,10 +69,12 @@ final class ValkeyGlideTaggedCacheTest extends TestCase
         $client->willScan('zscan', [['0', ['m' => '1']]]);
 
         self::assertTrue($this->taggedCache($client, ['t'])->flush());
-        self::assertCount(1, $client->callsFor('zscan'));
+        self::assertSame([], $client->callsFor('zscan'));
         self::assertSame([['cache:m']], $client->callsFor('del'));
         self::assertSame([['cache:tag:t:entries', 'm']], $client->callsFor('zrem'));
-        self::assertSame([], $client->callsFor('rawcommand'));
+        self::assertSame([
+            [['type' => 'primarySlotKey', 'key' => 'cache:tag:t:entries'], 'ZSCAN', 'cache:tag:t:entries', '0', 'COUNT', 1000],
+        ], $client->callsFor('rawcommand'));
         self::assertSame([], $client->callsFor('eval'));
     }
 
