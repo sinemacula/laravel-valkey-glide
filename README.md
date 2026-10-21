@@ -37,6 +37,7 @@ application business code.
   phpredis-compatible `hsetnx()` and options-array `zscan()`, `hscan()` and `sscan()`
 - Laravel's `zadd()`, `zinterstore()` and `zunionstore()` argument forms, and exact `zincrby()` increments
 - Float arguments sent as phpredis sends them, where GLIDE would write six significant digits
+- Laravel Horizon 5.46.0 or later on a cluster before Laravel 13.5
 - Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
   standalone and cluster connections
 - Laravel Pulse's `redis` ingest driver on standalone and cluster connections (see Laravel Pulse)
@@ -577,11 +578,8 @@ write idempotent, for example by recording a unique operation id in the same tra
   tag, or it throws. Laravel's own `RedisStore::putMany()` issues one for connections it does not know to be clusters;
   the `redis` cache store this package registers writes each value on its own on a cluster instead (see Cache Store),
   so `Cache::putMany()` takes keys in any slot.
-- On Laravel 13, Horizon hash-tags its own `{horizon:}` prefix on a cluster, which keeps its keys in one slot. Horizon
-  only supports clusters where Laravel's `Connection::hasHashTag()` exists, which Laravel 13 added; on Laravel 12 it
-  connects to the cluster's first node as a standalone server. Keys that other nodes own then fail with `MOVED`,
-  which GLIDE 1.1.2 returns as `false` rather than throwing, so Horizon silently loses those writes. On Laravel 12,
-  point Horizon at a standalone server.
+- Horizon hash-tags its own `{horizon:}` prefix on a cluster, which keeps its keys in one slot; with Horizon 5.46.0 or
+  later it does on every supported Laravel version (see Laravel Horizon).
 
 ## Read Routing
 
@@ -859,6 +857,19 @@ standalone connections, whose `connect()` has no such parameter.
 > ([valkey-glide-php#344](https://github.com/valkey-io/valkey-glide-php/issues/344)). Until a release includes the fix,
 > set `'periodic_checks' => 'disabled'` on cluster connections.
 
+### Laravel Horizon
+
+Horizon 5.46.0 and later give the cluster that `horizon.use` names Horizon's own `horizon` cluster connection, with its
+prefix hash-tagged (`{horizon:}`) so its keys share one slot, but only from Laravel 13.5. Before that Horizon connects
+to the cluster's first node as a standalone server, where writes to keys another node owns fail with `MOVED`. On a
+`valkey-glide` cluster, the service provider gives Horizon the cluster connection it gets from Laravel 13.5, so Horizon
+runs on the cluster on every supported Laravel version. Cluster support requires Horizon 5.46.0 or later.
+
+> [!NOTE]
+> In 1.2.x and earlier, before Laravel 13.5, Horizon kept its data on the cluster's first node under `horizon.prefix`.
+> It now keeps it on the cluster under that prefix in a hash tag (`{<app name>_horizon:}`), so its dashboard starts
+> empty; delete the old keys on the first node.
+
 ## Cache Tags
 
 `Cache::tags()` works on standalone and cluster connections with no configuration change. The `redis` cache driver's
@@ -1073,7 +1084,7 @@ External integration coverage includes:
 - Laravel's `Queue::bulk()`, the pipelined stale-entry flush of Laravel's own `RedisTagSet`, `Cache::putMany()` (a
   transaction on a standalone server, key by key across slots on a cluster), tagged writes and a refused tag flush
   inside a pipeline, and Laravel Horizon's own Redis repositories under the `horizon:` prefix (the Horizon cluster
-  cases run on Laravel 13 only, as Horizon supports clusters only there)
+  cases run on every supported Laravel version)
 - Laravel Pulse's `redis` ingest on a standalone server and a cluster, over connections with the shared prefix and with
   one of their own
 - the key prefix a Laravel connection resolves to when the shared options, a connection's own options and the

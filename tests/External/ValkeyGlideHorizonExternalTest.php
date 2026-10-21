@@ -7,10 +7,10 @@ namespace Tests\External;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Redis\Factory as RedisFactory;
 use Illuminate\Foundation\Application;
-use Illuminate\Redis\Connections\Connection;
 use Illuminate\Support\Carbon;
 use Laravel\Horizon\Contracts\HorizonCommandQueue;
 use Laravel\Horizon\Horizon;
+use Laravel\Horizon\HorizonServiceProvider;
 use Laravel\Horizon\JobPayload;
 use Laravel\Horizon\RedisHorizonCommandQueue;
 use Laravel\Horizon\Repositories\RedisJobRepository;
@@ -25,6 +25,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\Test;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use SineMacula\Valkey\Support\HorizonClusterConnection;
+use SineMacula\Valkey\ValkeyGlideServiceProvider;
 use Tests\External\Concerns\ConnectsToTestServers;
 use Tests\TestCase;
 
@@ -35,10 +37,11 @@ use Tests\TestCase;
  * Horizon batches nearly every write in a pipeline, reads pipeline results by
  * position, passes integer arguments, and gives its connection a `horizon:`
  * prefix (hash-tagged on a cluster), so these tests assert the physical keys.
- * Every test runs against the standalone server and, when
- * VALKEY_GLIDE_TEST_CLUSTER_HOST and VALKEY_GLIDE_TEST_CLUSTER_PORT are set on
- * Laravel 13 and later, where Horizon supports clusters, against the cluster;
- * the cluster cases are skipped otherwise.
+ * Every repository test runs against the standalone server and, when
+ * VALKEY_GLIDE_TEST_CLUSTER_HOST and VALKEY_GLIDE_TEST_CLUSTER_PORT are set,
+ * against the cluster, on every supported Laravel version; one more test boots
+ * Horizon's own service provider on the cluster. The cluster cases are skipped
+ * otherwise.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -46,6 +49,8 @@ use Tests\TestCase;
  * @internal
  */
 #[CoversClass(ValkeyGlideConnection::class)]
+#[CoversClass(ValkeyGlideServiceProvider::class)]
+#[CoversClass(HorizonClusterConnection::class)]
 #[Group('external')]
 final class ValkeyGlideHorizonExternalTest extends TestCase
 {
@@ -464,6 +469,41 @@ final class ValkeyGlideHorizonExternalTest extends TestCase
     }
 
     /**
+     * Verify Horizon, registered as an application registers it, records a job
+     * on the cluster under the hash-tagged prefix.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function horizonsServiceProviderRecordsAJobOnTheCluster(): void
+    {
+        $this->skipUnlessTopologyIsConfigured(self::CLUSTER);
+
+        $base = 'horizon:' . $this->uniqueName('horizon-cluster') . ':';
+
+        config(['horizon.use' => self::CLUSTER, 'horizon.prefix' => $base]);
+
+        $this->application()->register(HorizonServiceProvider::class, true);
+        $this->application()->forgetInstance('redis');
+
+        $prefix = '{' . $base . '}';
+
+        self::assertTrue($this->horizonConnection()->isCluster());
+        self::assertSame($prefix, config('horizon.prefix'));
+
+        $jobs       = new RedisJobRepository($this->redis());
+        $payload    = $this->jobPayload();
+        $this->keys = [...$this->keys, 'recent_jobs', 'pending_jobs', $payload->id()];
+
+        $jobs->pushed('redis', 'default', $payload);
+
+        self::assertSame('pending', $this->physical(self::CLUSTER)->command('hget', [$prefix . $payload->id(), 'status']));
+        self::assertSame(1, $jobs->countPending());
+    }
+
+    /**
      * Configure the standalone and cluster connections Horizon can use.
      *
      * @param  \Illuminate\Contracts\Foundation\Application  $app
@@ -480,8 +520,9 @@ final class ValkeyGlideHorizonExternalTest extends TestCase
     }
 
     /**
-     * Point Horizon at the topology, as Horizon::use() does at boot, with a
-     * unique `horizon:` prefix, and return the prefix Horizon settled on.
+     * Point Horizon at the topology, as Horizon's service provider does at boot
+     * from `horizon.use`, with a unique `horizon:` prefix, and return the
+     * prefix Horizon settled on.
      *
      * @param  string  $topology
      * @return string
@@ -492,22 +533,16 @@ final class ValkeyGlideHorizonExternalTest extends TestCase
     {
         $this->skipUnlessTopologyIsConfigured($topology);
 
-        // Horizon only configures a cluster connection, with its hash-tagged
-        // prefix, when Laravel's connections have hasHashTag(), which Laravel
-        // 13 added; before that it connects to the first node as a standalone
-        // server, so the cluster cases cannot run. Reflection reads the
-        // installed framework rather than the one static analysis sees.
-        if ($topology === self::CLUSTER && !(new \ReflectionClass(Connection::class))->hasMethod('hasHashTag')) {
-            self::markTestSkipped('Horizon supports Redis clusters only on Laravel 13 and later, where Connection::hasHashTag() exists.');
-        }
-
-        config(['horizon.prefix' => 'horizon:' . $this->uniqueName('horizon') . ':']);
+        config(['horizon.use' => $topology, 'horizon.prefix' => 'horizon:' . $this->uniqueName('horizon') . ':']);
 
         Horizon::use($topology);
 
         // The Redis manager copies its configuration when it is built, so it
         // is rebuilt to see the horizon connection Horizon::use() just added.
+        // Where Laravel lacks hasHashTag(), the service provider replaces
+        // Horizon's first-node fallback with the cluster as it is rebuilt.
         $this->application()->forgetInstance('redis');
+        $this->redis();
 
         $prefix = config('horizon.prefix');
 
