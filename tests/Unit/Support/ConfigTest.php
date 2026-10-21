@@ -992,4 +992,118 @@ final class ConfigTest extends TestCase
 
         self::assertArrayNotHasKey('advanced_config', $arguments);
     }
+
+    /**
+     * Verify standalone connect arguments never include periodic_checks.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectArgumentsOmitsPeriodicChecks(): void
+    {
+        $arguments = Config::connectArguments(['periodic_checks' => 'disabled']);
+
+        self::assertArrayNotHasKey('periodic_checks', $arguments);
+    }
+
+    /**
+     * Provide periodic_checks values and their expected GLIDE constant.
+     *
+     * @return iterable<string, array{0: mixed, 1: int}>
+     */
+    public static function periodicChecksProvider(): iterable
+    {
+        yield 'disabled name' => ['disabled', \ValkeyGlideCluster::PERIODIC_CHECK_DISABLED];
+        yield 'enabled name' => ['enabled', \ValkeyGlideCluster::PERIODIC_CHECK_ENABLED_DEFAULT_CONFIGS];
+        yield 'disabled constant' => [\ValkeyGlideCluster::PERIODIC_CHECK_DISABLED, \ValkeyGlideCluster::PERIODIC_CHECK_DISABLED];
+        yield 'enabled constant' => [\ValkeyGlideCluster::PERIODIC_CHECK_ENABLED_DEFAULT_CONFIGS, \ValkeyGlideCluster::PERIODIC_CHECK_ENABLED_DEFAULT_CONFIGS];
+    }
+
+    /**
+     * Verify cluster client arguments resolve periodic_checks to its constant.
+     *
+     * @param  mixed  $value
+     * @param  int  $expected
+     * @return void
+     */
+    #[DataProvider('periodicChecksProvider')]
+    #[Test]
+    public function clusterClientArgumentsResolvesPeriodicChecks(mixed $value, int $expected): void
+    {
+        $arguments = Config::clusterClientArguments(['periodic_checks' => $value]);
+
+        self::assertArrayHasKey('periodic_checks', $arguments);
+        self::assertSame($expected, $arguments['periodic_checks']);
+    }
+
+    /**
+     * Verify cluster client arguments omit periodic_checks when unset so
+     * GLIDE's own default applies.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterClientArgumentsOmitsAbsentPeriodicChecks(): void
+    {
+        $arguments = Config::clusterClientArguments([]);
+
+        self::assertSame(Config::connectArguments([]), $arguments);
+    }
+
+    /**
+     * Verify cluster client arguments omit an unresolvable periodic_checks
+     * value.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterClientArgumentsOmitsInvalidPeriodicChecks(): void
+    {
+        $arguments = Config::clusterClientArguments(['periodic_checks' => 500]);
+
+        self::assertArrayNotHasKey('periodic_checks', $arguments);
+    }
+
+    /**
+     * Verify cluster client arguments keep the shared connect arguments.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterClientArgumentsIncludesSharedConnectArguments(): void
+    {
+        $arguments = Config::clusterClientArguments([
+            'addresses'       => [['host' => 'node-a', 'port' => 6380]],
+            'tls'             => true,
+            'read_from'       => 'prefer_replica',
+            'periodic_checks' => 'disabled',
+        ]);
+
+        self::assertSame(
+            [
+                'addresses'       => [['host' => 'node-a', 'port' => 6380]],
+                'use_tls'         => true,
+                'read_from'       => 1,
+                'periodic_checks' => 1,
+            ],
+            $arguments,
+        );
+    }
+
+    /**
+     * Verify cluster connect arguments carry periodic_checks from the base
+     * config.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterConnectArgumentsIncludesPeriodicChecksFromBaseConfiguration(): void
+    {
+        $arguments = Config::clusterConnectArguments(
+            [['host' => 'node-a', 'port' => 6380]],
+            ['periodic_checks' => 'disabled'],
+        );
+
+        self::assertSame(\ValkeyGlideCluster::PERIODIC_CHECK_DISABLED, $arguments['periodic_checks']);
+    }
 }

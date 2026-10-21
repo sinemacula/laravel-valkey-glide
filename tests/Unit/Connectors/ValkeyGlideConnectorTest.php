@@ -192,6 +192,61 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
+     * Verify connectToCluster passes a configured periodic_checks setting to
+     * the cluster client factory.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterPassesPeriodicChecksToClusterClient(): void
+    {
+        $capturedArgs = null;
+
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static function (array $args) use (&$capturedArgs): \ValkeyGlideCluster {
+                $capturedArgs = $args;
+
+                return new ValkeyGlideClusterFake;
+            },
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connector->connectToCluster(
+            [['host' => 'node-1', 'port' => 6379, 'periodic_checks' => 'disabled']],
+            [],
+            [],
+        );
+
+        self::assertNotNull($capturedArgs);
+        self::assertSame(\ValkeyGlideCluster::PERIODIC_CHECK_DISABLED, $capturedArgs['periodic_checks']);
+    }
+
+    /**
+     * Verify connect never forwards periodic_checks to the standalone client.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectDoesNotPassPeriodicChecksToStandaloneClient(): void
+    {
+        $fake = new ValkeyGlideFake;
+
+        $connector = new ValkeyGlideConnector(
+            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connector->connect(['host' => 'standalone-host', 'periodic_checks' => 'disabled'], []);
+
+        $connectCalls = $fake->callsFor('connect');
+
+        self::assertCount(1, $connectCalls);
+        self::assertArrayNotHasKey('periodic_checks', $connectCalls[0]);
+    }
+
+    /**
      * Verify connect path still builds a standalone ValkeyGlide and calls
      * connect().
      *

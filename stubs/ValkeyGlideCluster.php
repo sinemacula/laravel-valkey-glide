@@ -15,6 +15,10 @@ if (class_exists(ValkeyGlideCluster::class, false)) {
 
 class ValkeyGlideCluster
 {
+    /** Periodic topology check constants. */
+    public const int PERIODIC_CHECK_ENABLED_DEFAULT_CONFIGS = 0;
+    public const int PERIODIC_CHECK_DISABLED                = 1;
+
     /**
      * Create a cluster client and connect via the constructor.
      *
