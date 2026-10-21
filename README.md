@@ -31,12 +31,13 @@ application business code.
 - Optional single retry for idempotent commands on transient transport errors
 - Key prefix compatibility for supported command families, including key-list handling for `MGET`
 - Laravel compatibility fallback for phpredis-style `SET` and `EVAL` command argument shapes
+- Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections
 - External test lane for extension and real Redis connectivity validation
 
 ## Requirements
 
 - PHP `^8.3`
-- Laravel components with `illuminate/redis` `^11.0 || ^12.0`
+- Laravel components with `illuminate/redis` and `illuminate/cache` `^11.0 || ^12.0 || ^13.0`
 - `ext-valkey_glide` in runtime environments that use this driver
 
 `ext-valkey_glide` is declared in `suggest` so this package can still be installed in environments that do not run the
@@ -109,6 +110,14 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 - `executeRaw()` is supported via `rawcommand`, with a route added on cluster connections (see Cluster Connections)
 - Phpredis-style `SET`/`EVAL` argument shapes are normalized through `rawcommand`
 - `disconnect()` delegates to GLIDE `close()`
+
+With `ext-valkey_glide` 1.1.2, most commands that fail return `false` rather than throwing, including while a node is
+unreachable and GLIDE is reconnecting (`Connection in recovery`); the extension prints the error to stderr. The driver
+cannot tell that `false` from a reply, so it passes it on: a cache `get()` reads it as a miss, and a single write or lock
+acquisition reports failure. Laravel's `putMany()` on a standalone connection queues its writes in a transaction and
+does not check the transaction's result, so it can still report success. The retry above applies only to errors the
+extension throws. `getLastError()`, which the extension gains after 1.1.2 (in the 1.2.0 release candidates), is what
+would let the driver raise these as exceptions.
 
 ## Prefix Compatibility
 
@@ -275,6 +284,15 @@ cannot name a slot, and on any other node they would read or change that node's 
 `FLUSHDB` and `FLUSHALL` called with no arguments or a phpredis-style `'ASYNC'` / `'SYNC'` flag (as Laravel's
 `Cache::flush()` and `cache:clear` do) run on every primary, so the whole keyspace is cleared. Calls that pass an
 explicit GLIDE route are sent unchanged.
+
+### Cache Store
+
+Laravel's `RedisStore::putMany()` writes in one `MULTI`/`EXEC` transaction unless the connection is one of Laravel's own
+cluster connections, and a cluster refuses a transaction whose keys hash to different slots (`CROSSSLOT`) while
+`putMany()` still reports success. The service provider registers the `redis` cache driver with a store that writes
+each value on its own over a GLIDE cluster connection, as Laravel does for its own cluster connections; over any other
+connection it behaves as Laravel's store, transaction included. `putMany()` backs `Cache::putMany()`, `setMultiple()`
+and `flexible()`. No configuration change is needed.
 
 ### Periodic Topology Checks
 
