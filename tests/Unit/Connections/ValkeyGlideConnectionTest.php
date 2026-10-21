@@ -53,6 +53,46 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify getPrefix() returns the configured key prefix.
+     *
+     * @return void
+     */
+    #[Test]
+    public function getPrefixReturnsTheConfiguredPrefix(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
+
+        self::assertSame('app:', $connection->getPrefix());
+    }
+
+    /**
+     * Provide connection configs with no prefix, or one that is not a string.
+     *
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function unusablePrefixConfigs(): iterable
+    {
+        yield 'no prefix' => [[]];
+        yield 'null prefix' => [['prefix' => null]];
+        yield 'array prefix' => [['prefix' => ['app:']]];
+    }
+
+    /**
+     * Verify getPrefix() is empty when no usable prefix is configured.
+     *
+     * @param  array<string, mixed>  $config
+     * @return void
+     */
+    #[DataProvider('unusablePrefixConfigs')]
+    #[Test]
+    public function getPrefixIsEmptyWithoutAUsablePrefix(array $config): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, $config);
+
+        self::assertSame('', $connection->getPrefix());
+    }
+
+    /**
      * Verify get returns null when the underlying client returns false (cache
      * miss).
      *
@@ -647,6 +687,79 @@ final class ValkeyGlideConnectionTest extends TestCase
 
         self::assertTrue($connection->command('flushdb', ['ASYNC']));
         self::assertSame([['ASYNC']], $client->callsFor('flushdb'));
+    }
+
+    /**
+     * Verify a cluster ping without arguments is routed to every primary.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterPingWithoutArgumentsRunsOnAllPrimaries(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('ping', true);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertTrue($connection->command('ping'));
+        self::assertSame([['allPrimaries']], $client->callsFor('ping'));
+    }
+
+    /**
+     * Provide cluster ping calls that already carry an explicit GLIDE route.
+     *
+     * @return iterable<string, array{array<array-key, mixed>}>
+     */
+    public static function clusterPingsWithExplicitRoute(): iterable
+    {
+        yield 'random node' => [['randomNode']];
+        yield 'all nodes with message' => [['allNodes', 'hello']];
+        yield 'host and port' => [[['type' => 'routeByAddress', 'host' => '10.0.0.1', 'port' => 6379]]];
+        yield 'named route' => [['route' => 'randomNode']];
+    }
+
+    /**
+     * Verify cluster ping calls with an explicit route are passed through
+     * unchanged.
+     *
+     * @param  array<array-key, mixed>  $parameters
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('clusterPingsWithExplicitRoute')]
+    #[Test]
+    public function clusterPingWithExplicitRoutePassesThroughUnchanged(array $parameters): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('ping', true);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertTrue($connection->command('ping', $parameters));
+        self::assertSame([$parameters], $client->callsFor('ping'));
+    }
+
+    /**
+     * Verify a standalone ping without arguments is passed through unchanged.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function standalonePingWithoutArgumentsPassesThroughUnchanged(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('ping', true);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertTrue($connection->command('ping'));
+        self::assertSame([[]], $client->callsFor('ping'));
     }
 
     /**

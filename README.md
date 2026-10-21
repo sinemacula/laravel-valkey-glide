@@ -31,7 +31,8 @@ application business code.
 - Optional single retry for idempotent commands on transient transport errors
 - Key prefix compatibility for supported command families, including key-list handling for `MGET`
 - Laravel compatibility fallback for phpredis-style `SET` and `EVAL` command argument shapes
-- Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections
+- Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
+  standalone and cluster connections
 - External test lane for extension and real Redis connectivity validation
 
 ## Requirements
@@ -141,6 +142,10 @@ the string name and the integer constant are accepted):
 | `az_affinity_replicas_and_primary` | `3`   | Same-AZ affinity across replicas and the primary        |
 
 `client_az` is required for the AZ-affinity strategies.
+
+Replica reads are eventually consistent: a read can miss a write the replica has not received yet. Cache tag flushes
+read the tags' sorted sets the same way (see Cache Tags), so a cache store whose flushes must see the latest tagged
+writes should use a connection whose `read_from` is `primary`.
 
 ```php
 'default' => [
@@ -285,6 +290,10 @@ cannot name a slot, and on any other node they would read or change that node's 
 `Cache::flush()` and `cache:clear` do) run on every primary, so the whole keyspace is cleared. Calls that pass an
 explicit GLIDE route are sent unchanged.
 
+`ValkeyGlideCluster::ping()` takes a route before its optional message and returns `false` without one, so a bare
+`ping()` (as health checks call it) runs on every primary instead and returns `true` once each one answers. A `ping()`
+with arguments takes the first as its route, as phpredis' `RedisCluster::ping()` does, and is sent unchanged.
+
 ### Cache Store
 
 Laravel's `RedisStore::putMany()` writes in one `MULTI`/`EXEC` transaction unless the connection is one of Laravel's own
@@ -325,6 +334,66 @@ standalone connections, whose `connect()` has no such parameter.
 > its 60-second default, so every idle cluster client re-checks the topology continuously and burns CPU
 > ([valkey-glide-php#344](https://github.com/valkey-io/valkey-glide-php/issues/344)). Until a release includes the fix,
 > set `'periodic_checks' => 'disabled'` on cluster connections.
+
+## Cache Tags
+
+`Cache::tags()` works on standalone and cluster connections with no configuration change. The `redis` cache driver's
+store returns a tagged cache whose tag upkeep is written for GLIDE; over a phpredis or Predis connection it runs
+Laravel's own code unchanged.
+
+- Tagged writes record each key in the tag's sorted set, `tag:<name>:entries`, under the connection and cache
+  prefixes. `increment()` and `decrement()` record their key with GLIDE's `['NX']` option; GLIDE ignores phpredis'
+  `'NX'` string and writes nothing.
+- `flush()` reads each tag's sorted set with `ZSCAN`, deletes the entries 1,000 at a time with one `DEL` (on a cluster
+  GLIDE splits it across hash slots), then removes those entries from the tags' sorted sets with `ZREM`. An entry
+  tagged while the flush runs may or may not be removed with it; one the flush does not reach stays recorded. A sorted
+  set left empty is removed by the server. `CacheFlushing` and `CacheFlushed` are dispatched when the installed Laravel
+  version dispatches them for tags.
+- `flushStale()` removes expired entries from each tag's sorted set with `ZREMRANGEBYSCORE`, one command per tag.
+- `cache:prune-stale-tags` finds the tag sets with a `SCAN` for sorted sets whose pattern carries the connection and
+  cache prefixes, with glob characters in them escaped; on a cluster it walks every primary with a `ClusterScanCursor`.
+
+> [!NOTE]
+> A tag flush is not atomic. Over a standalone phpredis or Predis connection Laravel 12.30 and later delete each batch
+> of entries and their tag records in one Lua script, which cannot run across hash slots. Here each batch is a `DEL`
+> followed by a `ZREM` per tag, so a key written again between the two can lose its tag record. Laravel's own cluster
+> connections instead delete the entries, then each tag's whole sorted set. Entries are deleted first, so an interrupted
+> flush leaves only records of deleted keys, and running it again completes it.
+
+With `ext-valkey_glide` 1.1.2 a failed command returns `false` (see Runtime Behavior), so on these paths a `false` reply
+throws an `UnexpectedValueException` naming the command and key, rather than reporting a partial flush, a lost tag
+record or a partial prune as success. This includes server errors that phpredis would let pass, such as `WRONGTYPE` on
+a tag's key.
+
+> [!NOTE]
+> `flush()` reads the tags' sorted sets with `ZSCAN`, which follows the connection's `read_from` (see Read Routing).
+> With replica reads, an entry tagged within the replication lag before a flush can be missing from the scan, so it
+> stays cached until it expires or the tag is flushed again. If a flush must remove entries tagged moments earlier,
+> give the cache store a connection whose `read_from` is `primary`.
+
+The connection prefixes the keys these paths use: `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, `ZREVRANGEBYSCORE` and
+`ZREVRANK`, and the key (only) of `ZSCAN`, `SSCAN` and `HSCAN`. Earlier releases sent those seven commands unprefixed,
+so on a prefixed connection they missed the keys the other commands wrote. A member scan writes its cursor back by
+reference, so call it through `command()` with a reference in the argument list:
+
+```php
+$cursor = '0';
+
+do {
+    $members = Redis::connection()->command('zscan', ['leaderboard', &$cursor, '*', 100]);
+
+    // ...
+} while ($cursor !== '0');
+```
+
+The phpredis-style `zscan($key, $cursor, $options)` shape is not supported.
+
+- On a standalone server the `SCAN` and `ZSCAN` calls dispatch `CommandExecuted` like any command. The cluster `SCAN`
+  is sent to GLIDE directly, without command events, because a `ClusterScanCursor` among the event parameters breaks
+  listeners that turn parameters into strings.
+- The user running `cache:prune-stale-tags` needs `SCAN` permission. On a cluster, with 1.1.2 a `SCAN` refused by an
+  ACL aborts the PHP process; on a standalone server the refusal comes back as `false` and the command throws an
+  `UnexpectedValueException`.
 
 ## ElastiCache Serverless
 
@@ -399,7 +468,8 @@ External integration coverage includes:
 - extension/client availability and connect/close behavior
 - connector/connection roundtrip behavior and retry semantics
 - command-prefix behavior, including list-style key commands (`MGET`)
-- Laravel cache roundtrip behavior, physical key writes, locks, and TTL edge cases
+- Laravel cache roundtrip behavior, physical key writes, locks, TTL edge cases, and cache tags on a standalone server
+  and a cluster (tagged writes, `flush()`, `flushStale()` and `cache:prune-stale-tags`)
 - Laravel queue push/pop behavior and physical queue key writes
 - Laravel session roundtrip behavior and physical session key writes
 
@@ -410,6 +480,8 @@ The external suite reads connection details from optional environment variables:
 - `VALKEY_GLIDE_TEST_TLS`
 - `VALKEY_GLIDE_TEST_USERNAME`
 - `VALKEY_GLIDE_TEST_PASSWORD`
+- `VALKEY_GLIDE_TEST_CLUSTER_HOST` and `VALKEY_GLIDE_TEST_CLUSTER_PORT`: a seed node of a Valkey/Redis cluster; the
+  cluster cases are skipped when either is unset
 
 All available Composer scripts:
 
