@@ -669,6 +669,82 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify executeRaw on a cluster client leads with the resolved route and
+     * leaves the key unprefixed, as on a standalone client.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterExecuteRawLeadsWithTheResolvedRoute(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', 1);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame(1, $connection->executeRaw(['command' => 'unlink', 'key' => 'k']));
+        self::assertSame(1, $connection->executeRaw(['SCRIPT', 'LOAD', self::EVAL_TEST_SCRIPT]));
+        self::assertSame(
+            [
+                [['type' => 'primarySlotKey', 'key' => 'k'], 'unlink', 'k'],
+                ['allNodes', 'SCRIPT', 'LOAD', self::EVAL_TEST_SCRIPT],
+            ],
+            $client->callsFor('rawcommand'),
+        );
+    }
+
+    /**
+     * Verify executeRaw on a cluster client refuses a SCAN rather than sending
+     * it to a single node.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterExecuteRawRefusesScan(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->executeRaw(['SCAN', '0', 'MATCH', 'user:*']);
+            self::fail('Expected a raw cluster SCAN to be refused.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertStringContainsString('ClusterScanCursor', $exception->getMessage());
+        }
+
+        self::assertSame([], $client->callsFor('rawcommand'));
+    }
+
+    /**
+     * Verify rawCommand on a cluster client is passed through unchanged, with
+     * the caller's route first.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterRawCommandPassesThroughUnchanged(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', 'reply');
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame('reply', $connection->command('rawCommand', ['user:1', 'GET', 'user:1']));
+        self::assertSame('reply', $connection->command('rawcommand', ['allPrimaries', 'DBSIZE']));
+        self::assertSame(
+            [['user:1', 'GET', 'user:1'], ['allPrimaries', 'DBSIZE']],
+            $client->callsFor('rawcommand'),
+        );
+    }
+
+    /**
      * Verify disconnect calls close on the wrapped client.
      *
      * @return void
@@ -1579,6 +1655,71 @@ final class ValkeyGlideConnectionTest extends TestCase
         self::assertCount(1, $calls);
         self::assertSame('randomNode', $calls[0][0]);
         self::assertSame('EVAL', $calls[0][1]);
+    }
+
+    /**
+     * Provide cluster-routed raw commands whose key GLIDE cannot carry in a
+     * slot-key route, with the connection config and the command sent.
+     *
+     * @return iterable<string, array{string, array<int, mixed>, array<string, mixed>, string}>
+     */
+    public static function clusterRawCommandsWithUnroutableKeys(): iterable
+    {
+        yield 'eval with an invalid utf-8 key' => ['eval', [self::EVAL_TEST_SCRIPT, 1, "\xff", 'arg-value'], [], 'EVAL'];
+        yield 'evalsha with an invalid utf-8 key' => ['evalsha', ['sha', 1, "queue:\xc3"], [], 'EVALSHA'];
+        yield 'set with an invalid utf-8 key' => ['set', ["\xff", 'owner-id', 'EX', 10, 'NX'], [], 'SET'];
+        yield 'set with an invalid utf-8 key after the prefix' => ['set', ["\xff", 'owner-id', 'EX', 10, 'NX'], ['prefix' => 'app:'], 'SET'];
+        yield 'set with an empty key' => ['set', ['', 'owner-id', 'EX', 10, 'NX'], [], 'SET'];
+    }
+
+    /**
+     * Verify a cluster-routed raw command whose key is empty or not valid UTF-8
+     * falls back to randomNode, so GLIDE follows the MOVED redirect.
+     *
+     * @param  string  $method
+     * @param  array<int, mixed>  $parameters
+     * @param  array<string, mixed>  $config
+     * @param  string  $command
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('clusterRawCommandsWithUnroutableKeys')]
+    #[Test]
+    public function clusterRawCommandWithUnroutableKeyFallsBackToRandomNode(string $method, array $parameters, array $config, string $command): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', 'OK');
+
+        $connection = new ValkeyGlideConnection($client, null, $config);
+
+        $connection->command($method, $parameters);
+
+        $calls = $client->callsFor('rawcommand');
+        self::assertCount(1, $calls);
+        self::assertSame('randomNode', $calls[0][0]);
+        self::assertSame($command, $calls[0][1]);
+    }
+
+    /**
+     * Verify a cluster-backed phpredis-style SET with a multi-byte UTF-8 key
+     * still routes to the key's slot.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterSetWithMultiByteKeyRoutesToPrimarySlotKey(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', 'OK');
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->command('set', ['user:é', 'owner-id', 'EX', 10, 'NX']);
+
+        self::assertSame(['type' => 'primarySlotKey', 'key' => 'user:é'], $client->callsFor('rawcommand')[0][0]);
     }
 
     /**

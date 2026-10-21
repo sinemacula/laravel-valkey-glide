@@ -103,7 +103,7 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 - Idempotent commands can retry once on recognized transient connection errors
 - Non-idempotent commands are not retried
 - Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`)
-- `executeRaw()` is supported via `rawcommand`
+- `executeRaw()` is supported via `rawcommand`, with a route added on cluster connections (see Cluster Connections)
 - Phpredis-style `SET`/`EVAL` argument shapes are normalized through `rawcommand`
 - `disconnect()` delegates to GLIDE `close()`
 
@@ -183,6 +183,45 @@ Configure a cluster the standard Laravel way:
 
 Raw commands (`EVAL` / `EVALSHA`, phpredis-style `SET` with options) are routed to the primary that owns the affected
 key's slot.
+
+`ValkeyGlideCluster::rawcommand()` takes a route before the command, as phpredis' `RedisCluster::rawCommand()` does, and
+`rawCommand()` calls are passed to it unchanged. `executeRaw()` takes no route, so on a cluster connection it adds one,
+drawn from GLIDE's own routing tables (`base_routing()` in GLIDE's `cluster_routing.rs`):
+
+- Keyed commands go to the primary that owns their first key's slot. That key is the first argument for most commands,
+  the destination for `BITOP`, the first declared key for `EVAL`, `EVALSHA`, `FCALL` and the `*MPOP` family, and the
+  first stream after `STREAMS` for `XREAD` and `XREADGROUP`.
+- Commands that must reach every node, such as `SCRIPT LOAD`, `CONFIG SET`, `FUNCTION LOAD`, `DBSIZE`, `KEYS` and
+  `FLUSHDB`, run on every node or every primary, and GLIDE combines the replies.
+- Keyless commands, and commands whose key is missing or empty, go to a random node. So do subcommands GLIDE does not
+  list, which it routes by the subcommand's name as if it were a key, and commands whose key is not valid UTF-8, which
+  a GLIDE route cannot carry; GLIDE follows the node's `MOVED` redirect to the key's owner.
+
+A multi-key raw command is not split across shards. When GLIDE picks the route for `MGET`, `MSET`, `DEL`, `EXISTS`,
+`UNLINK`, `TOUCH` and similar commands itself, it sends each shard its own keys and combines the replies, but the
+extension has no route that asks for that, so `executeRaw()` sends the whole command to the first key's primary. All of
+its keys must share a slot, so give them a common hash tag (`{user:1}:name`, `{user:1}:email`), or the server replies
+`CROSSSLOT`.
+
+A raw `SCAN` through `executeRaw()` is refused, because a cursor `SCAN` walks a single node and would miss keys on the
+others. Scan a cluster with GLIDE's `ClusterScanCursor` through the connection's `scan()`:
+
+```php
+$cursor = new ClusterScanCursor;
+
+do {
+    $keys = Redis::connection()->scan($cursor, 'user:*', 100);
+
+    // ...
+
+    $cursor = new ClusterScanCursor($cursor->getNextCursor());
+} while (!$cursor->isFinished());
+```
+
+The `CLUSTER` commands GLIDE sends to the primary that owns a slot number (`COUNTKEYSINSLOT`, `GETKEYSINSLOT`,
+`ADDSLOTS`, `DELSLOTS`, `DELSLOTSRANGE` and `SETSLOT`) are refused through `executeRaw()` too, because GLIDE's PHP routes
+cannot name a slot, and on any other node they would read or change that node's own slots and keys. Send them through
+`rawCommand()` with a route to that primary.
 
 `FLUSHDB` and `FLUSHALL` called with no arguments or a phpredis-style `'ASYNC'` / `'SYNC'` flag (as Laravel's
 `Cache::flush()` and `cache:clear` do) run on every primary, so the whole keyspace is cleared. Calls that pass an
