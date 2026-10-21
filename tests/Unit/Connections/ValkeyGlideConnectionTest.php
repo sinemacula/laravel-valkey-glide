@@ -1766,6 +1766,185 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify a retry closes the client it replaces and keeps the new one open.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetryClosesTheReplacedClient(): void
+    {
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
+
+        $connection = new ValkeyGlideConnection(
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
+            [
+                'retry_delay_ms'  => 0,
+                'retry_jitter_ms' => 0,
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertCount(1, $firstClient->callsFor('close'));
+        self::assertCount(0, $secondClient->callsFor('close'));
+        self::assertSame($secondClient, $connection->client());
+    }
+
+    /**
+     * Verify a retry closes a replaced cluster client.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetryClosesTheReplacedClusterClient(): void
+    {
+        $firstClient = new ValkeyGlideClusterFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+
+        $secondClient = new ValkeyGlideClusterFake;
+        $secondClient->willReturn('get', 'ok');
+
+        $connection = new ValkeyGlideConnection(
+            $firstClient,
+            static fn (): \ValkeyGlideCluster => $secondClient,
+            [
+                'retry_delay_ms'  => 0,
+                'retry_jitter_ms' => 0,
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertCount(1, $firstClient->callsFor('close'));
+        self::assertCount(0, $secondClient->callsFor('close'));
+    }
+
+    /**
+     * Verify a failure to close the replaced client does not stop the retry.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetryIgnoresFailureToCloseTheReplacedClient(): void
+    {
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $firstClient->willThrow('close', new \RuntimeException('close failed: broken pipe'));
+
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'ok');
+
+        $connection = new ValkeyGlideConnection(
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
+            [
+                'retry_delay_ms'  => 0,
+                'retry_jitter_ms' => 0,
+            ],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['retry-key']));
+        self::assertCount(1, $firstClient->callsFor('close'));
+        self::assertSame($secondClient, $connection->client());
+    }
+
+    /**
+     * Verify a failure to close the replaced client never masks the command
+     * error reported when the retry also fails.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandRetryReportsTheCommandErrorWhenCloseAlsoFails(): void
+    {
+        $firstClient = new ValkeyGlideFake;
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+        $firstClient->willThrow('close', new \RuntimeException('close failed: broken pipe'));
+
+        $retryError   = new \RuntimeException('connection lost');
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willThrow('get', $retryError);
+
+        $dispatcher = new Dispatcher;
+        $events     = [];
+
+        $dispatcher->listen(CommandFailed::class, static function (CommandFailed $event) use (&$events): void {
+            $events[] = $event;
+        });
+
+        $connection = new ValkeyGlideConnection(
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
+            [
+                'retry_delay_ms'  => 0,
+                'retry_jitter_ms' => 0,
+            ],
+        );
+        $connection->setEventDispatcher($dispatcher);
+
+        try {
+            $connection->command('get', ['retry-key']);
+            self::fail('Expected the retry error to be thrown.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame($retryError, $exception);
+            self::assertCount(1, $events);
+            self::assertSame($retryError, $events[0]->exception);
+        }
+    }
+
+    /**
+     * Verify the client is not closed when the connector hands back the same
+     * instance.
+     *
+     * @return void
+     */
+    #[Test]
+    public function reconnectClientDoesNotCloseAClientTheConnectorReturnsAgain(): void
+    {
+        $client = new ValkeyGlideFake;
+
+        $connection = new ValkeyGlideConnection($client, static fn (): \ValkeyGlide => $client);
+
+        self::assertTrue($this->invokeReconnectClient($connection));
+        self::assertCount(0, $client->callsFor('close'));
+        self::assertSame($client, $connection->client());
+    }
+
+    /**
+     * Verify a failed reconnect keeps the existing client open and in place.
+     *
+     * @return void
+     */
+    #[Test]
+    public function reconnectClientKeepsTheExistingClientWhenTheConnectorFails(): void
+    {
+        $client = new ValkeyGlideFake;
+
+        $connection = new ValkeyGlideConnection($client, static function (): \ValkeyGlide {
+            throw new \RuntimeException('Unable to establish a Valkey GLIDE connection');
+        });
+
+        try {
+            $this->invokeReconnectClient($connection);
+            self::fail('Expected the connector failure to be thrown.');
+        } catch (\RuntimeException) {
+            self::assertCount(0, $client->callsFor('close'));
+            self::assertSame($client, $connection->client());
+        }
+    }
+
+    /**
      * Invoke private reconnectClient for reconnect path coverage.
      *
      * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection

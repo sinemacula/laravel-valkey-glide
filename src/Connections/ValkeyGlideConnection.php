@@ -533,6 +533,10 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Recreate the client via the configured connector callback.
      *
+     * The replaced client is closed only once its successor exists, so a failed
+     * reconnect leaves the connection holding a client rather than a closed
+     * one.
+     *
      * @return bool
      *
      * @imperative
@@ -543,9 +547,31 @@ final class ValkeyGlideConnection extends Connection
             return false;
         }
 
+        $previousClient    = $this->glideClient;
         $this->glideClient = ($this->connector)();
 
+        if ($previousClient !== $this->glideClient) {
+            $this->closeReplacedClient($previousClient);
+        }
+
         return true;
+    }
+
+    /**
+     * Close a client discarded after a transport failure.
+     *
+     * Its connection is usually already broken, so a failing close is expected,
+     * and it must not replace the command error being retried.
+     *
+     * @param  \ValkeyGlide|\ValkeyGlideCluster  $client
+     * @return void
+     */
+    private function closeReplacedClient(\ValkeyGlide|\ValkeyGlideCluster $client): void
+    {
+        try {
+            $client->close();
+        } catch (\Throwable) { // @phpstan-ignore catch.neverThrown
+        }
     }
 
     /**

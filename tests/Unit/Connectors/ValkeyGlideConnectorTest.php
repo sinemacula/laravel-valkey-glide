@@ -543,4 +543,200 @@ final class ValkeyGlideConnectorTest extends TestCase
         self::assertNotNull($capturedArgs);
         self::assertSame(6, $capturedArgs['database_id']);
     }
+
+    /**
+     * Verify connect forwards the reconnect strategy and lazy_connect flag to
+     * the standalone client.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectForwardsReconnectStrategyAndLazyConnect(): void
+    {
+        $fake = new ValkeyGlideFake;
+
+        $connector = new ValkeyGlideConnector(
+            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connector->connect(
+            [
+                'reconnect_strategy' => ['num_of_retries' => 8, 'jitter_percent' => 10],
+                'lazy_connect'       => true,
+            ],
+            [],
+        );
+
+        $connectCalls = $fake->callsFor('connect');
+
+        self::assertSame(['num_of_retries' => 8, 'jitter_percent' => 10], $connectCalls[0]['reconnect_strategy']);
+        self::assertTrue($connectCalls[0]['lazy_connect']);
+    }
+
+    /**
+     * Verify connect leaves the reconnect strategy and lazy_connect unset when
+     * they are not configured.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectLeavesReconnectStrategyAndLazyConnectUnsetByDefault(): void
+    {
+        $fake = new ValkeyGlideFake;
+
+        $connector = new ValkeyGlideConnector(
+            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connector->connect([], []);
+
+        $connectCalls = $fake->callsFor('connect');
+
+        self::assertNull($connectCalls[0]['reconnect_strategy']);
+        self::assertNull($connectCalls[0]['lazy_connect']);
+    }
+
+    /**
+     * Verify connectToCluster forwards the reconnect strategy and lazy_connect
+     * flag from the cluster options to the cluster client.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterForwardsReconnectStrategyAndLazyConnect(): void
+    {
+        $capturedArgs = null;
+
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static function (array $args) use (&$capturedArgs): \ValkeyGlideCluster {
+                $capturedArgs = $args;
+
+                return new ValkeyGlideClusterFake;
+            },
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connector->connectToCluster(
+            [['host' => 'node-1', 'port' => 6379]],
+            [
+                'reconnect_strategy' => ['factor' => 250, 'exponent_base' => 3],
+                'lazy_connect'       => false,
+            ],
+            [],
+        );
+
+        self::assertNotNull($capturedArgs);
+        self::assertSame(['factor' => 250, 'exponent_base' => 3], $capturedArgs['reconnect_strategy']);
+        self::assertFalse($capturedArgs['lazy_connect']);
+    }
+
+    /**
+     * Verify a cluster client created to retry a command is given the same
+     * cluster-only and reconnect options as the client it replaces.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterRetriesWithTheSameClusterArguments(): void
+    {
+        $firstClient = new ValkeyGlideClusterFake;
+        $firstClient->willThrow('get', new \RuntimeException('connection reset by peer'));
+
+        $secondClient = new ValkeyGlideClusterFake;
+        $secondClient->willReturn('get', 'ok');
+
+        $clients      = [$firstClient, $secondClient];
+        $capturedArgs = [];
+
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static function (array $args) use (&$clients, &$capturedArgs): \ValkeyGlideCluster {
+                $capturedArgs[] = $args;
+
+                return array_shift($clients) ?? new ValkeyGlideClusterFake;
+            },
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connection = $connector->connectToCluster(
+            [['host' => 'node-1', 'port' => 6379, 'periodic_checks' => 'disabled']],
+            [
+                'reconnect_strategy' => ['num_of_retries' => 8],
+                'lazy_connect'       => true,
+            ],
+            [],
+        );
+
+        self::assertSame('ok', $connection->command('get', ['cache-key']));
+        self::assertCount(2, $capturedArgs);
+        self::assertSame($capturedArgs[0], $capturedArgs[1]);
+        self::assertSame(\ValkeyGlideCluster::PERIODIC_CHECK_DISABLED, $capturedArgs[1]['periodic_checks']);
+        self::assertSame(['num_of_retries' => 8], $capturedArgs[1]['reconnect_strategy']);
+        self::assertTrue($capturedArgs[1]['lazy_connect']);
+    }
+
+    /**
+     * Verify invalid connection options surface as configuration errors rather
+     * than connection failures, before a client is created.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectRejectsInvalidOptionsWithoutCreatingAClient(): void
+    {
+        $created = false;
+
+        $connector = new ValkeyGlideConnector(
+            clientFactory: static function () use (&$created): \ValkeyGlide {
+                $created = true;
+
+                return new ValkeyGlideFake;
+            },
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        try {
+            $connector->connect(['reconnect_strategy' => ['num_of_retries' => 0]], []);
+            self::fail('Expected an invalid argument exception for the reconnect strategy.');
+        } catch (\Throwable $exception) {
+            self::assertInstanceOf(\InvalidArgumentException::class, $exception);
+            self::assertFalse($created);
+        }
+    }
+
+    /**
+     * Verify invalid cluster options surface as configuration errors rather
+     * than wrapped connection failures.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectToClusterRejectsInvalidOptionsWithoutWrapping(): void
+    {
+        $created = false;
+
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static function (array $args) use (&$created): \ValkeyGlideCluster {
+                $created = true;
+
+                return new ValkeyGlideClusterFake;
+            },
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        try {
+            $connector->connectToCluster([['host' => 'node-1']], ['lazy_connect' => 'sometimes'], []);
+            self::fail('Expected an invalid argument exception for lazy_connect.');
+        } catch (\Throwable $exception) {
+            self::assertInstanceOf(\InvalidArgumentException::class, $exception);
+            self::assertFalse($created);
+        }
+    }
 }

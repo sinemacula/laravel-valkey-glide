@@ -41,6 +41,8 @@ final class Config
      *
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>
+     *
+     * @throws \InvalidArgumentException
      */
     public static function connectArguments(#[\SensitiveParameter] array $config): array
     {
@@ -67,6 +69,8 @@ final class Config
      * @param  array<int|string, mixed>  $clusterConfig
      * @param  array<string, mixed>  $baseConfig
      * @return array<string, mixed>
+     *
+     * @throws \InvalidArgumentException
      */
     public static function clusterConnectArguments(array $clusterConfig, array $baseConfig = []): array
     {
@@ -87,6 +91,8 @@ final class Config
      *
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>
+     *
+     * @throws \InvalidArgumentException
      */
     public static function clusterClientArguments(#[\SensitiveParameter] array $config): array
     {
@@ -130,22 +136,26 @@ final class Config
      * Resolve the optional, value-dependent GLIDE connect arguments.
      *
      * Each entry is included only when its resolver returns a non-null value,
-     * preserving the original key order. A zero database_id is kept; only null
-     * is treated as absent.
+     * preserving the original key order. A zero database_id and a false
+     * lazy_connect are kept; only null is treated as absent.
      *
      * @param  array<string, mixed>  $config
      * @return array<string, mixed>
+     *
+     * @throws \InvalidArgumentException
      */
     private static function optionalArguments(#[\SensitiveParameter] array $config): array
     {
         $resolved = [
-            'database_id'     => self::databaseId($config['database'] ?? null),
-            'client_name'     => self::clientName($config['name'] ?? null),
-            'read_from'       => self::readFrom($config['read_from'] ?? null),
-            'client_az'       => self::clientAz($config['client_az'] ?? null),
-            'context'         => self::context($config['context'] ?? null),
-            'request_timeout' => self::requestTimeout($config['timeout'] ?? null),
-            'advanced_config' => self::advancedConfig($config['connection_timeout'] ?? null),
+            'database_id'        => self::databaseId($config['database'] ?? null),
+            'client_name'        => self::clientName($config['name'] ?? null),
+            'read_from'          => self::readFrom($config['read_from'] ?? null),
+            'client_az'          => self::clientAz($config['client_az'] ?? null),
+            'context'            => self::context($config['context'] ?? null),
+            'request_timeout'    => self::requestTimeout($config['timeout'] ?? null),
+            'advanced_config'    => self::advancedConfig($config['connection_timeout'] ?? null),
+            'reconnect_strategy' => ReconnectStrategyResolver::resolve($config['reconnect_strategy'] ?? null),
+            'lazy_connect'       => self::shouldConnectLazily($config['lazy_connect'] ?? null),
         ];
 
         return array_filter($resolved, static fn (mixed $value): bool => $value !== null);
@@ -288,6 +298,34 @@ final class Config
         }
 
         return ['connection_timeout' => $milliseconds];
+    }
+
+    /**
+     * Normalize a mixed lazy_connect flag into a boolean.
+     *
+     * Accepts booleans and the integer or string forms filter_var() reads as
+     * booleans, so environment values work; null means not configured.
+     *
+     * @param  mixed  $value
+     * @return bool|null
+     *
+     * @throws \InvalidArgumentException
+     */
+    private static function shouldConnectLazily(mixed $value): ?bool
+    {
+        if ($value === null || is_bool($value)) {
+            return $value;
+        }
+
+        $flag = is_int($value) || is_string($value)
+            ? filter_var($value, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE)
+            : null;
+
+        if ($flag === null) {
+            throw new \InvalidArgumentException(sprintf('The [lazy_connect] option must be a boolean, received [%s].', get_debug_type($value)));
+        }
+
+        return $flag;
     }
 
     /**

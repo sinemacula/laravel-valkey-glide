@@ -10,6 +10,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use SineMacula\Valkey\Connectors\ValkeyGlideConnector;
+use SineMacula\Valkey\Exceptions\ConnectionException;
 
 /**
  * Redis-backed external integration checks for connector and connection
@@ -30,6 +31,9 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
 
     /** @var int Secondary Redis database index for database routing checks. */
     private const int SECONDARY_DATABASE = 1;
+
+    /** @var array{host: string, port: int} Local endpoint that refuses connections. */
+    private const array REFUSING_ENDPOINT = ['host' => '127.0.0.1', 'port' => 1];
 
     /**
      * Ensure extension preconditions are met before each external test.
@@ -204,6 +208,100 @@ final class ValkeyGlideRedisIntegrationExternalTest extends TestCase
 
         $connection->command('del', [$key]);
         $connection->disconnect();
+    }
+
+    /**
+     * Verify the extension applies the mapped reconnect strategy to the first
+     * connection's attempts: two constant 400ms delays, where the five retries
+     * of an ignored num_of_retries would take 2000ms.
+     *
+     * @return void
+     */
+    #[Test]
+    public function connectorAppliesReconnectStrategyToInitialConnectionAttempts(): void
+    {
+        $config = self::REFUSING_ENDPOINT + [
+            'connection_timeout' => 10,
+            'reconnect_strategy' => [
+                'num_of_retries' => 2,
+                'factor'         => 400,
+                'exponent_base'  => 1,
+                'jitter_percent' => 0,
+            ],
+        ];
+
+        $startedAt = hrtime(true);
+
+        try {
+            (new ValkeyGlideConnector)->connect($config, []);
+        } catch (ConnectionException) {
+            $elapsedMilliseconds = (hrtime(true) - $startedAt) / 1000000;
+
+            self::assertGreaterThanOrEqual(800, $elapsedMilliseconds);
+            self::assertLessThan(2000, $elapsedMilliseconds);
+
+            return;
+        }
+
+        self::fail('Expected the refused connection to fail.');
+    }
+
+    /**
+     * Verify lazy_connect, in its environment string form, defers the
+     * standalone connection past connect().
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectorDefersConnectingWhenLazyConnectIsEnabled(): void
+    {
+        $connection = (new ValkeyGlideConnector)->connect(self::REFUSING_ENDPOINT + ['lazy_connect' => 'true'], []);
+
+        self::assertInstanceOf(\ValkeyGlide::class, $connection->client());
+
+        $connection->disconnect();
+    }
+
+    /**
+     * Verify the cluster constructor accepts the mapped reconnect strategy and
+     * defers connecting when lazy_connect is enabled.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectorDefersClusterConnectingWhenLazyConnectIsEnabled(): void
+    {
+        $options = [
+            'lazy_connect'       => true,
+            'reconnect_strategy' => ['num_of_retries' => 2, 'factor' => 400, 'exponent_base' => 1, 'jitter_percent' => 0],
+        ];
+
+        $connection = (new ValkeyGlideConnector)->connectToCluster([self::REFUSING_ENDPOINT], $options, []);
+
+        self::assertInstanceOf(\ValkeyGlideCluster::class, $connection->client());
+
+        $connection->disconnect();
+    }
+
+    /**
+     * Verify a disabled lazy_connect reaches the cluster constructor as false,
+     * so the refused seed fails construction.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectorConnectsClusterEagerlyWhenLazyConnectIsDisabled(): void
+    {
+        $this->expectException(ConnectionException::class);
+        $this->expectExceptionMessage('Failed to create initial connections');
+
+        (new ValkeyGlideConnector)->connectToCluster([self::REFUSING_ENDPOINT], ['lazy_connect' => 'false'], []);
     }
 
     /**
