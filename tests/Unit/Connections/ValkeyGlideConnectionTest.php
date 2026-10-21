@@ -2124,6 +2124,451 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Provide GLIDE's SETNX replies and the integer phpredis gives for each.
+     *
+     * @return iterable<string, array{mixed, int}>
+     */
+    public static function setnxReplies(): iterable
+    {
+        yield 'set' => [true, 1];
+        yield 'not set' => [false, 0];
+    }
+
+    /**
+     * Verify setnx answers with 1 or 0, as phpredis does through Laravel, for
+     * the key it prefixes.
+     *
+     * @param  mixed  $reply
+     * @param  int  $expected
+     * @return void
+     */
+    #[DataProvider('setnxReplies')]
+    #[Test]
+    public function setnxReturnsAnIntegerForThePrefixedKey(mixed $reply, int $expected): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('setnx', $reply);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame($expected, $connection->setnx('lock', 1));
+        self::assertSame([['app:lock', 1]], $client->callsFor('setnx'));
+    }
+
+    /**
+     * Provide the scores arguments zrevrange takes, and whether each asks for
+     * scores.
+     *
+     * @return iterable<string, array{mixed, bool}>
+     */
+    public static function zrevrangeScoresArguments(): iterable
+    {
+        yield 'omitted' => [null, false];
+        yield 'false' => [false, false];
+        yield 'true' => [true, true];
+        yield 'options with scores' => [['withscores' => true], true];
+        yield 'options without scores' => [['withscores' => false], false];
+        yield 'empty options' => [[], false];
+    }
+
+    /**
+     * Verify zrevrange reads the range with ZRANGE ... REV for the prefixed
+     * key, asking for scores as the caller did.
+     *
+     * @param  mixed  $scores
+     * @param  bool  $withScores
+     * @return void
+     */
+    #[DataProvider('zrevrangeScoresArguments')]
+    #[Test]
+    public function zrevrangeReadsTheRangeInReverseThroughZrange(mixed $scores, bool $withScores): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('zrange', ['job-c', 'job-b']);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame(['job-c', 'job-b'], $connection->zrevrange('tag', 0, 1, $scores));
+        self::assertSame([['app:tag', 0, 1, ['rev' => true, 'withscores' => $withScores]]], $client->callsFor('zrange'));
+    }
+
+    /**
+     * Verify scan returns the next cursor and the page's keys, sending the
+     * match pattern unprefixed and the count as given.
+     *
+     * @return void
+     */
+    #[Test]
+    public function scanReturnsTheNextCursorAndKeysOfOnePage(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [['17', ['app:job:1', 'app:job:2']]]);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame(['17', ['app:job:1', 'app:job:2']], $connection->scan('0', ['match' => 'app:job:*', 'count' => 100]));
+        self::assertSame([['0', 'app:job:*', 100, null]], $client->callsFor('scan'));
+    }
+
+    /**
+     * Provide the cursors a caller may start a scan from.
+     *
+     * @return iterable<string, array{mixed}>
+     */
+    public static function scanStartCursors(): iterable
+    {
+        yield 'string zero' => ['0'];
+        yield 'integer zero' => [0];
+        yield 'null' => [null];
+    }
+
+    /**
+     * Verify scan starts from cursor '0', matching every key ten at a time when
+     * no options are given, as phpredis does.
+     *
+     * @param  mixed  $cursor
+     * @return void
+     */
+    #[DataProvider('scanStartCursors')]
+    #[Test]
+    public function scanStartsFromCursorZeroWithPhpRedisDefaults(mixed $cursor): void
+    {
+        $client = new ValkeyGlideFake;
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(['0', []], $connection->scan($cursor));
+        self::assertSame([['0', '*', 10, null]], $client->callsFor('scan'));
+    }
+
+    /**
+     * Verify scan resumes from an integer cursor sent as its string.
+     *
+     * @return void
+     */
+    #[Test]
+    public function scanResumesFromAnIntegerCursor(): void
+    {
+        $client = new ValkeyGlideFake;
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->scan(17, ['match' => 'job:*']);
+
+        self::assertSame([['17', 'job:*', 10, null]], $client->callsFor('scan'));
+    }
+
+    /**
+     * Verify a scan GLIDE answers with false throws, as GLIDE answers a failed
+     * scan with false and writes '0' back, which would otherwise read as the
+     * empty last page of a completed scan.
+     *
+     * @return void
+     */
+    #[Test]
+    public function scanThrowsWhenGlideAnswersFalse(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [['0', false]]);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage('Expected array response from scan on [job:*], received [bool].');
+
+        $connection->scan('5', ['match' => 'job:*']);
+    }
+
+    /**
+     * Verify an empty page GLIDE answers with an empty array is returned as an
+     * empty page with the next cursor.
+     *
+     * @return void
+     */
+    #[Test]
+    public function scanReturnsAnEmptyPageGlideAnswersWithAnEmptyArray(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [['12', []]]);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(['12', []], $connection->scan('0'));
+    }
+
+    /**
+     * Verify a scan loop written for Laravel's connections, from '0' until the
+     * cursor is '0' again, reads every page once and ends.
+     *
+     * @return void
+     */
+    #[Test]
+    public function scanLoopFromCursorZeroReadsEveryPageAndEnds(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [['12', ['job:1']], ['30', []], ['0', ['job:2', 'job:3']]]);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(['job:1', 'job:2', 'job:3'], $this->scanAll($connection, 'job:*'));
+        self::assertSame(['0', '12', '30'], array_column($client->callsFor('scan'), 0));
+    }
+
+    /**
+     * Verify scan dispatches a command event carrying the cursor GLIDE wrote
+     * back.
+     *
+     * @return void
+     */
+    #[Test]
+    public function scanDispatchesACommandEventWithTheNextCursor(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [['42', ['job:1']]]);
+
+        $connection = new ValkeyGlideConnection($client);
+        $dispatcher = new Dispatcher;
+        $events     = [];
+
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$events): void {
+            $events[] = $event;
+        });
+
+        $connection->setEventDispatcher($dispatcher);
+        $connection->scan('0', ['match' => 'job:*']);
+
+        self::assertCount(1, $events);
+        self::assertSame('scan', $events[0]->command);
+        self::assertSame(['42', 'job:*', 10], $events[0]->parameters);
+    }
+
+    /**
+     * Verify a cluster scan starts from a new ClusterScanCursor, resumes from a
+     * cursor built from the id it returned, and ends on '0'.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterScanResumesFromTheCursorIdsItReturns(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [['id-1', ['job:1']], ['id-2', []], ['0', ['job:2']]]);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(['job:1', 'job:2'], $this->scanAll($connection, 'job:*'));
+        self::assertSame([
+            ['0', 'job:*', 10, null],
+            ['id-1', 'job:*', 10, null],
+            ['id-2', 'job:*', 10, null],
+        ], $client->callsFor('scan'));
+    }
+
+    /**
+     * Verify a cluster scan sends the match pattern unprefixed and the count as
+     * given.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterScanSendsTheMatchPatternAndCount(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [['id-1', ['app:job:1']]]);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame(['id-1', ['app:job:1']], $connection->scan(0, ['match' => 'app:job:*', 'count' => 1000]));
+        self::assertSame([['0', 'app:job:*', 1000, null]], $client->callsFor('scan'));
+    }
+
+    /**
+     * Verify each page of a cluster scan dispatches a command executed event
+     * carrying the cursor id it scans from, which listeners can turn into a
+     * string.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterScanDispatchesACommandEventWithTheCursorIdOfEachPage(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [['id-1', ['job:1']], ['0', ['job:2']]]);
+
+        $connection = new ValkeyGlideConnection($client);
+        $dispatcher = new Dispatcher;
+        $events     = [];
+
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$events): void {
+            $events[] = $event;
+        });
+
+        $connection->setEventDispatcher($dispatcher);
+
+        self::assertSame(['job:1', 'job:2'], $this->scanAll($connection, 'job:*'));
+        self::assertSame(['scan', 'scan'], array_column($events, 'command'));
+        self::assertSame([['0', 'job:*', 10], ['id-1', 'job:*', 10]], array_column($events, 'parameters'));
+        self::assertSame(['0 job:* 10', 'id-1 job:* 10'], array_map(static fn (CommandExecuted $event): string => implode(' ', $event->parameters), $events));
+    }
+
+    /**
+     * Verify a cluster scan GLIDE fails dispatches a command failed event
+     * carrying the cursor id it scanned from.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterScanDispatchesACommandFailedEventWithTheCursorId(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willThrow('scan', new \RuntimeException('permanent failure'));
+
+        $connection = new ValkeyGlideConnection($client);
+        $dispatcher = new Dispatcher;
+        $events     = [];
+
+        $dispatcher->listen(CommandFailed::class, static function (CommandFailed $event) use (&$events): void {
+            $events[] = $event;
+        });
+
+        $connection->setEventDispatcher($dispatcher);
+
+        try {
+            $connection->scan('0', ['match' => 'job:*']);
+            self::fail('Expected the failed cluster scan to throw.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('permanent failure', $exception->getMessage());
+            self::assertCount(1, $events);
+            self::assertSame('scan', $events[0]->command);
+            self::assertSame(['0', 'job:*', 10], $events[0]->parameters);
+        }
+    }
+
+    /**
+     * Verify a cluster scan GLIDE answers without a list of keys throws, and
+     * that the cursor it leaves is not recorded as one to resume from.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterScanThrowsWhenGlideAnswersWithoutKeys(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [['7', false]]);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->scan('0', ['match' => 'job:*']);
+            self::fail('A failed cluster scan should throw.');
+        } catch (\UnexpectedValueException $exception) {
+            self::assertSame('Expected array response from scan on [job:*], received [bool].', $exception->getMessage());
+        }
+
+        $this->expectException(\InvalidArgumentException::class);
+
+        $connection->scan('7');
+    }
+
+    /**
+     * Verify a cluster scan refuses a cursor id the connection did not return,
+     * before GLIDE is called, as GLIDE aborts the process on one.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterScanRefusesACursorItDidNotReturn(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->scan('17');
+            self::fail('Expected an unknown cluster scan cursor to be refused.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertSame('Cannot resume a cluster scan from cursor [17]: only a cursor this connection returned can be resumed, once.', $exception->getMessage());
+            self::assertSame([], $client->callsFor('scan'));
+        }
+    }
+
+    /**
+     * Verify a cluster scan refuses a cursor id it has already resumed from, as
+     * GLIDE aborts the process on one once its scan has ended.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterScanRefusesACursorItHasAlreadyResumed(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [['id-1', []], ['0', []]]);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->scan('0');
+        $connection->scan('id-1');
+
+        $this->expectException(\InvalidArgumentException::class);
+
+        $connection->scan('id-1');
+    }
+
+    /**
+     * Verify a scan given GLIDE's own ClusterScanCursor, pattern and count is
+     * passed to GLIDE unchanged, so the cursor's next id is written as before.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function scanPassesAClusterScanCursorToGlideUnchanged(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [['id-1', ['user:1']], ['0', ['user:2']]]);
+
+        $connection = new ValkeyGlideConnection($client);
+        $cursor     = new \ClusterScanCursor;
+
+        self::assertSame(['user:1'], $connection->scan($cursor, 'user:*', 100));
+        self::assertSame('id-1', $cursor->getNextCursor());
+
+        $cursor = new \ClusterScanCursor($cursor->getNextCursor());
+
+        self::assertSame(['user:2'], $connection->scan($cursor));
+        self::assertSame([['0', 'user:*', 100, null], ['id-1', null, 0, null]], $client->callsFor('scan'));
+    }
+
+    /**
+     * Verify a scan given GLIDE's own pattern argument rather than an options
+     * array is passed to GLIDE unchanged, which refuses a string cursor on a
+     * cluster as it did before.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function scanPassesGlidePositionalArgumentsToGlideUnchanged(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $this->expectException(\TypeError::class);
+        $this->expectExceptionMessage('must be of type ClusterScanCursor, string given');
+
+        $connection->scan('17', 'user:*', 100);
+    }
+
+    /**
      * Invoke private reconnectClient for reconnect path coverage.
      *
      * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
@@ -2159,6 +2604,27 @@ final class ValkeyGlideConnectionTest extends TestCase
         );
 
         return $resolver($method, $values);
+    }
+
+    /**
+     * Scan every key matching the pattern the way Laravel and Horizon do for
+     * connections other than phpredis: from cursor '0' until it is '0' again.
+     *
+     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
+     * @param  string  $pattern
+     * @return array<int, string>
+     */
+    private function scanAll(ValkeyGlideConnection $connection, string $pattern): array
+    {
+        $cursor = '0';
+        $keys   = [];
+
+        do {
+            [$cursor, $page] = $connection->scan($cursor, ['match' => $pattern]);
+            $keys            = [...$keys, ...$page];
+        } while ($cursor !== '0');
+
+        return $keys;
     }
 
     /**
