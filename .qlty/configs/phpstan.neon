@@ -12,10 +12,12 @@ parameters:
         - tests
 
     bootstrapFiles:
+        - %currentWorkingDirectory%/stubs/ClusterScanCursor.php
         - %currentWorkingDirectory%/stubs/ValkeyGlide.php
         - %currentWorkingDirectory%/stubs/ValkeyGlideCluster.php
 
     stubFiles:
+        - %currentWorkingDirectory%/stubs/ClusterScanCursor.php
         - %currentWorkingDirectory%/stubs/ValkeyGlide.php
         - %currentWorkingDirectory%/stubs/ValkeyGlideCluster.php
 

@@ -48,6 +48,14 @@ final class KeyPrefixerTest extends TestCase
         yield 'eval with missing key count is untouched' => ['app:', 'eval', ['return 1'], ['return 1']];
         yield 'eval with non-numeric key count untouched' => ['app:', 'eval', ['return 1', 'nope', 'k1'], ['return 1', 'nope', 'k1']];
         yield 'evalsha prefixes declared keys' => ['app:', 'evalsha', ['sha1', 1, 'queue'], ['sha1', 1, 'app:queue']];
+        yield 'tag pruning zremrangebyscore prefixes its key' => ['app:', 'zremrangebyscore', ['t', '0', '9'], ['app:t', '0', '9']];
+        yield 'zremrangebyrank used by tags prefixes its key' => ['app:', 'zremrangebyrank', ['t', 0, -1], ['app:t', 0, -1]];
+        yield 'zrevrangebyscore single key is prefixed' => ['app:', 'zrevrangebyscore', ['t', '+inf', '-inf'], ['app:t', '+inf', '-inf']];
+        yield 'zrevrank single key is prefixed' => ['app:', 'zrevrank', ['t', 'member'], ['app:t', 'member']];
+        yield 'zscan prefixes only its key' => ['app:', 'zscan', ['t', '0', '*', 10], ['app:t', '0', '*', 10]];
+        yield 'sscan prefixes only its key' => ['app:', 'sscan', ['t', '0', '*', 10], ['app:t', '0', '*', 10]];
+        yield 'hscan prefixes only its key' => ['app:', 'hscan', ['t', '0', '*', 10], ['app:t', '0', '*', 10]];
+        yield 'scan leaves its cursor and pattern untouched' => ['app:', 'scan', ['0', 'p:*', 10], ['0', 'p:*', 10]];
     }
 
     /**
@@ -65,6 +73,37 @@ final class KeyPrefixerTest extends TestCase
     public function applyPrefixesParametersForEachCommandFamily(string $prefix, string $method, array $parameters, array $expected): void
     {
         self::assertSame($expected, (new KeyPrefixer($prefix))->apply($method, $parameters));
+    }
+
+    /**
+     * Verify a member scan's cursor stays a reference once its key is prefixed,
+     * so the cursor GLIDE writes back reaches the caller.
+     *
+     * @return void
+     */
+    #[Test]
+    public function applyKeepsTheScanCursorAReference(): void
+    {
+        /** @var string $cursor */
+        $cursor = '0';
+
+        $out    = (new KeyPrefixer('app:'))->apply('zscan', ['t', &$cursor, '*', 10]);
+        $out[1] = '42';
+
+        self::assertSame('42', $cursor);
+        self::assertSame('app:t', $out[0]);
+    }
+
+    /**
+     * Verify the configured prefix is returned as given, empty included.
+     *
+     * @return void
+     */
+    #[Test]
+    public function prefixReturnsTheConfiguredPrefix(): void
+    {
+        self::assertSame('app:', (new KeyPrefixer('app:'))->prefix());
+        self::assertSame('', (new KeyPrefixer(''))->prefix());
     }
 
     /**

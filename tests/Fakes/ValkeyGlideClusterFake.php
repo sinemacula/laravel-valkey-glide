@@ -14,6 +14,9 @@ namespace Tests\Fakes;
  */
 final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
 {
+    /** @var int The finished-scan answers a scan method gives past its scripted pages before it fails, so a scan loop that never ends fails fast. */
+    private const int MAX_UNSCRIPTED_SCAN_PAGES = 100;
+
     /** @var array<string, list<array<int|string, mixed>>> Recorded method calls by name. */
     private array $calls = [];
 
@@ -25,6 +28,12 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
 
     /** @var array<string, array<int, mixed>> Subscription callback payloads by method. */
     private array $subscriptionPayloads = [];
+
+    /** @var array<string, list<array{0: string, 1: mixed}>> Scripted scan pages by lowercase method: the cursor written back, then the reply. */
+    private array $scanPages = [];
+
+    /** @var array<string, int> The finished-scan answers given past the scripted pages, by lowercase method. */
+    private array $unscriptedScanPages = [];
 
     /**
      * Record dynamic command invocations and apply configured behavior.
@@ -86,6 +95,84 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
     public function callsFor(string $method): array
     {
         return $this->calls[strtolower($method)] ?? [];
+    }
+
+    /**
+     * Script the pages a scan method answers with, in turn.
+     *
+     * Each page is the cursor written back, then the reply. Once the pages run
+     * out, the scan answers as GLIDE does for a missing key or a finished scan:
+     * cursor '0' and an empty page, up to a bound past which it throws.
+     *
+     * @param  string  $method
+     * @param  list<array{0: string, 1: mixed}>  $pages
+     * @return void
+     */
+    public function willScan(string $method, array $pages): void
+    {
+        $this->scanPages[strtolower($method)] = $pages;
+    }
+
+    /**
+     * Record a sorted-set scan and answer with the next scripted page.
+     *
+     * The cursor is recorded as received and the page's cursor is written back
+     * through the reference. An explicit null pattern throws, as with GLIDE.
+     *
+     * @param  string  $key
+     * @param  string|null  $iterator
+     * @param  string|null  $pattern
+     * @param  int  $count
+     *
+     * @param-out  string  $iterator
+     *
+     * @return array<array-key, mixed>|bool|self
+     *
+     * @throws \TypeError
+     */
+    #[\Override]
+    public function zscan(string $key, ?string &$iterator, ?string $pattern = null, int $count = 0): array|bool|self
+    {
+        if (func_num_args() >= 3 && $pattern === null) {
+            throw new \TypeError('ValkeyGlideCluster::zscan(): Argument #3 ($pattern) must be of type string, null given');
+        }
+
+        $this->recordCall('zscan', [$key, $iterator, $pattern, $count]);
+
+        [$iterator, $reply] = $this->nextScanPage('zscan');
+
+        return is_array($reply) || $reply instanceof self ? $reply : false;
+    }
+
+    /**
+     * Record a cluster keyspace scan and answer with the next scripted page.
+     *
+     * The id the cursor was built with is recorded, and the page's cursor is
+     * written as the cursor's next id, as GLIDE does. An explicit null pattern
+     * throws, as with GLIDE.
+     *
+     * @param  \ClusterScanCursor  $iterator
+     * @param  string|null  $pattern
+     * @param  int  $count
+     * @param  string|null  $type
+     * @return array<int, string>|bool
+     *
+     * @throws \TypeError
+     */
+    #[\Override]
+    public function scan(\ClusterScanCursor $iterator, ?string $pattern = null, int $count = 0, ?string $type = null): array|bool
+    {
+        if (func_num_args() >= 2 && $pattern === null) {
+            throw new \TypeError('ValkeyGlideCluster::scan(): Argument #2 ($pattern) must be of type string, null given');
+        }
+
+        $this->recordCall('scan', [$iterator->getCursor(), $pattern, $count, $type]);
+
+        [$next, $reply] = $this->nextScanPage('scan');
+
+        (new \ReflectionProperty(\ClusterScanCursor::class, 'nextCursor'))->setValue($iterator, $next);
+
+        return is_array($reply) ? $this->stringList($reply) : (bool) $reply;
     }
 
     /**
@@ -260,5 +347,51 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
         }
 
         return $default;
+    }
+
+    /**
+     * Take the next scripted page of a scan method, or throw its configured
+     * exception.
+     *
+     * @param  string  $method
+     * @return array{0: string, 1: mixed}
+     *
+     * @throws \LogicException
+     */
+    private function nextScanPage(string $method): array
+    {
+        if (array_key_exists($method, $this->exceptions)) {
+            throw $this->exceptions[$method];
+        }
+
+        $pages = $this->scanPages[$method] ?? [];
+        $page  = array_shift($pages);
+
+        $this->scanPages[$method] = $pages;
+
+        if ($page !== null) {
+            return $page;
+        }
+
+        $unscripted = ($this->unscriptedScanPages[$method] ?? 0) + 1;
+
+        if ($unscripted > self::MAX_UNSCRIPTED_SCAN_PAGES) {
+            throw new \LogicException(sprintf('%s was called %d times past its scripted pages; the scan loop does not end.', $method, $unscripted - 1));
+        }
+
+        $this->unscriptedScanPages[$method] = $unscripted;
+
+        return ['0', []];
+    }
+
+    /**
+     * Narrow a scripted keyspace scan reply to the list of keys GLIDE returns.
+     *
+     * @param  array<array-key, mixed>  $reply
+     * @return array<int, string>
+     */
+    private function stringList(array $reply): array
+    {
+        return array_values(array_map(static fn (mixed $key): string => is_scalar($key) ? (string) $key : '', $reply));
     }
 }

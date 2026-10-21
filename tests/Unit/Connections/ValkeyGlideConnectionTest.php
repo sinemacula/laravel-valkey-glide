@@ -53,6 +53,46 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify getPrefix() returns the configured key prefix.
+     *
+     * @return void
+     */
+    #[Test]
+    public function getPrefixReturnsTheConfiguredPrefix(): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, ['prefix' => 'app:']);
+
+        self::assertSame('app:', $connection->getPrefix());
+    }
+
+    /**
+     * Provide connection configs with no prefix, or one that is not a string.
+     *
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function unusablePrefixConfigs(): iterable
+    {
+        yield 'no prefix' => [[]];
+        yield 'null prefix' => [['prefix' => null]];
+        yield 'array prefix' => [['prefix' => ['app:']]];
+    }
+
+    /**
+     * Verify getPrefix() is empty when no usable prefix is configured.
+     *
+     * @param  array<string, mixed>  $config
+     * @return void
+     */
+    #[DataProvider('unusablePrefixConfigs')]
+    #[Test]
+    public function getPrefixIsEmptyWithoutAUsablePrefix(array $config): void
+    {
+        $connection = new ValkeyGlideConnection(new ValkeyGlideFake, null, $config);
+
+        self::assertSame('', $connection->getPrefix());
+    }
+
+    /**
      * Verify get returns null when the underlying client returns false (cache
      * miss).
      *
