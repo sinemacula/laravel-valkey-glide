@@ -322,6 +322,32 @@ final class ValkeyGlideTagSetTest extends TestCase
     }
 
     /**
+     * Verify a removal inside a pipeline on the connection joins the batch, so
+     * its failure comes back in the batch's results rather than as an
+     * exception.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function flushStaleEntriesInsideAPipelineReportsAFailureInTheBatchResults(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('exec', [1, false]);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'conn:']);
+        $tagSet     = $this->tagSetOver($connection, ['a', 'b']);
+
+        $results = $connection->pipeline(static function () use ($tagSet): void {
+            $tagSet->flushStaleEntries();
+        });
+
+        self::assertSame([1, false], $results);
+        self::assertSame(['pipeline', 'zremrangebyscore', 'zremrangebyscore', 'exec'], $client->callOrder());
+    }
+
+    /**
      * Verify any other connection runs Laravel's pipelined removal.
      *
      * @return void

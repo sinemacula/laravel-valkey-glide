@@ -192,6 +192,78 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
+     * Verify an options entry beside the cluster's nodes, as Horizon writes for
+     * its key prefix, overrides the shared and cluster-wide options and the
+     * first node's own, and is not taken for a node.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectToClusterAppliesTheClusterOwnOptions(): void
+    {
+        $clusterFake  = new ValkeyGlideClusterFake;
+        $capturedArgs = null;
+
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static function (array $args) use ($clusterFake, &$capturedArgs): \ValkeyGlideCluster {
+                $capturedArgs = $args;
+
+                return $clusterFake;
+            },
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connection = $connector->connectToCluster(
+            [
+                'options' => ['prefix' => '{horizon:}', 'name' => 'horizon'],
+                ['host' => 'node-1', 'port' => 6380, 'options' => ['prefix' => 'seed:', 'name' => 'seed', 'database' => 3]],
+            ],
+            ['prefix' => 'cluster:', 'name' => 'cluster'],
+            ['prefix' => 'shared:', 'database' => 2],
+        );
+
+        $connection->command('get', ['k']);
+
+        self::assertSame([['{horizon:}k']], $clusterFake->callsFor('get'));
+        self::assertNotNull($capturedArgs);
+        self::assertSame([['host' => 'node-1', 'port' => 6380]], $capturedArgs['addresses']);
+        self::assertSame('horizon', $capturedArgs['client_name']);
+        self::assertSame(3, $capturedArgs['database_id']);
+    }
+
+    /**
+     * Verify a cluster options entry that is not an array is ignored.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectToClusterIgnoresANonArrayOwnOptionsEntry(): void
+    {
+        $clusterFake = new ValkeyGlideClusterFake;
+
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static fn (array $args): \ValkeyGlideCluster => $clusterFake,
+            extensionLoader     : static fn (string $extension): bool => true,
+            classResolver       : static fn (string $class): bool => true,
+        );
+
+        $connection = $connector->connectToCluster(
+            ['options' => 'invalid', ['host' => 'node-1', 'port' => 6380]],
+            ['prefix' => 'cluster:'],
+            [],
+        );
+
+        $connection->command('get', ['k']);
+
+        self::assertSame([['cluster:k']], $clusterFake->callsFor('get'));
+    }
+
+    /**
      * Verify connectToCluster passes a configured periodic_checks setting to
      * the cluster client factory.
      *

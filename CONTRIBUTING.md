@@ -6,6 +6,9 @@ Contributions are welcome via GitHub pull requests. This guide covers the expect
 
 - PHP 8.3+
 - Composer 2
+- `ext-pcntl` and `ext-posix`, which the `laravel/horizon` development dependency requires; where they are missing,
+  install with `composer install --ignore-platform-req=ext-pcntl --ignore-platform-req=ext-posix`; the tests do not
+  call them
 
 ## Getting Started
 

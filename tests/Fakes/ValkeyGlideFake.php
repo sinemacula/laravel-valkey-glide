@@ -4,6 +4,8 @@ declare(strict_types = 1);
 
 namespace Tests\Fakes;
 
+use Tests\Fakes\Concerns\EmulatesBatchMode;
+
 /**
  * Deterministic fake implementation for connector and connection tests.
  *
@@ -14,6 +16,8 @@ namespace Tests\Fakes;
  */
 final class ValkeyGlideFake extends \ValkeyGlide
 {
+    use EmulatesBatchMode;
+
     /** @var int The finished-scan answers a scan method gives past its scripted pages before it fails, so a scan loop that never ends fails fast. */
     private const int MAX_UNSCRIPTED_SCAN_PAGES = 100;
 
@@ -45,9 +49,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
     #[\Override]
     public function __call(string $name, array $arguments): mixed
     {
-        $this->recordCall($name, $arguments);
-
-        return $this->resolveBehavior($name, null);
+        return $this->handleCommand($name, $arguments, null);
     }
 
     /**
@@ -265,7 +267,11 @@ final class ValkeyGlideFake extends \ValkeyGlide
     {
         $this->recordCall('close', []);
 
-        return (bool) $this->resolveBehavior('close', true);
+        $result = (bool) $this->resolveBehavior('close', true);
+
+        $this->markClosed();
+
+        return $result;
     }
 
     /**
@@ -278,9 +284,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
     #[\Override]
     public function rawcommand(string $command, mixed ...$args): mixed
     {
-        $this->recordCall('rawcommand', [$command, ...$args]);
-
-        return $this->resolveBehavior('rawcommand', null);
+        return $this->handleCommand('rawcommand', [$command, ...$args], null);
     }
 
     /**
@@ -292,9 +296,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
     #[\Override]
     public function get(string $key): mixed
     {
-        $this->recordCall('get', [$key]);
-
-        return $this->resolveBehavior('get', null);
+        return $this->handleCommand('get', [$key], null);
     }
 
     /**
@@ -307,9 +309,7 @@ final class ValkeyGlideFake extends \ValkeyGlide
      */
     public function mget(array $keys): array|false|self
     {
-        $this->recordCall('mget', [$keys]);
-
-        $result = $this->resolveBehavior('mget', false);
+        $result = $this->handleCommand('mget', [$keys], false);
 
         if ($result === false || $result instanceof self) {
             return $result;
@@ -340,13 +340,24 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  mixed  $value
      * @param  mixed  $options
      * @return bool|self|string
+     *
+     * @throws \ArgumentCountError
+     * @throws \TypeError
      */
     #[\Override]
     public function set(string $key, mixed $value, mixed $options = null): bool|self|string
     {
-        $this->recordCall('set', [$key, $value, $options]);
+        $this->assertNativeSetArguments(func_get_args());
 
-        $result = $this->resolveBehavior('set', true);
+        if (is_string($options) || (is_array($options) && $this->refusesSetExpiry($options))) {
+            // GLIDE 1.1.2 refuses a string option, and an expiry it cannot read
+            // as a positive number, and writes or buffers nothing.
+            $this->recordCall('set', [$key, $value, $options]);
+
+            return false;
+        }
+
+        $result = $this->handleCommand('set', [$key, $value, $options], true);
 
         if (is_string($result) || is_bool($result) || $result instanceof self) {
             return $result;
@@ -365,9 +376,126 @@ final class ValkeyGlideFake extends \ValkeyGlide
     #[\Override]
     public function client(string $opt, mixed ...$args): mixed
     {
-        $this->recordCall('client', [$opt, ...$args]);
+        return $this->handleCommand('client', [$opt, ...$args], true);
+    }
 
-        return $this->resolveBehavior('client', true);
+    /**
+     * Report the PHPRedis aliases as registered.
+     *
+     * Like the other client-local methods, this is static in ext-valkey_glide
+     * 1.1.2, so it runs at once whatever batch mode the client is in.
+     *
+     * @return bool
+     *
+     * @imperative
+     */
+    #[\Override]
+    public static function registerPHPRedisAliases(): bool
+    {
+        return true;
+    }
+
+    /**
+     * Accept an OpenTelemetry sampling percentage, as a static method of
+     * ext-valkey_glide 1.1.2 that runs at once.
+     *
+     * @param  int  $percentage
+     * @return void
+     */
+    #[\Override]
+    public static function setOtelSamplePercentage(int $percentage): void
+    {
+        // Nothing is sampled by the fake.
+    }
+
+    /**
+     * Report a fixed OpenTelemetry sampling percentage, as a static method of
+     * ext-valkey_glide 1.1.2 that runs at once.
+     *
+     * @return int
+     */
+    #[\Override]
+    public static function getOtelSamplePercentage(): int
+    {
+        return 25;
+    }
+
+    /**
+     * Enter pipeline mode, as ext-valkey_glide 1.1.2 does.
+     *
+     * @return bool|self
+     */
+    #[\Override]
+    public function pipeline(): bool|self
+    {
+        return $this->enterBatch('pipeline', false);
+    }
+
+    /**
+     * Enter batch mode, as ext-valkey_glide 1.1.2 does.
+     *
+     * @param  int  $value
+     * @return bool|self
+     */
+    #[\Override]
+    public function multi(int $value = self::MULTI): bool|self
+    {
+        return $this->enterBatch('multi', $value === self::MULTI);
+    }
+
+    /**
+     * Send the buffered commands, as ext-valkey_glide 1.1.2 does.
+     *
+     * @return array<int, mixed>|false
+     */
+    #[\Override]
+    public function exec(): array|false
+    {
+        return $this->executeBatch();
+    }
+
+    /**
+     * Drop the buffered commands, as ext-valkey_glide 1.1.2 does.
+     *
+     * @return bool
+     *
+     * @throws \Throwable
+     */
+    #[\Override]
+    public function discard(): bool
+    {
+        return $this->discardBatch();
+    }
+
+    /**
+     * Record a watch invocation and apply batch mode or configured behavior.
+     *
+     * The keys are untyped, as GLIDE checks them itself and returns false for
+     * an integer first key rather than coerce it.
+     *
+     * @param  mixed  $key
+     * @param  mixed  ...$otherKeys
+     * @return bool|self
+     */
+    #[\Override]
+    public function watch(mixed $key, mixed ...$otherKeys): bool|self
+    {
+        $result = $this->handleCommand('watch', [$key, ...$otherKeys], true);
+
+        return $result instanceof self ? $result : (bool) $result;
+    }
+
+    /**
+     * Record an unwatch invocation and apply batch mode or configured behavior.
+     *
+     * @return bool
+     */
+    #[\Override]
+    public function unwatch(): bool
+    {
+        $result = $this->handleCommand('unwatch', [], true);
+
+        return !$result instanceof self && (bool) $result;
     }
 
     /**
@@ -422,6 +550,8 @@ final class ValkeyGlideFake extends \ValkeyGlide
      * @param  string  $method
      * @param  array<int|string, mixed>  $arguments
      * @return void
+     *
+     * @throws \LogicException
      */
     private function recordCall(string $method, array $arguments): void
     {
@@ -429,6 +559,9 @@ final class ValkeyGlideFake extends \ValkeyGlide
 
         $this->calls[$normalizedMethod] ??= [];
         $this->calls[$normalizedMethod][] = $arguments;
+        $this->callOrder[]                = $normalizedMethod;
+
+        $this->assertWithinBatchBudget($normalizedMethod);
     }
 
     /**

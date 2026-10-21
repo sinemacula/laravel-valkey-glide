@@ -11,11 +11,14 @@ use Illuminate\Redis\Connections\Connection;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Support\LazyCollection;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Cache\ValkeyGlideStore;
 use SineMacula\Valkey\Cache\ValkeyGlideTagSet;
+use SineMacula\Valkey\Connections\ClusterRouter;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use SineMacula\Valkey\Exceptions\ConnectionException;
 use Tests\Fakes\LaravelConnectionFake;
 use Tests\Fakes\RedisFactoryFake;
 use Tests\Fakes\ValkeyGlideClusterFake;
@@ -91,35 +94,117 @@ final class ValkeyGlideStoreTest extends TestCase
     }
 
     /**
-     * Verify a standalone connection keeps Laravel's transaction.
+     * Verify a cluster putMany over keys in different hash slots writes each
+     * one directly, never opening a batch that the connection would refuse as a
+     * cross-slot transaction.
      *
      * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function putManyNeverOpensABatchOnACluster(): void
+    {
+        $router = new ClusterRouter;
+
+        self::assertNotSame($router->slot('cache:first'), $router->slot('cache:second'));
+
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('setex', true);
+
+        self::assertTrue($this->store($client)->putMany(['first' => 'a', 'second' => 'b'], 60));
+        self::assertSame(['setex', 'setex'], $client->callOrder());
+        self::assertFalse($client->isBatching());
+    }
+
+    /**
+     * Verify a standalone connection keeps Laravel's transaction, buffering
+     * each prefixed SETEX in one MULTI that a single EXEC sends.
+     *
+     * @return void
+     *
+     * @throws \Throwable
      */
     #[Test]
     public function putManyKeepsTheTransactionOnAStandaloneConnection(): void
     {
-        $client = new class extends \ValkeyGlide {
-            /** @var list<string> The commands received, in order. */
-            public array $commands = [];
+        $client = new ValkeyGlideFake;
+        $client->willReturn('setex', true);
 
-            /**
-             * Record each command and answer it.
-             *
-             * @param  string  $name
-             * @param  array<int|string, mixed>  $arguments
-             * @return mixed
-             */
-            #[\Override]
-            public function __call(string $name, array $arguments): mixed
-            {
-                $this->commands[] = $name;
+        self::assertTrue($this->store($client)->putMany(['first' => 'one', 'second' => 2], 60));
+        self::assertSame(['multi', 'setex', 'setex', 'exec'], $client->callOrder());
+        self::assertSame([['cache:first', 60, serialize('one')], ['cache:second', 60, 2]], $client->callsFor('setex'));
+        self::assertFalse($client->isBatching());
+    }
 
-                return true;
-            }
-        };
+    /**
+     * Verify a standalone putMany of nothing reports failure, as Laravel's
+     * does, without leaving the client stuck in batch mode.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function putManyOfNothingFailsOnAStandaloneConnectionWithoutWedgingTheClient(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('setex', true);
+
+        $store = $this->store($client);
+
+        self::assertFalse($store->putMany([], 60));
+        self::assertSame([], $client->callOrder());
+        self::assertFalse($client->isBatching());
+
+        self::assertTrue($store->put('after', 'value', 60));
+        self::assertSame(['setex'], $client->callOrder());
+    }
+
+    /**
+     * Verify a standalone putMany still reports success when one write fails
+     * inside the transaction, as Laravel's store ignores the results EXEC
+     * returns.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function putManyIgnoresAFailedWriteInsideAStandaloneTransaction(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('exec', [true, false]);
 
         self::assertTrue($this->store($client)->putMany(['first' => 'a', 'second' => 'b'], 60));
-        self::assertSame(['multi', 'setex', 'setex', 'exec'], $client->commands);
+        self::assertSame(['multi', 'setex', 'setex', 'exec'], $client->callOrder());
+    }
+
+    /**
+     * Verify a standalone transaction GLIDE fails as a whole is raised, rather
+     * than reported as written.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function putManyThrowsOnAStandaloneConnectionWhenTheTransactionFails(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('exec', false);
+
+        try {
+            $this->store($client)->putMany(['first' => 'a', 'second' => 'b'], 60);
+
+            self::fail('Expected the failed transaction to be raised.');
+        } catch (\Throwable $exception) {
+            self::assertInstanceOf(ConnectionException::class, $exception);
+            self::assertStringContainsString('may have been committed', $exception->getMessage());
+        }
+
+        self::assertSame(['multi', 'setex', 'setex', 'exec', 'discard'], $client->callOrder());
+        self::assertFalse($client->isBatching());
     }
 
     /**
@@ -267,6 +352,106 @@ final class ValkeyGlideStoreTest extends TestCase
             '0 conn:cache:tag:*:entries 1000 zset',
             'id-1 conn:cache:tag:*:entries 1000 zset',
         ], $scans);
+    }
+
+    /**
+     * Provide each topology with each kind of batch.
+     *
+     * @return iterable<string, array{bool, bool}>
+     */
+    public static function batchesOnEachTopology(): iterable
+    {
+        yield 'standalone pipeline' => [false, false];
+        yield 'standalone transaction' => [false, true];
+        yield 'cluster pipeline' => [true, false];
+        yield 'cluster transaction' => [true, true];
+    }
+
+    /**
+     * Verify flushStaleTags() inside a pipeline or transaction on the store's
+     * connection is refused before any SCAN reaches the client, on a cluster
+     * too, where GLIDE would run the SCAN at once, outside the batch.
+     *
+     * @param  bool  $cluster
+     * @param  bool  $atomic
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('batchesOnEachTopology')]
+    #[Test]
+    public function flushStaleTagsInsideABatchIsRefusedBeforeScanning(bool $cluster, bool $atomic): void
+    {
+        $client = $cluster ? new ValkeyGlideClusterFake : new ValkeyGlideFake;
+        $client->willScan('scan', [['0', ['cache:tag:a:entries']]]);
+
+        $store      = $this->store($client);
+        $connection = $store->connection();
+
+        self::assertInstanceOf(ValkeyGlideConnection::class, $connection);
+
+        $flush = static function () use ($store): void {
+            $store->flushStaleTags();
+        };
+
+        try {
+            $atomic ? $connection->transaction($flush) : $connection->pipeline($flush);
+
+            self::fail('Expected the SCAN inside the batch to be refused.');
+        } catch (\LogicException $exception) {
+            self::assertStringStartsWith('[SCAN] cannot be used inside a pipeline or transaction, as GLIDE would', $exception->getMessage());
+        }
+
+        self::assertSame([], $client->callsFor('scan'));
+        self::assertSame([], $client->callsFor('zremrangebyscore'));
+        self::assertFalse($connection->hasOpenBatch());
+        self::assertFalse($client->isBatching());
+    }
+
+    /**
+     * Verify a cluster prune refuses its next SCAN page once a batch has been
+     * opened on the connection between pages, rather than run it outside the
+     * batch.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function flushStaleTagsRefusesTheNextClusterPageOnceABatchIsOpened(): void
+    {
+        $tagKeys = array_map(static fn (int $index): string => 'cache:tag:t' . $index . ':entries', range(1, 1000));
+
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('scan', [['id-1', $tagKeys], ['0', ['cache:tag:last:entries']]]);
+
+        $store      = $this->store($client);
+        $connection = $store->connection();
+
+        self::assertInstanceOf(ValkeyGlideConnection::class, $connection);
+
+        $dispatcher = new Dispatcher;
+        $dispatcher->listen(CommandExecuted::class, static function () use ($connection): void {
+            if ($connection->hasOpenBatch()) {
+                return;
+            }
+
+            $connection->pipeline();
+        });
+
+        $connection->setEventDispatcher($dispatcher);
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('[SCAN] cannot be used inside a pipeline or transaction, as GLIDE would');
+
+        try {
+            $store->flushStaleTags();
+        } finally {
+            self::assertCount(1, $client->callsFor('scan'));
+            self::assertCount(1000, $client->callsFor('zremrangebyscore'));
+            self::assertTrue($connection->discard());
+            self::assertFalse($connection->hasOpenBatch());
+        }
     }
 
     /**

@@ -253,4 +253,58 @@ class ValkeyGlide
      * @return bool
      */
     public function psubscribe(array $patterns, callable $callback): bool {}
+
+    /**
+     * Enter pipeline mode: commands are buffered until exec().
+     *
+     * In breach of this declared type, 1.1.2 returns null when the client is
+     * already in batch mode; it returns false when the client is closed.
+     *
+     * @return bool|self
+     */
+    public function pipeline(): bool|self {}
+
+    /**
+     * Enter batch mode: MULTI (atomic) by default, or PIPELINE.
+     *
+     * In breach of this declared type, 1.1.2 returns null when the client is
+     * already in batch mode; it returns false when the client is closed.
+     *
+     * @param  int  $value
+     * @return bool|self
+     */
+    public function multi(int $value = self::MULTI): bool|self {}
+
+    /**
+     * Send the buffered commands and return their results in queue order.
+     *
+     * Returns false on any failure, and when no command is buffered, in which
+     * case the client stays in batch mode until discard().
+     *
+     * @return array<int, mixed>|false|self
+     */
+    public function exec(): array|false|self {}
+
+    /**
+     * Drop the buffered commands and leave batch mode (client-side only).
+     *
+     * @return bool|self
+     */
+    public function discard(): bool|self {}
+
+    /**
+     * Watch keys for a following transaction.
+     *
+     * @param  array<int, string>|string  $key
+     * @param  string  ...$other_keys
+     * @return bool|self
+     */
+    public function watch(array|string $key, string ...$other_keys): bool|self {}
+
+    /**
+     * Forget every watched key.
+     *
+     * @return bool|self
+     */
+    public function unwatch(): bool|self {}
 }

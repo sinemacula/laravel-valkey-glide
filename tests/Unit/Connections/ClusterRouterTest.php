@@ -164,6 +164,49 @@ final class ClusterRouterTest extends TestCase
     }
 
     /**
+     * Provide keys and the hash slots a Valkey cluster's CLUSTER KEYSLOT
+     * reports for them.
+     *
+     * @return iterable<string, array{string, int}>
+     */
+    public static function slotProvider(): iterable
+    {
+        yield 'redis specification check value' => ['123456789', 12739];
+        yield 'plain key' => ['a', 15495];
+        yield 'another plain key' => ['foo', 12182];
+        yield 'empty key' => ['', 0];
+        yield 'hash tag' => ['{user1000}.following', 3443];
+        yield 'same hash tag' => ['{user1000}.followers', 3443];
+        yield 'hash tag inside the key' => ['x{a}y', 15495];
+        yield 'hash tag after a closing brace' => ['}{a}', 15495];
+        yield 'hash tag inside a prefix' => ['ip:{abc}:k', 7638];
+        yield 'horizon cluster prefix' => ['{horizon:}job:1', 14165];
+        yield 'empty hash tag hashes the whole key' => ['foo{}{bar}', 8363];
+        yield 'bare empty hash tag' => ['{}', 15257];
+        yield 'empty hash tag at the start' => ['{}a', 10875];
+        yield 'hash tag ends at the first closing brace' => ['foo{{bar}}zap', 4015];
+        yield 'only the first hash tag counts' => ['foo{bar}{zap}', 5061];
+        yield 'unclosed hash tag hashes the whole key' => ['{a', 10276];
+        yield 'closing brace before the opening one' => ['a}b{', 6027];
+        yield 'binary key' => ["\xff\x00x", 12540];
+        yield 'multi-byte utf-8 key' => ['user:é', 1676];
+    }
+
+    /**
+     * Verify slot matches the cluster's own CRC16 key slot, hash tags included.
+     *
+     * @param  string  $key
+     * @param  int  $expected
+     * @return void
+     */
+    #[DataProvider('slotProvider')]
+    #[Test]
+    public function slotMatchesTheClusterKeySlot(string $key, int $expected): void
+    {
+        self::assertSame($expected, (new ClusterRouter)->slot($key));
+    }
+
+    /**
      * Build the slot-key route for a key.
      *
      * @param  string  $key
