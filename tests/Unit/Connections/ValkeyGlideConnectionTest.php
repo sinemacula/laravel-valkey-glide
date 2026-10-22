@@ -3008,7 +3008,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         self::assertSame([1, 1, 1], $results);
         self::assertContainsOnlyInstancesOf(ValkeyGlideBatch::class, $returned);
         self::assertSame(['rawcommand', 'pipeline', 'zadd', 'exec', 'rawcommand'], $client->callOrder());
-        self::assertSame([['app:queue:delayed', 10, 'job-2']], $client->callsFor('zadd'));
+        self::assertSame([['app:queue:delayed', '10', 'job-2']], $client->callsFor('zadd'));
         self::assertFalse($client->isBatching());
     }
 
