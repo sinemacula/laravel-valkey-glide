@@ -124,9 +124,9 @@ final class ValkeyGlideConnection extends Connection
     private const string UNGUARDED_WATCH_MESSAGE = 'A cluster transaction that watches keys cannot carry [%s], as its keys are unknown or absent,'
         . ' so GLIDE could send the transaction to a node where the WATCH does not guard it.';
 
-    /** @var string Message for a transaction joining a pipeline while keys are watched. */
-    private const string WATCHED_TRANSACTION_IN_PIPELINE_MESSAGE = 'A transaction cannot join a pipeline while keys are watched, as the pipeline flattens it'
-        . ' and the WATCH could not guard it; run the transaction outside the pipeline.';
+    /** @var string Message for a pipeline callback that returns with a multi() it opened still open. */
+    private const string UNCLOSED_TRANSACTION_MESSAGE = 'A multi() opened inside the pipeline was not closed with exec() before the callback returned,'
+        . ' so the transaction and the rest of the pipeline were discarded.';
 
     /** @var string Message for a bare pipeline command given arguments it would ignore. */
     private const string PIPELINE_ARGUMENTS_MESSAGE = 'pipeline() takes a callback only as a method of the connection or the batch, not through command().';
@@ -371,11 +371,14 @@ final class ValkeyGlideConnection extends Connection
      * This behaves like `pipeline()`, but the commands run atomically, so any
      * command GLIDE cannot buffer is refused, and on a cluster every key must
      * share one hash slot. Returns false when a transaction guarded by WATCH is
-     * aborted. Inside an active pipeline the transaction joins it and is no
-     * longer atomic, as GLIDE cannot nest a MULTI inside a pipeline; without a
-     * callback, its `exec()` then returns the batch, as phpredis does. While
-     * keys are watched it cannot join a pipeline, where the WATCH could not
-     * guard it.
+     * aborted. Inside an active pipeline, GLIDE cannot nest a MULTI, so what
+     * the pipeline buffered is sent first, then the transaction runs on its own
+     * when it closes, and its results, or an empty list when WATCH aborts it,
+     * take one place in the pipeline's results; without a callback, its
+     * `exec()` returns the pipeline, as phpredis does. A command GLIDE cannot
+     * buffer, such as EVAL, still runs in call order there, splitting the
+     * transaction where it runs, unless keys are watched. A failure inside it
+     * ends the transaction alone.
      *
      * @param  (callable(\SineMacula\Valkey\Connections\ValkeyGlideBatch): mixed)|null  $callback
      * @return ($callback is null ? \SineMacula\Valkey\Connections\ValkeyGlideBatch : false|list<mixed>|\SineMacula\Valkey\Connections\ValkeyGlideBatch)
@@ -392,8 +395,9 @@ final class ValkeyGlideConnection extends Connection
      *
      * This is the `exec()` of phpredis-style code that drives a batch from the
      * connection, as `RedisStore::putMany()` does after `multi()`. An `exec()`
-     * that closes a `multi()` opened inside a pipeline returns the batch, as
-     * phpredis does in pipeline mode. Returns false when no batch is active.
+     * that closes a `multi()` opened inside a pipeline runs that transaction
+     * and returns the pipeline, as phpredis does in pipeline mode. Returns
+     * false when no batch is active.
      *
      * @return false|list<mixed>|\SineMacula\Valkey\Connections\ValkeyGlideBatch
      *
@@ -864,11 +868,11 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Close the underlying GLIDE connection.
      *
-     * An active pipeline or transaction ends, as GLIDE drops what it buffered
-     * when it closes, and the keys the connection watched are forgotten, as the
-     * server drops the WATCH with the connection. The next command, batch or
-     * subscription reconnects through the connector, as phpredis reconnects a
-     * closed client.
+     * An active pipeline or transaction ends, with the pipeline a transaction
+     * is nested in, as GLIDE drops what it buffered when it closes, and the
+     * keys the connection watched are forgotten, as the server drops the WATCH
+     * with the connection. The next command, batch or subscription reconnects
+     * through the connector, as phpredis reconnects a closed client.
      *
      * @return void
      *
@@ -876,8 +880,8 @@ final class ValkeyGlideConnection extends Connection
      */
     public function disconnect(): void
     {
-        if ($this->batch !== null) {
-            $this->endBatch($this->batch);
+        for ($batch = $this->batch; $batch !== null; $batch = $batch->pipeline) {
+            $this->endBatch($batch);
         }
 
         $this->forgetWatchedKeys();
@@ -1136,20 +1140,124 @@ final class ValkeyGlideConnection extends Connection
         }
 
         if ($this->batch !== null) {
-            $batch = $this->batch;
-
-            $this->assertJoinKeepsTheWatch($batch, $atomic);
-            $this->runCallback($batch, $callback);
-
-            return $batch->proxy;
+            return $this->runInBatch($this->batch, $atomic, $callback);
         }
 
         $batch = $this->beginBatch($atomic);
 
         $this->runCallback($batch, $callback);
         $this->assertNotDiscardedByCallback($batch);
+        $this->assertNoTransactionLeftOpen($batch);
 
         return $this->executeBatch($batch);
+    }
+
+    /**
+     * Run a callback inside the active batch, which is then returned for its
+     * owner to execute, unless it is a transaction inside a pipeline, which
+     * runs on its own.
+     *
+     * @param  \SineMacula\Valkey\Connections\BatchState  $batch
+     * @param  bool  $atomic
+     * @param  callable(\SineMacula\Valkey\Connections\ValkeyGlideBatch): mixed  $callback
+     * @return \SineMacula\Valkey\Connections\ValkeyGlideBatch
+     *
+     * @throws \Throwable
+     */
+    private function runInBatch(BatchState $batch, bool $atomic, callable $callback): ValkeyGlideBatch
+    {
+        if ($atomic && !$batch->atomic) {
+            return $this->runNestedTransaction($batch, $callback);
+        }
+
+        $this->runCallback($batch, $callback);
+
+        return $batch->proxy;
+    }
+
+    /**
+     * Run a transaction callback inside a pipeline as its own transaction.
+     *
+     * @param  \SineMacula\Valkey\Connections\BatchState  $pipeline
+     * @param  callable(\SineMacula\Valkey\Connections\ValkeyGlideBatch): mixed  $callback
+     * @return \SineMacula\Valkey\Connections\ValkeyGlideBatch
+     *
+     * @throws \Throwable
+     */
+    private function runNestedTransaction(BatchState $pipeline, callable $callback): ValkeyGlideBatch
+    {
+        $transaction = $this->beginNestedTransaction($pipeline);
+
+        $this->runCallback($transaction, $callback);
+        $this->assertNotDiscardedByCallback($transaction);
+
+        return $this->executeNestedTransaction($transaction, $pipeline);
+    }
+
+    /**
+     * Start a transaction inside a pipeline.
+     *
+     * GLIDE holds one batch at a time, so what the pipeline buffered is sent
+     * first, as before a command GLIDE cannot buffer. The transaction is then
+     * the active batch until it ends, when the pipeline is again.
+     *
+     * @param  \SineMacula\Valkey\Connections\BatchState  $pipeline
+     * @return \SineMacula\Valkey\Connections\BatchState
+     *
+     * @throws \Throwable
+     */
+    private function beginNestedTransaction(BatchState $pipeline): BatchState
+    {
+        $this->runAside($pipeline, 'multi', function () use ($pipeline): void {
+            $this->flushBatch($pipeline);
+        });
+
+        return $this->beginBatch(true, $pipeline);
+    }
+
+    /**
+     * Execute a transaction nested in a pipeline, and give its results, or an
+     * empty list when WATCH aborted it, one place in the pipeline's results.
+     *
+     * It runs with the transaction set aside, so its listeners find no batch
+     * open.
+     *
+     * @param  \SineMacula\Valkey\Connections\BatchState  $transaction
+     * @param  \SineMacula\Valkey\Connections\BatchState  $pipeline
+     * @return \SineMacula\Valkey\Connections\ValkeyGlideBatch
+     *
+     * @throws \Throwable
+     */
+    private function executeNestedTransaction(BatchState $transaction, BatchState $pipeline): ValkeyGlideBatch
+    {
+        $this->runAside($transaction, 'exec', function () use ($transaction, $pipeline): void {
+            $results = $this->executeBatch($transaction);
+
+            $pipeline->append([$results === false ? [] : $results]);
+        });
+
+        return $pipeline->proxy;
+    }
+
+    /**
+     * Assert that a pipeline callback closed every multi() it opened, ending
+     * the transaction and the pipeline if it did not.
+     *
+     * @param  \SineMacula\Valkey\Connections\BatchState  $batch
+     * @return void
+     *
+     * @throws \LogicException
+     */
+    private function assertNoTransactionLeftOpen(BatchState $batch): void
+    {
+        if ($this->batch === $batch) {
+            return;
+        }
+
+        $this->endBatchAfterFailure($this->batch ?? $batch);
+        $this->endBatchAfterFailure($batch);
+
+        throw new \LogicException(self::UNCLOSED_TRANSACTION_MESSAGE);
     }
 
     /**
@@ -1174,11 +1282,11 @@ final class ValkeyGlideConnection extends Connection
      * Run a callback against the batch, which owns the batch while it runs.
      *
      * A callback that throws, even one nested in another batch, discards the
-     * whole batch with everything it still holds, and the exception is
-     * rethrown, even when the discard or its UNWATCH fails. A batch that ends
-     * while a callback owns it stays the active batch, so the connection
-     * refuses the callback's later calls rather than run them outside it, until
-     * the last callback that owns it returns.
+     * whole batch with everything it still holds, a transaction still open in
+     * it included, and the exception is rethrown, even when the discard or its
+     * UNWATCH fails. A batch that ends while a callback owns it stays the
+     * active batch, so the connection refuses the callback's later calls rather
+     * than run them outside it, until the last callback that owns it returns.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  callable(\SineMacula\Valkey\Connections\ValkeyGlideBatch): mixed  $callback
@@ -1193,6 +1301,7 @@ final class ValkeyGlideConnection extends Connection
         try {
             $callback($batch->proxy);
         } catch (\Throwable $exception) {
+            $this->endBatchAfterFailure($this->batch ?? $batch);
             $this->endBatchAfterFailure($batch);
 
             throw $exception;
@@ -1210,14 +1319,15 @@ final class ValkeyGlideConnection extends Connection
      * already watched.
      *
      * @param  bool  $atomic
+     * @param  \SineMacula\Valkey\Connections\BatchState|null  $pipeline
      * @return \SineMacula\Valkey\Connections\BatchState
      */
-    private function beginBatch(bool $atomic): BatchState
+    private function beginBatch(bool $atomic, ?BatchState $pipeline = null): BatchState
     {
         $this->reconnectAfterDisconnect();
         $this->unwatchLeftOverKeys();
 
-        $batch       = new BatchState($this, $atomic);
+        $batch       = new BatchState($this, $atomic, $pipeline);
         $this->batch = $batch;
 
         $batch->claimSlot($this->resolveTransactionSlot($batch, 'watch', $this->watchedKeys));
@@ -1296,10 +1406,10 @@ final class ValkeyGlideConnection extends Connection
      * Start a batch for a bare multi() or pipeline() call, or open one nested
      * in the active batch.
      *
-     * Nesting follows phpredis: a `multi()` inside a pipeline opens a block
-     * that its own `exec()` closes, returning the batch, while any other nested
-     * `multi()` or `pipeline()` changes nothing, so the next `exec()` runs the
-     * batch.
+     * Nesting follows phpredis: a `multi()` inside a pipeline opens a
+     * transaction that its own `exec()` runs, returning the pipeline, while any
+     * other nested `multi()` or `pipeline()` changes nothing, so the next
+     * `exec()` runs the batch.
      *
      * @param  bool  $atomic
      * @return \SineMacula\Valkey\Connections\ValkeyGlideBatch
@@ -1314,42 +1424,18 @@ final class ValkeyGlideConnection extends Connection
             return $this->beginBatch($atomic)->proxy;
         }
 
-        $this->assertJoinKeepsTheWatch($batch, $atomic);
-
         if ($atomic && !$batch->atomic) {
-            $batch->openNestedMulti();
+            return $this->beginNestedTransaction($batch)->proxy;
         }
 
         return $batch->proxy;
     }
 
     /**
-     * Assert that a transaction joining the active batch keeps the guard of the
-     * watched keys.
-     *
-     * A pipeline flattens a transaction that joins it, so the watched keys
-     * could not abort it; the transaction is refused before it changes the
-     * batch.
-     *
-     * @param  \SineMacula\Valkey\Connections\BatchState  $batch
-     * @param  bool  $atomic
-     * @return void
-     *
-     * @throws \LogicException
-     */
-    private function assertJoinKeepsTheWatch(BatchState $batch, bool $atomic): void
-    {
-        if ($atomic && !$batch->atomic && $this->watchedKeys !== null) {
-            throw new \LogicException(self::WATCHED_TRANSACTION_IN_PIPELINE_MESSAGE);
-        }
-    }
-
-    /**
      * Handle an exec() called on the connection or the batch.
      *
-     * An exec() that closes a multi() opened inside a pipeline returns the
-     * batch, as phpredis does in pipeline mode; otherwise the batch runs,
-     * unless a callback owns it.
+     * The batch runs, unless a callback owns it; a transaction nested in a
+     * pipeline then returns the pipeline, as phpredis does in pipeline mode.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @return false|list<mixed>|\SineMacula\Valkey\Connections\ValkeyGlideBatch
@@ -1358,13 +1444,11 @@ final class ValkeyGlideConnection extends Connection
      */
     private function execBatch(BatchState $batch): array|false|ValkeyGlideBatch
     {
-        if ($batch->hasNestedMulti()) {
-            $batch->closeNestedMulti();
-
-            return $batch->proxy;
-        }
-
         $this->assertOutsideCallback($batch);
+
+        if ($batch->pipeline !== null) {
+            return $this->executeNestedTransaction($batch, $batch->pipeline);
+        }
 
         return $this->executeBatch($batch);
     }
@@ -1372,9 +1456,9 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Handle a discard() called on the connection or the batch.
      *
-     * The whole batch is dropped, a `multi()` still open inside a pipeline
-     * included, as phpredis drops the whole pipeline; inside a callback, which
-     * owns the batch, it is refused.
+     * The active batch is dropped, which for a `multi()` opened inside a
+     * pipeline is that transaction alone; inside a callback, which owns the
+     * batch, it is refused.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @return bool
@@ -1635,16 +1719,9 @@ final class ValkeyGlideConnection extends Connection
      * In a pipeline, what is buffered is sent first, then the command runs on
      * its own and its result joins the list in call order; the next buffered
      * command starts GLIDE's batch again. In a transaction it would run outside
-     * the MULTI block, so the transaction is discarded and refused. The
-     * pipeline is set aside while the send and the command run, so their
-     * listeners use the connection as they would outside a batch: what they run
-     * is sent at once rather than joining the pipeline, where it would start
-     * GLIDE's batch again under the command and be heard of only as another
-     * send. A batch a listener leaves open is ended, as the pipeline cannot
-     * take it back, and a client a listener disconnects is replaced before the
-     * pipeline resumes. Anything that throws along the way, the command, the
-     * send, a listener of either, or the reconnect, ends the pipeline, whether
-     * or not a callback owns it.
+     * the MULTI block, so the transaction is discarded and refused, unless it
+     * is nested in a pipeline and unwatched, where it runs as it would in the
+     * pipeline. Both run with the batch set aside.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  string  $method
@@ -1657,15 +1734,43 @@ final class ValkeyGlideConnection extends Connection
     {
         $this->assertNotAtomic($batch, $method);
 
-        $this->batch = null;
-
-        try {
+        $this->runAside($batch, $method, function () use ($batch, $method, $parameters): void {
             $this->flushBatch($batch);
             $this->assertNoBatchLeftByListener($method);
 
             $this->executeCommandWithRetry($method, $parameters, static function (mixed $result) use ($batch): void {
                 $batch->append([$result]);
             });
+        });
+
+        return $batch->proxy;
+    }
+
+    /**
+     * Run sends to the client with the batch set aside, then resume it.
+     *
+     * The sends' listeners use the connection as they would outside a batch:
+     * what they run is sent at once rather than joining the batch, where it
+     * would start GLIDE's batch again under the send and be heard of only as
+     * another send. A batch a listener leaves open is ended, as the batch
+     * cannot take it back, and a client a listener disconnects is replaced
+     * before the batch resumes. Anything that throws along the way, a send, a
+     * listener, or the reconnect, ends the batch, whether or not a callback
+     * owns it.
+     *
+     * @param  \SineMacula\Valkey\Connections\BatchState  $batch
+     * @param  string  $method
+     * @param  \Closure(): void  $sends
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    private function runAside(BatchState $batch, string $method, \Closure $sends): void
+    {
+        $this->batch = null;
+
+        try {
+            $sends();
 
             $this->assertNoBatchLeftByListener($method);
             $this->reconnectAfterDisconnect();
@@ -1681,8 +1786,6 @@ final class ValkeyGlideConnection extends Connection
         }
 
         $this->resumeBatch($batch);
-
-        return $batch->proxy;
     }
 
     /**
@@ -1742,7 +1845,8 @@ final class ValkeyGlideConnection extends Connection
      * callback owns it.
      *
      * A batch that ends inside its callback stays active until the callback
-     * returns, so the connection refuses the callback's later calls.
+     * returns, so the connection refuses the callback's later calls. A
+     * transaction nested in a pipeline hands the pipeline back.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @return void
@@ -1753,12 +1857,19 @@ final class ValkeyGlideConnection extends Connection
             return;
         }
 
-        $this->batch = null;
+        $this->batch = $batch->pipeline;
+
+        if ($batch->pipeline === null) {
+            return;
+        }
+
+        $this->releaseBatch($batch->pipeline);
     }
 
     /**
      * Assert that a command GLIDE cannot buffer is not run in a transaction,
-     * discarding the transaction if it is.
+     * other than an unwatched one nested in a pipeline, discarding the
+     * transaction if it is.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  string  $method
@@ -1768,7 +1879,7 @@ final class ValkeyGlideConnection extends Connection
      */
     private function assertNotAtomic(BatchState $batch, string $method): void
     {
-        if (!$batch->atomic) {
+        if (!$batch->atomic || ($batch->pipeline !== null && $this->watchedKeys === null)) {
             return;
         }
 

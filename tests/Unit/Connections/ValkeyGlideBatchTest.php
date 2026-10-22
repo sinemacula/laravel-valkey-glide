@@ -91,14 +91,15 @@ final class ValkeyGlideBatchTest extends TestCase
     }
 
     /**
-     * Verify exec that closes a joined multi() returns the batch.
+     * Verify the exec() that closes a multi() opened in the pipeline runs the
+     * transaction and returns the pipeline.
      *
      * @return void
      *
      * @throws \Throwable
      */
     #[Test]
-    public function execClosingAJoinedMultiReturnsTheBatch(): void
+    public function execClosingANestedMultiReturnsThePipeline(): void
     {
         $client     = new ValkeyGlideFake;
         $connection = new ValkeyGlideConnection($client);
@@ -107,7 +108,8 @@ final class ValkeyGlideBatchTest extends TestCase
         $batch->multi();
 
         self::assertSame($batch, $batch->set('key', 'value')->exec());
-        self::assertSame([true], $batch->exec());
+        self::assertSame([[true]], $batch->exec());
+        self::assertSame(['multi', 'set', 'exec'], $client->callOrder());
     }
 
     /**
@@ -276,22 +278,22 @@ final class ValkeyGlideBatchTest extends TestCase
     }
 
     /**
-     * Verify a transaction callback passed to a pipeline's batch joins the
-     * pipeline, as a transaction() on the connection does.
+     * Verify a transaction callback passed to a pipeline's batch runs as its
+     * own transaction, as a transaction() on the connection does.
      *
      * @return void
      *
      * @throws \Throwable
      */
     #[Test]
-    public function transactionCallbackOnTheBatchJoinsIt(): void
+    public function transactionCallbackOnTheBatchRunsOnItsOwn(): void
     {
         $client = new ValkeyGlideFake;
         $batch  = $this->newBatch(new ValkeyGlideConnection($client));
 
         self::assertSame($batch, $batch->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1')));
-        self::assertSame([true], $batch->exec());
-        self::assertSame(['pipeline', 'set', 'exec'], $client->callOrder());
+        self::assertSame([[true]], $batch->exec());
+        self::assertSame(['multi', 'set', 'exec'], $client->callOrder());
     }
 
     /**
@@ -311,7 +313,7 @@ final class ValkeyGlideBatchTest extends TestCase
         self::assertSame($batch, $batch->pipeline());
         self::assertSame($batch, $batch->transaction());
         self::assertSame($batch, $batch->set('a', '1')->exec());
-        self::assertSame([true], $batch->exec());
+        self::assertSame([[true]], $batch->exec());
     }
 
     /**

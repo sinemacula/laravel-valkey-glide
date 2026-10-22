@@ -8,8 +8,7 @@ use Illuminate\Cache\CacheManager;
 use Illuminate\Cache\RedisStore;
 use Illuminate\Cache\Repository;
 use Illuminate\Container\Container;
-use Illuminate\Contracts\Queue\Queue as QueueContract;
-use Illuminate\Queue\RedisQueue;
+use Illuminate\Queue\QueueManager;
 use Illuminate\Redis\RedisManager;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
@@ -240,35 +239,48 @@ final class ValkeyGlideServiceProviderTest extends TestCase
     }
 
     /**
-     * Verify a redis queue connection connects the GLIDE-aware queue before
-     * Laravel 13.5.
+     * Verify a redis queue connection connects the GLIDE-aware queue, on every
+     * Laravel version.
      *
      * @return void
      */
     #[Test]
-    public function redisQueueConnectsTheGlideQueueBeforeLaravel135(): void
+    public function redisQueueConnectsTheGlideQueue(): void
     {
-        if ((new \ReflectionClass(RedisQueue::class))->hasMethod('getQueueRedisKey')) {
-            self::markTestSkipped('Laravel hash-tags cluster queue keys itself from 13.5.');
-        }
+        config(['queue.connections.glide' => ['driver' => 'redis', 'queue' => 'default']]);
 
-        self::assertInstanceOf(ValkeyGlideQueue::class, $this->redisQueue());
+        self::assertInstanceOf(ValkeyGlideQueue::class, Queue::connection('glide'));
     }
 
     /**
-     * Verify a redis queue connection is left to Laravel from 13.5, whose queue
-     * hash-tags cluster queue keys itself.
+     * Verify the queue connector reaches a queue manager resolved before the
+     * provider registers, as the provider registers, and again as it boots.
      *
      * @return void
      */
     #[Test]
-    public function redisQueueIsLeftToLaravelFrom135(): void
+    public function redisQueueConnectorReachesAQueueManagerResolvedFirst(): void
     {
-        if (!(new \ReflectionClass(RedisQueue::class))->hasMethod('getQueueRedisKey')) {
-            self::markTestSkipped('The package connects its own Redis queue before Laravel 13.5.');
-        }
+        $app = $this->app;
 
-        self::assertSame(RedisQueue::class, $this->redisQueue()::class);
+        self::assertNotNull($app);
+
+        config(['queue.connections.glide' => ['driver' => 'redis', 'queue' => 'default']]);
+
+        $phases = [
+            'register' => static fn (ValkeyGlideServiceProvider $provider) => $provider->register(),
+            'boot'     => static fn (ValkeyGlideServiceProvider $provider) => $provider->boot(),
+        ];
+
+        foreach ($phases as $phase) {
+            $queues = new QueueManager($app);
+
+            $app->instance('queue', $queues);
+
+            $phase(new ValkeyGlideServiceProvider($app));
+
+            self::assertInstanceOf(ValkeyGlideQueue::class, $queues->connection('glide'));
+        }
     }
 
     /**
@@ -281,17 +293,5 @@ final class ValkeyGlideServiceProviderTest extends TestCase
     private function property(object $store, string $name): mixed
     {
         return (new \ReflectionProperty(RedisStore::class, $name))->getValue($store);
-    }
-
-    /**
-     * Resolve a redis queue connection.
-     *
-     * @return \Illuminate\Contracts\Queue\Queue
-     */
-    private function redisQueue(): QueueContract
-    {
-        config(['queue.connections.glide' => ['driver' => 'redis', 'queue' => 'default']]);
-
-        return Queue::connection('glide');
     }
 }

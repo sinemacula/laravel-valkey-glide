@@ -15,8 +15,6 @@ use SineMacula\Valkey\Queue\ValkeyGlideQueue;
  * Laravel's Redis queue connector, connecting the GLIDE-aware queue, or
  * Horizon's when Horizon is registered.
  *
- * The package's service provider registers it before Laravel 13.5.
- *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
  *
