@@ -218,8 +218,8 @@ final class ValkeyGlideSortedSetExternalTest extends TestCase
      * that ZDIFFSTORE, which GLIDE sends weights for although the server takes
      * none, is refused by the server.
      *
-     * The keys share a hash tag so a cluster takes them in one command; these
-     * commands' keys are not prefixed, so they are named in full.
+     * The keys share a hash tag so a cluster takes them in one command, and are
+     * prefixed, the destination and the list of keys alike.
      *
      * @param  string  $topology
      * @return void
@@ -230,14 +230,14 @@ final class ValkeyGlideSortedSetExternalTest extends TestCase
     #[Test]
     public function manyNumericWeightsWeighEveryKey(string $topology): void
     {
-        $connection  = $this->connection($topology, '');
+        $connection  = $this->connection($topology, self::PREFIX);
         $tag         = '{' . $this->uniqueName('weights') . '}';
-        $destination = $this->track($topology, $tag . ':destination', '');
+        $destination = $this->track($topology, $tag . ':destination');
         $keys        = [];
         $weights     = [];
 
         for ($i = 1; $i <= self::WEIGHTED_KEYS; $i++) {
-            $keys[]    = $this->track($topology, $tag . ':' . $i, '');
+            $keys[]    = $this->track($topology, $tag . ':' . $i);
             $weights[] = $i;
 
             $connection->command('zadd', [$keys[$i - 1], 1, 'm']);
@@ -319,8 +319,8 @@ final class ValkeyGlideSortedSetExternalTest extends TestCase
      * Laravel's phpredis connection does, where GLIDE would send it as the
      * weights, and GLIDE's own weights list and aggregate.
      *
-     * The keys share a hash tag so a cluster takes them in one command; these
-     * commands' keys are not prefixed, so they are named in full.
+     * The keys share a hash tag so a cluster takes them in one command, and are
+     * prefixed, the destination and the list of keys alike.
      *
      * @param  string  $topology
      * @return void
@@ -331,11 +331,11 @@ final class ValkeyGlideSortedSetExternalTest extends TestCase
     #[Test]
     public function storeCommandsTakeLaravelsOptions(string $topology): void
     {
-        $connection  = $this->connection($topology, '');
+        $connection  = $this->connection($topology, self::PREFIX);
         $tag         = '{' . $this->uniqueName('store') . '}';
-        $destination = $this->track($topology, $tag . ':destination', '');
-        $first       = $this->track($topology, $tag . ':first', '');
-        $second      = $this->track($topology, $tag . ':second', '');
+        $destination = $this->track($topology, $tag . ':destination');
+        $first       = $this->track($topology, $tag . ':first');
+        $second      = $this->track($topology, $tag . ':second');
 
         $connection->zadd($first, ['m' => 1, 'n' => 5]);
         $connection->zadd($second, ['m' => 3, 'n' => 2]);

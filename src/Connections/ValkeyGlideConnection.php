@@ -155,8 +155,8 @@ final class ValkeyGlideConnection extends Connection
         . ' or it may have timed out and still been committed.';
 
     /** @var string Message for a key-list command given a key list in a form GLIDE does not take as keys. */
-    private const string UNSUPPORTED_KEY_LIST_MESSAGE = '[%s] takes its keys as separate arguments or as a single list of keys, not a list beside other'
-        . ' arguments or a list of lists, which GLIDE would send as the key "Array" or drop.';
+    private const string UNSUPPORTED_KEY_LIST_MESSAGE = '[%s] was given a list of keys in a form GLIDE does not take as keys, such as a list beside other'
+        . ' arguments, a list of lists, or a list where the command takes only separate keys, which GLIDE would send as the key "Array" or drop.';
 
     /** @var string Message for a cluster INFO called without a route. */
     private const string UNROUTED_CLUSTER_INFO_MESSAGE = '[INFO] on a cluster connection needs a route, as each node reports only itself;'
@@ -837,9 +837,11 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Assert that a key-list command's keys are in a form GLIDE takes as keys.
      *
-     * A list beside other arguments, as in `del('a', ['b', 'c'])`, or a list of
-     * lists, would reach keys outside the prefix, such as the key `Array`, so
-     * it is refused before anything is sent, inside a batch or outside one.
+     * A list beside other arguments, as in `del('a', ['b', 'c'])`, a list of
+     * lists, or a list given to a command that takes only separate keys, as in
+     * `sunionstore('destination', ['a', 'b'])`, would reach keys outside the
+     * prefix, such as the key `Array`, so it is refused before anything is
+     * sent, inside a batch or outside one.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters

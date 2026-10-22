@@ -59,6 +59,12 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
         self::CLUSTER    => self::CLUSTER_QUEUE_CONNECTION,
     ];
 
+    /** @var string Queue connection whose pop blocks for a job, as a worker's does with block_for set. */
+    private const string BLOCKING_QUEUE_CONNECTION = 'redis-blocking';
+
+    /** @var int Seconds the blocking queue connection's pop waits for a job. */
+    private const int BLOCK_FOR = 1;
+
     /**
      * Ensure extension preconditions are met before each external test.
      *
@@ -145,6 +151,34 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
         );
 
         $queue->clear($queueName);
+    }
+
+    /**
+     * Verify a blocking pop on a prefixed connection waits on the prefixed
+     * notify key, which Laravel's push script adds to, so a push wakes it.
+     *
+     * With the queue empty, Laravel's pop waits in
+     * `blpop([$queue . ':notify'], $blockFor)`; with the prefixed notify key
+     * seeded, that BLPOP takes the entry at once.
+     *
+     * @return void
+     */
+    #[Test]
+    public function blockingPopWaitsOnThePrefixedNotifyKey(): void
+    {
+        $queueName = $this->uniqueQueueName('blocking');
+        $queue     = $this->redisQueueConnection(self::BLOCKING_QUEUE_CONNECTION);
+        $client    = $this->redisConnection()->client();
+        $notifyKey = self::REDIS_CONNECTION_PREFIX . $queue->getQueue($queueName) . ':notify';
+
+        $client->rawcommand('RPUSH', $notifyKey, '1');
+
+        self::assertNull($queue->pop($queueName));
+
+        $remaining = $this->normalizeIntegerResponse($client->rawcommand('LLEN', $notifyKey));
+        $client->rawcommand('DEL', $notifyKey);
+
+        self::assertSame(0, $remaining);
     }
 
     /**
@@ -320,6 +354,15 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
             'queue'        => self::DEFAULT_QUEUE_NAME,
             'retry_after'  => 90,
             'block_for'    => null,
+            'after_commit' => false,
+        ]);
+
+        $app['config']->set('queue.connections.' . self::BLOCKING_QUEUE_CONNECTION, [
+            'driver'       => 'redis',
+            'connection'   => 'default',
+            'queue'        => self::DEFAULT_QUEUE_NAME,
+            'retry_after'  => 90,
+            'block_for'    => self::BLOCK_FOR,
             'after_commit' => false,
         ]);
 
