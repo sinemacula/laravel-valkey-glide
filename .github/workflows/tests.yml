@@ -158,3 +158,150 @@ jobs:
 
             -   name: Benchmark smoke
                 run: composer bench:smoke
+
+    # ==========================================================================
+    # JOB: EXTERNAL TESTS
+    # ==========================================================================
+    # Runs the external suite against the real extension, built from the
+    # upstream PECL release, with a standalone Valkey server and a three-node
+    # Valkey cluster on the runner.
+    external:
+        name: External / Laravel ${{ matrix.laravel.label }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+
+        env:
+            VALKEY_GLIDE_VERSION: 1.1.2
+            VALKEY_GLIDE_SHA256: 7b12bdb6eb2e6c3351548f9b63af1e223eca2ee5db150740e4efc82881e7c7e6
+            # Matches the service image, which cannot read the env context.
+            VALKEY_IMAGE: valkey/valkey:8.1
+            VALKEY_GLIDE_TEST_HOST: 127.0.0.1
+            VALKEY_GLIDE_TEST_PORT: 6379
+            VALKEY_GLIDE_TEST_CLUSTER_HOST: 127.0.0.1
+            VALKEY_GLIDE_TEST_CLUSTER_PORT: 7000
+
+        services:
+            valkey:
+                image: valkey/valkey:8.1
+                ports:
+                    - 6379:6379
+                options: >-
+                    --health-cmd "valkey-cli ping"
+                    --health-interval 2s
+                    --health-timeout 2s
+                    --health-retries 15
+
+        strategy:
+            fail-fast: false
+            matrix:
+                laravel:
+                    -   constraint: ^12.0
+                        label: 12
+                    -   constraint: ^13.0
+                        label: 13
+
+        steps:
+            -   name: Checkout
+                uses: actions/checkout@v7
+                with:
+                    persist-credentials: false
+
+            -   name: Setup PHP
+                uses: sinemacula/.github/.github/actions/setup-php@v1.13.0
+                with:
+                    php-version: 8.3
+
+            -   name: Pin Laravel version
+                env:
+                    LARAVEL_CONSTRAINT: ${{ matrix.laravel.constraint }}
+                run: composer update --with="laravel/framework:${LARAVEL_CONSTRAINT}" --prefer-dist --no-interaction --no-progress
+
+            # The built extension links against the runner's PHP and system
+            # libraries, so the key names the image and the PHP minor version
+            # as well as the extension version.
+            -   name: Resolve extension cache key
+                id: valkey-glide
+                run: |
+                    php_abi="$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION, PHP_ZTS ? "-zts" : "-nts";')"
+                    echo "key=valkey-glide-${VALKEY_GLIDE_VERSION}-${ImageOS}-${RUNNER_ARCH}-php${php_abi}" >> "$GITHUB_OUTPUT"
+
+            -   name: Restore extension build
+                id: valkey-glide-cache
+                uses: actions/cache/restore@v6
+                with:
+                    path: ~/.cache/valkey-glide
+                    key: ${{ steps.valkey-glide.outputs.key }}
+
+            -   name: Install extension dependencies
+                env:
+                    CACHE_HIT: ${{ steps.valkey-glide-cache.outputs.cache-hit }}
+                run: |
+                    packages=(libprotobuf-c1)
+
+                    if [ "${CACHE_HIT}" != 'true' ]; then
+                        packages+=(libffi-dev libprotobuf-c-dev protobuf-c-compiler protobuf-compiler)
+                    fi
+
+                    sudo apt-get update
+                    sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
+            # The PECL package fetches its pinned valkey-glide core during
+            # configure and builds the Rust FFI library with the runner's cargo.
+            # Ubuntu's own cbindgen is too old to parse that library.
+            -   name: Build ext-valkey_glide
+                if: ${{ steps.valkey-glide-cache.outputs.cache-hit != 'true' }}
+                run: |
+                    cargo install cbindgen --version 0.29.4 --locked
+
+                    build_dir="$(mktemp -d)"
+
+                    curl -fsSL -o "${build_dir}/valkey_glide.tgz" \
+                        "https://github.com/valkey-io/valkey-glide-php/releases/download/v${VALKEY_GLIDE_VERSION}/valkey_glide-${VALKEY_GLIDE_VERSION}.tgz"
+                    echo "${VALKEY_GLIDE_SHA256}  ${build_dir}/valkey_glide.tgz" | sha256sum -c -
+                    tar -xzf "${build_dir}/valkey_glide.tgz" -C "${build_dir}"
+
+                    cd "${build_dir}/valkey_glide-${VALKEY_GLIDE_VERSION}"
+                    phpize
+                    ./configure --enable-valkey-glide
+                    make -j "$(nproc)"
+
+                    mkdir -p ~/.cache/valkey-glide
+                    cp modules/valkey_glide.so ~/.cache/valkey-glide/
+
+            # Saved straight after the build, so a failing suite does not throw
+            # the build away.
+            -   name: Save extension build
+                if: ${{ steps.valkey-glide-cache.outputs.cache-hit != 'true' }}
+                uses: actions/cache/save@v6
+                with:
+                    path: ~/.cache/valkey-glide
+                    key: ${{ steps.valkey-glide.outputs.key }}
+
+            -   name: Install ext-valkey_glide
+                run: |
+                    sudo install -m 0644 ~/.cache/valkey-glide/valkey_glide.so "$(php-config --extension-dir)/"
+                    echo 'extension=valkey_glide' | sudo tee "$(php -r 'echo PHP_CONFIG_FILE_SCAN_DIR;')/20-valkey_glide.ini" > /dev/null
+
+                    php -r 'echo "ext-valkey_glide ", phpversion("valkey_glide"), PHP_EOL; exit(phpversion("valkey_glide") === getenv("VALKEY_GLIDE_VERSION") ? 0 : 1);'
+
+            # The nodes share the runner's network, so each one announces
+            # 127.0.0.1 and its own port to its peers and to clients.
+            -   name: Start Valkey cluster
+                run: |
+                    for port in 7000 7001 7002; do
+                        docker run -d --name "valkey-${port}" --network host "${VALKEY_IMAGE}" \
+                            valkey-server --port "${port}" --cluster-enabled yes --cluster-config-file "nodes-${port}.conf" --appendonly no --save ''
+                    done
+
+                    for port in 7000 7001 7002; do
+                        timeout 30 bash -c "until docker exec valkey-${port} valkey-cli -p ${port} ping; do sleep 1; done"
+                    done
+
+                    docker exec valkey-7000 valkey-cli -p 7000 --cluster create 127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 --cluster-replicas 0 --cluster-yes
+
+                    for port in 7000 7001 7002; do
+                        timeout 30 bash -c "until docker exec valkey-${port} valkey-cli -p ${port} cluster info | grep -q 'cluster_state:ok'; do sleep 1; done"
+                    done
+
+            -   name: PHPUnit external
+                run: composer test:external
