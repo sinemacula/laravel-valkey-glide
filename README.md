@@ -36,6 +36,7 @@ application business code.
 - Phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, as Laravel's locks and Horizon call them, and
   phpredis-compatible `hsetnx()` and options-array `zscan()`, `hscan()` and `sscan()`
 - Laravel's `zadd()`, `zinterstore()` and `zunionstore()` argument forms, and exact `zincrby()` increments
+- Float arguments sent as phpredis sends them, where GLIDE would write six significant digits
 - Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
   standalone and cluster connections
 - Laravel Pulse's `redis` ingest driver on standalone and cluster connections (see Laravel Pulse)
@@ -195,6 +196,12 @@ Command execution goes through `ValkeyGlideConnection::command()`.
   no weights, where GLIDE sent an empty `WEIGHTS`. GLIDE's own weights, keyed by integers in any order, as from
   `array_filter()`, and aggregate string are taken too. As with a phpredis pipeline, the `zadd()`, `zinterstore()` and
   `zunionstore()` of a pipeline or transaction take the client's own forms
+- Float arguments are sent as phpredis sends them, where `ext-valkey_glide` 1.1.2 would write six significant digits,
+  so `set($key, 19.999999)` stores `19.999999` rather than `20` and `incrbyfloat($key, 1.23456789)` adds `1.23456789`
+  rather than `1.23457`. GLIDE 1.1.2 still writes the coordinates, radius, width and height of `geosearch()` and
+  `geosearchstore()` with six significant digits
+  ([valkey-io/valkey-glide-php#382](https://github.com/valkey-io/valkey-glide-php/issues/382)); send the command
+  through `executeRaw()` where that precision matters
 - `scan($cursor, ['match' => ..., 'count' => ...])` takes Laravel's options array and returns `[$cursor, $keys]`, as
   Laravel's phpredis connection does: start from `'0'` and stop once the cursor is `'0'` again. The `match` pattern is
   not prefixed, `count` defaults to 10, and a `type` option, such as `'zset'`, keeps only keys of that type. A scan
@@ -397,6 +404,8 @@ cannot buffer itself:
     list (see the event listeners above).
   - In a transaction it would run outside the `MULTI` block, so the transaction is discarded and a `LogicException` is
     thrown. Use `pipeline()` for them.
+  - An `incrbyfloat()` or `hincrbyfloat()` whose increment GLIDE would write with six significant digits, such as
+    `1.23456789`, is sent through `rawcommand`, so it runs in call order in a pipeline and is refused in a transaction.
   - Unlike phpredis, where `getOption()` and the other methods of the client itself return their value at once in any
     mode, they take a place in a pipeline's results and end a transaction too; call them outside the batch.
 - **Rewritten so they buffer**: a key list such as `del(['a', 'b'])` or `unlink([...])`, which GLIDE runs immediately,
@@ -1032,6 +1041,8 @@ External integration coverage includes:
   `sscan()`, including Laravel's own `RedisTagSet::entries()`, on a standalone server and a cluster
 - sorted-set scores, members and weights sent as strings, exact `zincrby()` increments, and Laravel's `zadd()`,
   `zinterstore()` and `zunionstore()` argument forms, on a standalone server and a cluster
+- float values, members and score bounds, exact `incrbyfloat()` and `hincrbyfloat()` increments and Laravel cache
+  floats, on a standalone server and a cluster
 - pipelines and transactions on a standalone server and a cluster: result order, physical prefixed keys, empty and
   nested batches with and without callbacks, `EVAL` in a batch, `WATCH`, cross-slot transactions, closed clients,
   throwing event listeners and a 5,000-command pipeline

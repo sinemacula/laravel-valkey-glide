@@ -5,6 +5,7 @@ declare(strict_types = 1);
 namespace Tests\External;
 
 use Illuminate\Cache\RedisLock;
+use Illuminate\Cache\Repository;
 use Illuminate\Events\Dispatcher;
 use Illuminate\Redis\Events\CommandExecuted;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -12,10 +13,12 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use SineMacula\Valkey\Cache\ValkeyGlideStore;
 use SineMacula\Valkey\Connections\KeyPrefixer;
 use SineMacula\Valkey\Connections\ValkeyGlideBatch;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use Tests\External\Concerns\ConnectsToTestServers;
+use Tests\Fakes\RedisFactoryFake;
 
 /**
  * External checks for the commands the connection answers as Laravel's phpredis
@@ -23,7 +26,8 @@ use Tests\External\Concerns\ConnectsToTestServers;
  * tag pages and Horizon's metrics clearing use: setnx, zrevrange and scan with
  * an options array; and for the keys of the commands that take a destination
  * key, a list of keys or a key after a subcommand, which are prefixed, inside
- * and outside batches, as phpredis prefixes them.
+ * and outside batches, as phpredis prefixes them; and for float arguments, sent
+ * with phpredis' digits.
  *
  * Every test runs against the standalone server and, when
  * VALKEY_GLIDE_TEST_CLUSTER_HOST and VALKEY_GLIDE_TEST_CLUSTER_PORT are set,
@@ -47,6 +51,9 @@ final class ValkeyGlidePhpRedisParityExternalTest extends TestCase
 
     /** @var int The number of keys a scan loop is checked against, enough to span every cluster primary. */
     private const int SCANNED_KEY_COUNT = 250;
+
+    /** @var float A float GLIDE would write as 1.23457. */
+    private const float FLOAT = 1.23456789;
 
     /** @var array<string, \SineMacula\Valkey\Connections\ValkeyGlideConnection> Open connections, by topology and prefix. */
     private array $connections = [];
@@ -289,6 +296,109 @@ final class ValkeyGlidePhpRedisParityExternalTest extends TestCase
         self::assertCount(self::SCANNED_KEY_COUNT, $found);
         self::assertGreaterThan(1, count($expected));
         self::assertSame($expected, $formatted);
+    }
+
+    /**
+     * Verify float values, fields, members and score bounds reach the server as
+     * PHP converts them to strings, as phpredis sends them, rather than with
+     * GLIDE's six significant digits.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function floatValuesAreSentAsPhpRedisSendsThem(string $topology): void
+    {
+        $connection                         = $this->connection($topology, self::PREFIX);
+        $raw                                = $this->connection($topology, '');
+        $name                               = $this->uniqueName('float');
+        [$string, $hash, $list, $geo, $set] = array_map(fn (string $suffix): string => $this->track($topology, $name . ':' . $suffix), ['string', 'hash', 'list', 'geo', 'zset']);
+
+        self::assertTrue($connection->command('set', [$string, 19.999999]));
+        self::assertSame(2, $connection->command('hset', [$hash, 'value', self::FLOAT, self::FLOAT, 'field']));
+        self::assertSame(2, $connection->command('rpush', [$list, self::FLOAT, 1.5]));
+        self::assertSame(1, $raw->command('geoadd', [self::PREFIX . $geo, 13.361389, 38.115556, self::FLOAT]));
+        $connection->command('zadd', [$set, '1.234567891', 'in', '1', '1.23456789']);
+
+        self::assertSame('19.999999', $raw->command('get', [self::PREFIX . $string]));
+        self::assertSame(['value' => '1.23456789', '1.23456789' => 'field'], $raw->command('hgetall', [self::PREFIX . $hash]));
+        self::assertSame(['1.23456789', '1.5'], $raw->command('lrange', [self::PREFIX . $list, 0, -1]));
+        self::assertSame(['1.23456789'], $raw->command('zrange', [self::PREFIX . $geo, 0, -1]));
+        self::assertSame(['1.23456789' => 'field'], $connection->command('hmget', [$hash, [self::FLOAT]]));
+        self::assertSame(1, $connection->command('hdel', [$hash, self::FLOAT]));
+        self::assertSame(['in'], $connection->command('zrangebyscore', [$set, self::FLOAT, '+inf']));
+        self::assertSame(['in'], $connection->command('zrange', [$set, self::FLOAT, '+inf', ['byscore' => true]]));
+        self::assertSame([1.0], $raw->command('zmscore', [self::PREFIX . $set, self::FLOAT]));
+        self::assertSame(1, $connection->command('zrem', [$set, self::FLOAT]));
+    }
+
+    /**
+     * Verify incrbyfloat and hincrbyfloat add an increment GLIDE would write
+     * with six significant digits exactly, in call order in a pipeline, and
+     * that a transaction refuses one before anything is sent.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function floatIncrementsAreAddedExactly(string $topology): void
+    {
+        $connection                = $this->connection($topology, self::PREFIX);
+        $raw                       = $this->connection($topology, '');
+        $tag                       = '{' . $this->uniqueName('increment') . '}';
+        [$counter, $hash, $string] = array_map(fn (string $suffix): string => $this->track($topology, $tag . $suffix), ['counter', 'hash', 'string']);
+
+        self::assertSame(self::FLOAT, $connection->command('incrbyfloat', [$counter, self::FLOAT]));
+        self::assertSame(self::FLOAT, $connection->command('hincrbyfloat', [$hash, 'f', self::FLOAT]));
+        self::assertSame('1.2345678899999999', $raw->command('hget', [self::PREFIX . $hash, 'f']));
+
+        self::assertSame([true, 2.4691357799999998, 1.5], $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($counter, $string): void {
+            $pipe->set($string, 1.5);
+            $pipe->incrbyfloat($counter, self::FLOAT);
+            $pipe->incrbyfloat($string, 0.0);
+        }));
+
+        try {
+            $connection->transaction(static function (ValkeyGlideBatch $tx) use ($counter, $string): void {
+                $tx->set($string, 'changed');
+                $tx->incrbyfloat($counter, self::FLOAT);
+            });
+            self::fail('Expected the increment to be refused.');
+        } catch (\LogicException $exception) {
+            self::assertStringStartsWith('[INCRBYFLOAT] cannot run inside a transaction', $exception->getMessage());
+        }
+
+        self::assertSame([2.5], $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->incrbyfloat($string, 1.0)));
+        self::assertSame('2.4691357799999998', $raw->command('get', [self::PREFIX . $counter]));
+    }
+
+    /**
+     * Verify Laravel's cache reads back the floats it stores, whether put with
+     * a TTL or forever.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function theCacheReadsBackTheFloatsItStores(string $topology): void
+    {
+        $cache = new Repository(new ValkeyGlideStore(new RedisFactoryFake($this->connection($topology, self::PREFIX)), ''));
+        $name  = $this->uniqueName('cache');
+
+        self::assertTrue($cache->put($this->track($topology, $name . ':put'), 19.999999, 60));
+        self::assertTrue($cache->forever($this->track($topology, $name . ':forever'), 19.999999));
+
+        self::assertSame('19.999999', $cache->get($name . ':put'));
+        self::assertSame('19.999999', $cache->get($name . ':forever'));
     }
 
     /**

@@ -239,6 +239,9 @@ final class ValkeyGlideConnection extends Connection
     /** @var \SineMacula\Valkey\Connections\ClusterScan Primary-by-primary keyspace scan for cluster clients. */
     private readonly ClusterScan $clusterScan;
 
+    /** @var \SineMacula\Valkey\Connections\FloatArguments Converter for the float arguments GLIDE would write with six significant digits. */
+    private readonly FloatArguments $floatArguments;
+
     /** @var \SineMacula\Valkey\Connections\BatchState|null The active pipeline or transaction, if any. */
     private ?BatchState $batch = null;
 
@@ -268,6 +271,7 @@ final class ValkeyGlideConnection extends Connection
         $this->batchCommands      = new BatchCommands;
         $this->sortedSetArguments = new SortedSetArguments;
         $this->clusterScan        = new ClusterScan;
+        $this->floatArguments     = new FloatArguments;
     }
 
     /**
@@ -682,7 +686,9 @@ final class ValkeyGlideConnection extends Connection
      * are sent as strings, as GLIDE corrupts memory on some other values, and
      * one with no string form is refused before anything is sent. A ZINCRBY
      * with a numeric increment is sent as the ZADD ... INCR it is equivalent
-     * to, as GLIDE writes its increment with six significant digits.
+     * to, as GLIDE writes its increment with six significant digits. Other
+     * floats GLIDE would write so are sent as phpredis sends them, an
+     * INCRBYFLOAT or HINCRBYFLOAT increment through the raw command.
      *
      * @param  mixed  $method
      * @param  array<array-key, mixed>  $parameters
@@ -705,7 +711,7 @@ final class ValkeyGlideConnection extends Connection
 
         [$normalizedMethod, $parameters] = $this->sortedSetArguments->rewriteIncrement($normalizedMethod, $parameters);
 
-        $parameters = $this->sortedSetArguments->normalize($normalizedMethod, $parameters);
+        $parameters = $this->floatArguments->normalize($normalizedMethod, $this->sortedSetArguments->normalize($normalizedMethod, $parameters));
 
         if ($this->batch !== null) {
             return $this->queueBatchCommand($this->batch, $normalizedMethod, $parameters);
@@ -2403,7 +2409,8 @@ final class ValkeyGlideConnection extends Connection
      * set() cannot take or refuses, as in `set($key, $value, 'EX', 60, 'NX')`
      * or `set($key, $value, 'NX')`. GLIDE has no `keys()`, which Laravel's
      * Redis queue calls to list its queues on any connection but a phpredis
-     * cluster connection.
+     * cluster connection. GLIDE would write an INCRBYFLOAT or HINCRBYFLOAT
+     * increment with six significant digits.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
@@ -2411,7 +2418,7 @@ final class ValkeyGlideConnection extends Connection
      */
     private function shouldInvokeAsRawCommand(string $method, array $parameters): bool
     {
-        if ($method === 'EVAL' || $method === 'EVALSHA' || $method === 'KEYS') {
+        if (in_array($method, ['EVAL', 'EVALSHA', 'KEYS'], true) || $this->floatArguments->isInexactIncrement($method, $parameters)) {
             return true;
         }
 
