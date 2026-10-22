@@ -29,8 +29,8 @@ application business code.
 - Connection wrapper extending `Illuminate\Redis\Connections\Connection`
 - Laravel config normalization into GLIDE `connect()` arguments
 - Optional single retry for idempotent commands on transient transport errors
-- Key prefix compatibility for supported command families, including the key lists of `DEL`, `UNLINK`, `EXISTS`,
-  `WATCH`, `TOUCH`, `SINTER` and `MGET`, and the key-value map of `MSET` and `MSETNX`
+- Key prefix compatibility at the key positions phpredis prefixes, including destination keys, key lists, the
+  key-value map of `MSET` and `MSETNX` and the stream map of `XREAD` and `XREADGROUP`
 - `pipeline()` and `transaction()`, plus phpredis-style `multi()` / `exec()` / `discard()` on the connection
 - Laravel compatibility fallback for phpredis-style `SET` and `EVAL` command argument shapes
 - Phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, as Laravel's locks and Horizon call them, and
@@ -38,6 +38,7 @@ application business code.
 - Laravel's `zadd()`, `zinterstore()` and `zunionstore()` argument forms, and exact `zincrby()` increments
 - Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
   standalone and cluster connections
+- Laravel Pulse's `redis` ingest driver on standalone and cluster connections (see Laravel Pulse)
 - External test lane for extension and real Redis connectivity validation
 
 ## Requirements
@@ -258,15 +259,19 @@ under Pipelines and Transactions). Some failures still return `false`, as GLIDE 
 Prefixing is handled in the connection wrapper for supported command families:
 
 - single-key commands (`GET`, `SET`, `HGET`, `HMSET`, `PSETEX`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`,
-  `ZREVRANGEBYSCORE`, `ZREVRANK`, etc.)
+  `ZREVRANGEBYSCORE`, `ZREVRANK`, `XADD`, `GEOADD`, etc.)
 - all-key commands (`MGET`, `DEL`, `UNLINK`, `EXISTS`, `WATCH`, `TOUCH`, `SINTER`, etc.), including a single key-list
   argument such as `del(['a', 'b'])` or `sinter(['a', 'b'])`. GLIDE takes a key list only as the command's only
   argument: beside other keys, as in `del('a', ['b', 'c'])`, it sends the list as the key `Array`, outside the prefix,
   or drops the keys after it, so such a call, or a list of key lists, throws an `InvalidArgumentException` before
   anything is sent, inside a batch or outside one, as phpredis' typed signatures refuse it with a `TypeError`
-- the keys of the key-value map `MSET` and `MSETNX` take, as in `mset(['a' => 1, 'b' => 2])`
-- two-key commands (`RENAME`, etc.)
-- `EVAL` / `EVALSHA` key segments
+- the keys of the key-value map `MSET` and `MSETNX` take, as in `mset(['a' => 1, 'b' => 2])`, and the streams of the
+  map `XREAD` and `XREADGROUP` take
+- two-key commands (`RENAME`, `LMOVE`, etc.)
+- the destination key and list of keys of multi-key commands (`ZUNIONSTORE`, `ZINTER`, `PFMERGE`, `LMPOP`, `FCALL`,
+  etc.), the keys of blocking pops (`BLPOP`, `BZPOPMIN`, etc.) and the key after the subcommand of `OBJECT`, `XGROUP`
+  and `XINFO`
+- `EVAL` / `EVALSHA` key segments, and the declared keys of `EVAL_RO` / `EVALSHA_RO`
 
 `SCAN` `MATCH` patterns are not prefixed, as phpredis only prefixes them when asked to.
 
@@ -281,6 +286,17 @@ Prefixing is handled in the connection wrapper for supported command families:
 > `KeyPrefixer::mgetKeys()` is deprecated: its result must no longer be passed to `command('mget', ...)`, which now
 > prefixes the list itself. A key list beside other keys was sent as it was, so GLIDE wrote or read the key `Array`
 > instead of the listed keys; it now throws.
+>
+> The other multi-key commands, such as `ZUNIONSTORE`, `PFMERGE`, `LMOVE`, `BLPOP` and `XREAD`, and some single-key
+> commands, such as the `GEO*`, stream and hash-field expiry commands, were sent unprefixed in 1.2.x and earlier too;
+> they are now prefixed at every key position phpredis prefixes. A list of keys GLIDE would send as the key `Array` now
+> throws for these commands as well, as in `sunionstore('destination', ['a', 'b'])` or `bzpopmin(['a'], 'b', 5)`; pass
+> the keys as separate arguments.
+>
+> The most visible effect is on Laravel's Redis queue with `block_for` set. Its pop waits in
+> `blpop([$queue.':notify'], $blockFor)` for the push script to add to the notify list, which the script prefixed while
+> the `BLPOP` did not, so on a prefixed connection a blocking worker picked up a new job only once `block_for` ran out,
+> or, with a `block_for` of `0`, never. It now wakes as soon as a job is pushed.
 
 ## Pipelines and Transactions
 
@@ -307,10 +323,9 @@ $results = Redis::pipeline()->set('a', 1)->get('a')->exec(); // without a callba
   sent together, and the results come back as a list in call order, shaped as phpredis shapes them (`false` for a
   missing `GET`, an associative array for `HMGET`).
 - The batch is not a phpredis `\Redis` client, so a callback whose parameter is typed `\Redis` gets a `TypeError`.
-  Laravel Pulse types its pipeline callback that way and matches on the phpredis and Predis clients, so Pulse's Redis
-  ingest is not supported on this driver. Type the parameter as the batch, as in
-  `Redis::pipeline(function (ValkeyGlideBatch $pipe) { ... })`, or leave it untyped, so the callback works with every
-  driver.
+  Type the parameter as the batch, as in `Redis::pipeline(function (ValkeyGlideBatch $pipe) { ... })`, or leave it
+  untyped, so the callback works with every driver. Laravel Pulse's own Redis ingest types its callback that way; the
+  package runs Pulse's ingest on this driver instead (see Laravel Pulse).
 - Horizon's pipelines and transactions run, as do its lock, its dashboard's tag and monitored-job pages and clearing its
   metrics, which use `setnx()`, `zrevrange()` and `scan()` (see What Is Implemented). In 1.2.0 and earlier, Horizon's
   lock was never taken, and each attempt wrote its lock key with no expiry: if Horizon ran on one of those releases,
@@ -541,7 +556,7 @@ write idempotent, for example by recording a unique operation id in the same tra
   sent. While keys are watched, the transaction is bound to the watched keys' slot from the start, and the message names
   them; keys left over by a failed `UNWATCH` keep that slot until the driver sends one that succeeds. Give the keys a
   common hash tag (`{user:1}:name`, `{user:1}:email`). A command GLIDE refuses to buffer binds the transaction to no
-  slot. Commands whose key positions the driver does not know, such as `SINTERSTORE` or `FCALL`, are left to the server,
+  slot. Commands whose key positions the driver does not know, such as GLIDE's JSON commands, are left to the server,
   which fails a transaction whose keys cross slots.
 - A cluster transaction that watched keys refuses, with a `LogicException` before anything is sent, every command whose
   keys the driver does not know or that has none. GLIDE sends a cluster transaction by its commands' own keys, or to
@@ -917,6 +932,20 @@ do {
   refusal only as `false`, the reply of every other failure, so the flush cannot tell it apart and does not fall back
   to `DEL` and `ZREM`. A flush on a cluster sends no script.
 
+## Laravel Pulse
+
+Pulse's `redis` ingest driver (`PULSE_INGEST_DRIVER=redis`) runs on valkey-glide connections. Pulse's own Redis ingest
+only talks to the phpredis, Predis and Relay clients, so when Pulse is installed the service provider wraps it in
+`SineMacula\Valkey\Pulse\ValkeyGlideIngest`, which runs Pulse's ingest, digest and trim on the connection
+`pulse.ingest.redis.connection` names when that is a valkey-glide connection, and leaves every other connection, ingest
+driver and custom `Ingest` binding to Pulse.
+
+The entries go to Pulse's own stream in Pulse's own format, under the shared `database.redis.options.prefix` alone and
+never the connection's own prefix, the same physical key Pulse uses over phpredis, so processes on either driver share
+it. A command GLIDE fails throws an `UnexpectedValueException`. Pulse's ingest refuses a connection with an open
+pipeline or transaction, so if the application batches on that connection, give Pulse its own
+(`PULSE_REDIS_CONNECTION`).
+
 ## ElastiCache Serverless
 
 AWS ElastiCache Serverless runs in cluster mode (single logical database, TLS required) and exposes the primary on port
@@ -995,11 +1024,12 @@ External integration coverage includes:
 
 - extension/client availability and connect/close behavior
 - connector/connection roundtrip behavior and retry semantics
-- command-prefix behavior, including list-style key commands (`MGET`)
+- command-prefix behavior, including list-style key commands (`MGET`) and the keys of the multi-key commands, on a
+  standalone server and a cluster, inside and outside batches
 - Laravel cache roundtrip behavior, physical key writes, locks, TTL edge cases, and cache tags on a standalone server
   and a cluster (tagged writes, `flush()`, `flushStale()` and `cache:prune-stale-tags`), including a standalone flush
   racing a second process that rewrites the flushed keys
-- Laravel queue push/pop behavior and physical queue key writes
+- Laravel queue push/pop behavior, physical queue key writes, and a blocking pop waiting on the prefixed notify key
 - Laravel session roundtrip behavior and physical session key writes
 - phpredis-compatible `setnx()`, `hsetnx()`, `zrevrange()` and options-array `scan()`, `zscan()`, `hscan()` and
   `sscan()`, including Laravel's own `RedisTagSet::entries()`, on a standalone server and a cluster
@@ -1012,6 +1042,8 @@ External integration coverage includes:
   transaction on a standalone server, key by key across slots on a cluster), tagged writes and a refused tag flush
   inside a pipeline, and Laravel Horizon's own Redis repositories under the `horizon:` prefix (the Horizon cluster
   cases run on Laravel 13 only, as Horizon supports clusters only there)
+- Laravel Pulse's `redis` ingest on a standalone server and a cluster, over connections with the shared prefix and with
+  one of their own
 - the key prefix a Laravel connection resolves to when the shared options, a connection's own options and the
   connection itself each set one, including an empty prefix and Horizon's connection, read back as physical keys on a
   standalone server and a cluster

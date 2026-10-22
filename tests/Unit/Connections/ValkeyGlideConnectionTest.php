@@ -52,8 +52,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     private const string TRANSACTION_FAILED_MESSAGE = 'The transaction failed and its outcome is unknown; it may have been committed.';
 
     /** @var string Message for a key-list command given a key list in a form GLIDE does not take as keys. */
-    private const string UNSUPPORTED_KEY_LIST_MESSAGE = '[%s] takes its keys as separate arguments or as a single list of keys, not a list beside other'
-        . ' arguments or a list of lists, which GLIDE would send as the key "Array" or drop.';
+    private const string UNSUPPORTED_KEY_LIST_MESSAGE = '[%s] was given a list of keys in a form GLIDE does not take as keys, such as a list beside other'
+        . ' arguments, a list of lists, or a list where the command takes only separate keys, which GLIDE would send as the key "Array" or drop.';
 
     /** @var string Message for a cluster INFO called without a route. */
     private const string UNROUTED_CLUSTER_INFO_MESSAGE = '[INFO] on a cluster connection needs a route, as each node reports only itself;'
@@ -4256,6 +4256,96 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify the keys of multi-key commands, their destination keys and their
+     * key lists, are prefixed inside a batch as they are outside one.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function multiKeyCommandsArePrefixedInsideAndOutsideABatch(): void
+    {
+        $client     = new ValkeyGlideFake;
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        $connection->command('zunionstore', ['d', ['a', 'b'], [1, 2]]);
+        $connection->pipeline(static function (ValkeyGlideBatch $pipe): void {
+            $pipe->zunionstore('d', ['a', 'b'], [1, 2]);
+            $pipe->__call('lmove', ['a', 'b', 'LEFT', 'RIGHT']);
+            $pipe->__call('sinterstore', ['d', 'a', 'b']);
+            $pipe->__call('xread', [['s' => '0']]);
+        });
+        $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->__call('pfmerge', ['d', ['a', 'b']]));
+
+        self::assertSame([['app:d', ['app:a', 'app:b'], ['1', '2']], ['app:d', ['app:a', 'app:b'], ['1', '2']]], $client->callsFor('zunionstore'));
+        self::assertSame([['app:a', 'app:b', 'LEFT', 'RIGHT']], $client->callsFor('lmove'));
+        self::assertSame([['app:d', 'app:a', 'app:b']], $client->callsFor('sinterstore'));
+        self::assertSame([[['app:s' => '0']]], $client->callsFor('xread'));
+        self::assertSame([['app:d', ['app:a', 'app:b']]], $client->callsFor('pfmerge'));
+    }
+
+    /**
+     * Verify a cluster transaction checks the slot of every key of a multi-key
+     * command, its destination key and its key list, after the prefix.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterTransactionChecksEveryKeyOfAMultiKeyCommand(): void
+    {
+        $client     = new ValkeyGlideClusterFake;
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        $client->willReturn('zunionstore', 1);
+
+        self::assertSame([1], $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->zunionstore('{t}d', ['{t}x', '{t}y'])));
+
+        try {
+            $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->zunionstore('{t}d', ['{t}x', 'foo']));
+            self::fail('Expected the cross-slot transaction to be refused.');
+        } catch (\LogicException $exception) {
+            self::assertSame(sprintf(self::CROSS_SLOT_MESSAGE, 'ZUNIONSTORE', 'app:foo', 14517, 15891), $exception->getMessage());
+        }
+
+        self::assertSame([['app:{t}d', ['app:{t}x', 'app:{t}y']]], $client->callsFor('zunionstore'));
+    }
+
+    /**
+     * Verify a watched cluster transaction carries a multi-key command whose
+     * keys share the watched slot, and refuses one with a key in another slot,
+     * naming the watched keys.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function watchedClusterTransactionChecksEveryKeyOfAMultiKeyCommand(): void
+    {
+        $client     = new ValkeyGlideClusterFake;
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        $client->willReturn('zunionstore', 1);
+        $connection->command('watch', ['{t}w']);
+
+        self::assertSame([1], $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->zunionstore('{t}d', ['{t}x'])));
+
+        $connection->command('watch', ['{t}w']);
+
+        try {
+            $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->zunionstore('{t}d', ['{t}x', 'x']));
+            self::fail('Expected the cross-slot transaction to be refused.');
+        } catch (\LogicException $exception) {
+            self::assertSame(sprintf(self::WATCHED_CROSS_SLOT_MESSAGE, 'ZUNIONSTORE', 'app:x', 15409, 15891, 'app:{t}w'), $exception->getMessage());
+        }
+
+        self::assertSame([['app:{t}d', ['app:{t}x']]], $client->callsFor('zunionstore'));
+    }
+
+    /**
      * Verify batched commands reach GLIDE with coercive typing, so the integer
      * arguments Laravel and Horizon pass are accepted.
      *
@@ -6819,7 +6909,7 @@ final class ValkeyGlideConnectionTest extends TestCase
      */
     public static function unguardedClusterCommands(): iterable
     {
-        yield 'unknown key positions' => ['sinterstore', ['{b}dst', '{b}s1']];
+        yield 'unknown key positions' => ['jsonSet', ['{b}doc', '$', '1']];
         yield 'keyless' => ['fcall', ['refresh', [], []]];
         yield 'no keys given' => ['exists', []];
     }
@@ -6866,19 +6956,19 @@ final class ValkeyGlideConnectionTest extends TestCase
     public function unknownKeyCommandsAreLeftToTheServerWithoutAClusterWatch(): void
     {
         $cluster = new ValkeyGlideClusterFake;
-        $cluster->willReturn('sinterstore', 1);
+        $cluster->willReturn('jsonSet', true);
 
-        $results = (new ValkeyGlideConnection($cluster))->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->__call('sinterstore', ['{b}dst', '{b}s1']));
+        $results = (new ValkeyGlideConnection($cluster))->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->__call('jsonSet', ['{b}doc', '$', '1']));
 
-        self::assertSame([1], $results);
+        self::assertSame([true], $results);
 
         $standalone = new ValkeyGlideFake;
-        $standalone->willReturn('sinterstore', 1);
+        $standalone->willReturn('jsonSet', true);
 
         $connection = new ValkeyGlideConnection($standalone);
         $connection->command('watch', ['a']);
 
-        self::assertSame([1], $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->__call('sinterstore', ['dst', 's1'])));
+        self::assertSame([true], $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->__call('jsonSet', ['doc', '$', '1'])));
     }
 
     /**
@@ -7861,10 +7951,11 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a key list beside other arguments, or a list of key lists, is
-     * refused before anything is sent, outside a batch and inside one, as GLIDE
-     * would send it as the key `Array` or drop keys; a refused call leaves a
-     * batch without a slot, and the batch carries on.
+     * Verify a key list beside other arguments, a list of key lists, or a list
+     * given to a command that takes only separate keys, is refused before
+     * anything is sent, outside a batch and inside one, as GLIDE would send it
+     * as the key `Array` or drop keys; a refused call leaves a batch without a
+     * slot, and the batch carries on.
      *
      * @return void
      *
@@ -7884,6 +7975,12 @@ final class ValkeyGlideConnectionTest extends TestCase
             ['sInter', ['a', ['b']]],
             ['mget', [['a'], 'b']],
             ['watch', ['a', ['b']]],
+            ['sInterStore', ['d', ['a', 'b']]],
+            ['sUnionStore', ['d', ['a', 'b']]],
+            ['sDiff', [['a', 'b']]],
+            ['zunionstore', ['d', [['a'], 'b']]],
+            ['blPop', [[['a']], 1]],
+            ['bzPopMin', [['a'], 'b', 1]],
         ];
 
         foreach ($shapes as [$method, $parameters]) {

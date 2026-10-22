@@ -12,6 +12,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use SineMacula\Valkey\Connections\KeyPrefixer;
+use SineMacula\Valkey\Connections\ValkeyGlideBatch;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use Tests\External\Concerns\ConnectsToTestServers;
 
@@ -19,7 +21,9 @@ use Tests\External\Concerns\ConnectsToTestServers;
  * External checks for the commands the connection answers as Laravel's phpredis
  * connection does, in the call shapes Laravel's and Horizon's locks, Horizon's
  * tag pages and Horizon's metrics clearing use: setnx, zrevrange and scan with
- * an options array.
+ * an options array; and for the keys of the commands that take a destination
+ * key, a list of keys or a key after a subcommand, which are prefixed, inside
+ * and outside batches, as phpredis prefixes them.
  *
  * Every test runs against the standalone server and, when
  * VALKEY_GLIDE_TEST_CLUSTER_HOST and VALKEY_GLIDE_TEST_CLUSTER_PORT are set,
@@ -31,6 +35,7 @@ use Tests\External\Concerns\ConnectsToTestServers;
  *
  * @internal
  */
+#[CoversClass(KeyPrefixer::class)]
 #[CoversClass(ValkeyGlideConnection::class)]
 #[Group('external')]
 final class ValkeyGlidePhpRedisParityExternalTest extends TestCase
@@ -48,6 +53,9 @@ final class ValkeyGlidePhpRedisParityExternalTest extends TestCase
 
     /** @var array<string, array<string, true>> Physical keys to delete after the test, by topology. */
     private array $trackedKeys = [];
+
+    /** @var string|null The hash tag the multi-key commands' keys of the test share. */
+    private ?string $tag = null;
 
     /**
      * Ensure extension preconditions are met before each external test.
@@ -80,6 +88,7 @@ final class ValkeyGlidePhpRedisParityExternalTest extends TestCase
 
         $this->trackedKeys = [];
         $this->connections = [];
+        $this->tag         = null;
 
         parent::tearDown();
     }
@@ -280,6 +289,280 @@ final class ValkeyGlidePhpRedisParityExternalTest extends TestCase
         self::assertCount(self::SCANNED_KEY_COUNT, $found);
         self::assertGreaterThan(1, count($expected));
         self::assertSame($expected, $formatted);
+    }
+
+    /**
+     * Verify the sorted-set commands that store into a destination, read a list
+     * of keys, or pop from the first of several keys, use the prefixed keys.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function sortedSetMultiKeyCommandsUseThePrefixedKeys(string $topology): void
+    {
+        $connection                                     = $this->connection($topology, self::PREFIX);
+        $raw                                            = $this->connection($topology, '');
+        [$a, $b, $empty, $union, $inter, $diff, $range] = $this->keys($topology, 'a', 'b', 'empty', 'union', 'inter', 'diff', 'range');
+
+        $connection->command('zadd', [$a, 1, 'm1', 2, 'm2']);
+        $connection->command('zadd', [$b, 3, 'm2', 4, 'm3']);
+
+        self::assertSame(3, $connection->command('zunionstore', [$union, [$a, $b]]));
+        self::assertSame(1, $connection->command('zinterstore', [$inter, [$a, $b]]));
+        self::assertSame(1, $connection->command('zdiffstore', [$diff, [$a, $b]]));
+        self::assertSame(2, $connection->command('zrangestore', [$range, $a, 0, -1]));
+        self::assertSame(['m1', 'm3', 'm2'], $connection->command('zunion', [[$a, $b]]));
+        self::assertSame(['m2'], $connection->command('zinter', [[$a, $b]]));
+        self::assertSame(['m1'], $connection->command('zdiff', [[$a, $b]]));
+        self::assertSame(1, $connection->command('zintercard', [[$a, $b]]));
+        self::assertSame(['m1', 'm3', 'm2'], $raw->command('zrange', [self::PREFIX . $union, 0, -1]));
+        self::assertSame(['m2'], $raw->command('zrange', [self::PREFIX . $inter, 0, -1]));
+        self::assertSame(['m1'], $raw->command('zrange', [self::PREFIX . $diff, 0, -1]));
+        self::assertSame(['m1', 'm2'], $raw->command('zrange', [self::PREFIX . $range, 0, -1]));
+
+        self::assertSame([self::PREFIX . $a, ['m1' => 1.0]], $connection->command('zmpop', [[$empty, $a], 'MIN']));
+        self::assertSame([self::PREFIX . $b, ['m3' => 4.0]], $connection->command('bzmpop', [0.1, [$empty, $b], 'MAX']));
+        self::assertSame([self::PREFIX . $a, 'm2', '2'], $connection->command('bzpopmin', [$empty, $a, 1]));
+        self::assertSame([self::PREFIX . $b, 'm2', '3'], $connection->command('bzpopmax', [[$empty, $b], 1]));
+        $this->assertNoUnprefixedKeys($topology, $a, $b, $union, $inter, $diff, $range);
+    }
+
+    /**
+     * Verify the set and HyperLogLog commands that store into a destination, or
+     * read a list of keys, use the prefixed keys.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function setAndHyperLogLogMultiKeyCommandsUseThePrefixedKeys(string $topology): void
+    {
+        $connection                                                   = $this->connection($topology, self::PREFIX);
+        $raw                                                          = $this->connection($topology, '');
+        [$s1, $s2, $union, $inter, $listed, $diff, $h1, $h2, $merged] = $this->keys($topology, 's1', 's2', 'union', 'inter', 'listed', 'diff', 'h1', 'h2', 'merged');
+
+        $connection->command('sadd', [$s1, 'a', 'b', 'c']);
+        $connection->command('sadd', [$s2, 'b', 'c', 'd']);
+
+        self::assertSame(4, $connection->command('sunionstore', [$union, $s1, $s2]));
+        self::assertSame(2, $connection->command('sinterstore', [$inter, $s1, $s2]));
+        self::assertSame(2, $connection->command('sinterstore', [[$listed, $s1, $s2]]));
+        self::assertSame(1, $connection->command('sdiffstore', [$diff, $s1, $s2]));
+        self::assertSame(2, $connection->command('sintercard', [[$s1, $s2]]));
+        self::assertSame(4, $raw->command('scard', [self::PREFIX . $union]));
+        self::assertSame(2, $raw->command('scard', [self::PREFIX . $inter]));
+        self::assertSame(2, $raw->command('scard', [self::PREFIX . $listed]));
+        self::assertSame(['a'], $raw->command('smembers', [self::PREFIX . $diff]));
+
+        self::assertSame(1, $connection->command('pfadd', [$h1, ['a', 'b']]));
+        self::assertSame(1, $connection->command('pfadd', [$h2, ['c']]));
+        self::assertSame(3, $connection->command('pfcount', [[$h1, $h2]]));
+        self::assertTrue($connection->command('pfmerge', [$merged, [$h1, $h2]]));
+        self::assertSame(3, $raw->command('pfcount', [self::PREFIX . $merged]));
+        $this->assertNoUnprefixedKeys($topology, $s1, $s2, $union, $inter, $listed, $diff, $h1, $h2, $merged);
+    }
+
+    /**
+     * Verify the list commands that move between two keys, or pop from the
+     * first of several keys, use the prefixed keys.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function listMultiKeyCommandsUseThePrefixedKeys(string $topology): void
+    {
+        $connection                             = $this->connection($topology, self::PREFIX);
+        $raw                                    = $this->connection($topology, '');
+        [$source, $destination, $empty, $other] = $this->keys($topology, 'source', 'destination', 'empty', 'other');
+
+        $connection->command('rpush', [$source, 'x', 'y', 'z']);
+
+        self::assertSame('x', $connection->command('lmove', [$source, $destination, 'LEFT', 'RIGHT']));
+        self::assertSame('y', $connection->command('blmove', [$source, $destination, 'LEFT', 'RIGHT', 0.1]));
+        self::assertSame(['x', 'y'], $raw->command('lrange', [self::PREFIX . $destination, 0, -1]));
+        self::assertSame([self::PREFIX . $destination, ['x']], $connection->command('lmpop', [[$empty, $destination], 'LEFT']));
+        self::assertSame([self::PREFIX . $source, ['z']], $connection->command('blmpop', [0.1, [$empty, $source], 'LEFT']));
+
+        $connection->command('rpush', [$other, 'a', 'b']);
+
+        self::assertSame([self::PREFIX . $other, 'a'], $connection->command('blpop', [[$empty, $other], 1]));
+        self::assertSame([self::PREFIX . $other, 'b'], $connection->command('brpop', [[$empty, $other], 1]));
+        $this->assertNoUnprefixedKeys($topology, $source, $destination, $other);
+    }
+
+    /**
+     * Verify the stream commands, including the stream maps of XREAD and
+     * XREADGROUP and the key after XGROUP's and XINFO's subcommand, use the
+     * prefixed key.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function streamCommandsUseThePrefixedKey(string $topology): void
+    {
+        $connection = $this->connection($topology, self::PREFIX);
+        $raw        = $this->connection($topology, '');
+        [$stream]   = $this->keys($topology, 'stream');
+
+        $id = $connection->command('xadd', [$stream, '*', ['field' => 'value']]);
+
+        self::assertIsString($id);
+        self::assertSame(1, $raw->command('xlen', [self::PREFIX . $stream]));
+        self::assertTrue($connection->command('xgroup', ['CREATE', $stream, 'group', '0']));
+        self::assertSame([self::PREFIX . $stream => [$id => ['field' => 'value']]], $connection->command('xreadgroup', ['group', 'consumer', [$stream => '>']]));
+        self::assertSame([self::PREFIX . $stream => [$id => ['field' => 'value']]], $connection->command('xread', [[$stream => '0']]));
+        self::assertSame(1, self::infoLength($connection->command('xinfo', ['STREAM', $stream])));
+        self::assertSame(1, $connection->command('xack', [$stream, 'group', [$id]]));
+        self::assertSame(1, $connection->command('xdel', [$stream, [$id]]));
+        self::assertSame(0, $connection->command('xlen', [$stream]));
+        $this->assertNoUnprefixedKeys($topology, $stream);
+    }
+
+    /**
+     * Verify the other commands that take two keys, a key after a subcommand,
+     * or keys inside a script's arguments, use the prefixed keys, and that
+     * SORT, as with phpredis, prefixes its key but not its STORE key.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function otherKeyCommandsUseThePrefixedKeys(string $topology): void
+    {
+        $connection                                            = $this->connection($topology, self::PREFIX);
+        $raw                                                   = $this->connection($topology, '');
+        [$t1, $t2, $restored, $places, $found, $list, $sorted] = $this->keys($topology, 't1', 't2', 'restored', 'places', 'found', 'list', 'sorted');
+
+        $connection->command('set', [$t1, 'ohmytext']);
+        $connection->command('set', [$t2, 'mynewtext']);
+
+        self::assertSame('mytext', $connection->command('lcs', [$t1, $t2]));
+        self::assertSame($raw->command('bitcount', [self::PREFIX . $t1]), $connection->command('bitcount', [$t1]));
+        self::assertSame($raw->command('object', ['encoding', self::PREFIX . $t1]), $connection->command('object', ['encoding', $t1]));
+        self::assertTrue($connection->command('restore', [$restored, 0, $connection->command('dump', [$t1])]));
+        self::assertSame('ohmytext', $raw->command('get', [self::PREFIX . $restored]));
+        self::assertSame([self::PREFIX . $t1, 'argument'], $connection->command('eval_ro', ['return {KEYS[1], ARGV[1]}', [$t1, 'argument'], 1]));
+
+        self::assertSame(1, $connection->command('geoadd', [$places, 13.361389, 38.115556, 'palermo']));
+        self::assertSame(1, $connection->command('geosearchstore', [$found, $places, 'palermo', 100, 'km']));
+        self::assertSame(1, $raw->command('zcard', [self::PREFIX . $found]));
+
+        $connection->command('rpush', [$list, '3', '1', '2']);
+
+        self::assertSame(3, $connection->command('sort', [$list, ['store' => $sorted]]));
+        self::assertSame(['1', '2', '3'], $raw->command('lrange', [$sorted, 0, -1]));
+        $this->assertNoUnprefixedKeys($topology, $t1, $t2, $restored, $places, $found, $list);
+    }
+
+    /**
+     * Verify multi-key commands use the prefixed keys inside a pipeline and a
+     * transaction, as they do outside a batch.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function multiKeyCommandsInBatchesUseThePrefixedKeys(string $topology): void
+    {
+        $connection                                                   = $this->connection($topology, self::PREFIX);
+        $raw                                                          = $this->connection($topology, '');
+        [$a, $b, $union, $inter, $source, $destination, $h1, $merged] = $this->keys($topology, 'a', 'b', 'union', 'inter', 'source', 'destination', 'h1', 'merged');
+
+        $results = $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($a, $b, $union, $inter): void {
+            $pipe->zadd($a, 1, 'm1');
+            $pipe->zadd($b, 2, 'm2');
+            $pipe->zunionstore($union, [$a, $b]);
+            $pipe->sadd($a . ':set', 'x');
+            $pipe->__call('sinterstore', [$inter, $a . ':set', $a . ':set']);
+        });
+
+        $this->keys($topology, 'a:set');
+
+        self::assertSame([1, 1, 2, 1, 1], $results);
+        self::assertSame(2, $raw->command('zcard', [self::PREFIX . $union]));
+        self::assertSame(['x'], $raw->command('smembers', [self::PREFIX . $inter]));
+
+        $results = $connection->transaction(static function (ValkeyGlideBatch $tx) use ($source, $destination, $h1, $merged): void {
+            $tx->rpush($source, 'x');
+            $tx->__call('lmove', [$source, $destination, 'LEFT', 'LEFT']);
+            $tx->pfadd($h1, ['a']);
+            $tx->__call('pfmerge', [$merged, [$h1]]);
+        });
+
+        self::assertSame([1, 'x', 1, true], $results);
+        self::assertSame(['x'], $raw->command('lrange', [self::PREFIX . $destination, 0, -1]));
+        self::assertSame(1, $raw->command('pfcount', [self::PREFIX . $merged]));
+        $this->assertNoUnprefixedKeys($topology, $a, $b, $union, $inter, $source, $destination, $h1, $merged);
+    }
+
+    /**
+     * Read the length XINFO STREAM reports.
+     *
+     * @param  mixed  $info
+     * @return mixed
+     */
+    private static function infoLength(mixed $info): mixed
+    {
+        return is_array($info) ? ($info['length'] ?? null) : null;
+    }
+
+    /**
+     * Assert that none of the given keys was written without the prefix.
+     *
+     * @param  string  $topology
+     * @param  string  ...$keys
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    private function assertNoUnprefixedKeys(string $topology, string ...$keys): void
+    {
+        self::assertSame(0, $this->connection($topology, '')->command('exists', $keys));
+    }
+
+    /**
+     * Build logical keys that share the test's hash tag, tracking both their
+     * prefixed and their unprefixed physical keys for deletion after the test.
+     *
+     * @param  string  $topology
+     * @param  string  ...$names
+     * @return list<string>
+     */
+    private function keys(string $topology, string ...$names): array
+    {
+        $keys = [];
+
+        foreach ($names as $name) {
+            $key = ($this->tag ??= '{' . $this->uniqueName('prefixed') . '}') . $name;
+
+            $this->trackedKeys[$topology][self::PREFIX . $key] = true;
+            $this->trackedKeys[$topology][$key]                = true;
+
+            $keys[] = $key;
+        }
+
+        return $keys;
     }
 
     /**

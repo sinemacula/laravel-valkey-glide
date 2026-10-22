@@ -168,8 +168,8 @@ final class SortedSetParityValkeyGlideConnectionTest extends TestCase
         $connection->zunionstore(8, ['a', 'b']);
 
         self::assertSame([['app:123', [], '1', 'm']], $client->callsFor('zadd'));
-        self::assertSame([[7, ['a', 'b'], null, null]], $client->callsFor('zinterstore'));
-        self::assertSame([[8, ['a', 'b'], null, null]], $client->callsFor('zunionstore'));
+        self::assertSame([['app:7', ['app:a', 'app:b'], null, null]], $client->callsFor('zinterstore'));
+        self::assertSame([['app:8', ['app:a', 'app:b'], null, null]], $client->callsFor('zunionstore'));
     }
 
     /**
