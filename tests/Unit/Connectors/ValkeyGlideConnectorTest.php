@@ -235,6 +235,109 @@ final class ValkeyGlideConnectorTest extends TestCase
     }
 
     /**
+     * Verify a connection's own prefix overrides the shared options' prefix and
+     * its own nested options' prefix, as Laravel's phpredis connector applies
+     * it, while its other keys keep the usual order.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectGivesTheConnectionPrefixPrecedenceOverTheSharedOptions(): void
+    {
+        $fake = new ValkeyGlideFake;
+
+        $connector = new ValkeyGlideConnector(
+            clientFactory  : static fn (): \ValkeyGlide => $fake,
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        $connection = $connector->connect(
+            ['host' => 'node-1', 'database' => 1, 'prefix' => 'own:', 'options' => ['prefix' => 'nested:', 'database' => 3]],
+            ['prefix' => 'shared:', 'database' => 2],
+        );
+
+        $connection->command('get', ['k']);
+
+        self::assertSame('own:', $connection->getPrefix());
+        self::assertSame([['own:k']], $fake->callsFor('get'));
+        self::assertSame(3, $fake->callsFor('connect')[0]['database_id']);
+    }
+
+    /**
+     * Verify the shared options' prefix applies to a connection without a
+     * prefix of its own, and its nested options' prefix overrides that.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectAppliesTheSharedOrNestedPrefixWhenTheConnectionHasNone(): void
+    {
+        $connector = new ValkeyGlideConnector(
+            clientFactory  : static fn (): \ValkeyGlide => new ValkeyGlideFake,
+            extensionLoader: static fn (string $extension): bool => true,
+            classResolver  : static fn (string $class): bool => true,
+        );
+
+        self::assertSame('shared:', $connector->connect(['host' => 'node-1'], ['prefix' => 'shared:'])->getPrefix());
+        self::assertSame('nested:', $connector->connect(['host' => 'node-1', 'options' => ['prefix' => 'nested:']], ['prefix' => 'shared:'])->getPrefix());
+    }
+
+    /**
+     * Verify the first cluster node's own prefix does not override the shared
+     * or cluster-wide prefix, which phpredis' cluster connector applies while
+     * ignoring the nodes' keys, and applies only when neither is set.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectToClusterKeepsTheSharedAndClusterPrefixesOverTheFirstNodePrefix(): void
+    {
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static fn (array $args): \ValkeyGlideCluster => new ValkeyGlideClusterFake,
+            extensionLoader     : static fn (string $extension): bool => true,
+            classResolver       : static fn (string $class): bool => true,
+        );
+
+        $node = ['host' => 'node-1', 'port' => 6380, 'prefix' => 'node:'];
+
+        self::assertSame('shared:', $connector->connectToCluster([$node], [], ['prefix' => 'shared:'])->getPrefix());
+        self::assertSame('cluster:', $connector->connectToCluster([$node], ['prefix' => 'cluster:'], ['prefix' => 'shared:'])->getPrefix());
+        self::assertSame('own:', $connector->connectToCluster([$node, 'options' => ['prefix' => 'own:']], ['prefix' => 'cluster:'], ['prefix' => 'shared:'])->getPrefix());
+        self::assertSame('node:', $connector->connectToCluster([$node], [], [])->getPrefix());
+    }
+
+    /**
+     * Verify the first cluster node's nested options override the shared and
+     * cluster-wide options, and are ignored when they are not an array.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function connectToClusterAppliesTheFirstNodeNestedOptionsOverTheClusterOptions(): void
+    {
+        $connector = new ValkeyGlideConnector(
+            clusterClientFactory: static fn (array $args): \ValkeyGlideCluster => new ValkeyGlideClusterFake,
+            extensionLoader     : static fn (string $extension): bool => true,
+            classResolver       : static fn (string $class): bool => true,
+        );
+
+        $nested  = [['host' => 'node-1', 'port' => 6380, 'prefix' => 'node:', 'options' => ['prefix' => 'nested:']]];
+        $invalid = [['host' => 'node-1', 'port' => 6380, 'prefix' => 'node:', 'options' => 'invalid']];
+
+        self::assertSame('nested:', $connector->connectToCluster($nested, ['prefix' => 'cluster:'], ['prefix' => 'shared:'])->getPrefix());
+        self::assertSame('cluster:', $connector->connectToCluster($invalid, ['prefix' => 'cluster:'], ['prefix' => 'shared:'])->getPrefix());
+    }
+
+    /**
      * Verify a cluster options entry that is not an array is ignored.
      *
      * @return void
