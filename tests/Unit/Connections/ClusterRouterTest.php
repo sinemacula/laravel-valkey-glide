@@ -124,7 +124,7 @@ final class ClusterRouterTest extends TestCase
     public function routeRefusesScan(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('ClusterScanCursor');
+        $this->expectExceptionMessage('A raw SCAN on a cluster connection covers a single node; call scan() with Laravel\'s options array instead.');
 
         (new ClusterRouter)->route(['scan', '0']);
     }
