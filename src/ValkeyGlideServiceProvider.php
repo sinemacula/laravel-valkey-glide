@@ -20,6 +20,7 @@ use SineMacula\Valkey\Cache\ValkeyGlideStore;
 use SineMacula\Valkey\Connectors\ValkeyGlideConnector;
 use SineMacula\Valkey\Pulse\ValkeyGlideIngest;
 use SineMacula\Valkey\Queue\Connectors\ValkeyGlideQueueConnector;
+use SineMacula\Valkey\Support\HorizonClusterConnection;
 
 /**
  * Valkey GLIDE service provider.
@@ -28,7 +29,9 @@ use SineMacula\Valkey\Queue\Connectors\ValkeyGlideQueueConnector;
  * a "redis" cache driver whose store stays safe on GLIDE cluster connections;
  * before Laravel 13.5, a "redis" queue connector whose queue hash-tags its keys
  * on GLIDE cluster connections, both otherwise behaving as Laravel's; and, when
- * Laravel Pulse is installed, a Redis ingest that runs on GLIDE connections.
+ * Laravel Pulse is installed, a Redis ingest that runs on GLIDE connections. It
+ * also gives Laravel Horizon the cluster connection that Horizon itself only
+ * configures from Laravel 13.5.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -46,6 +49,14 @@ final class ValkeyGlideServiceProvider extends ServiceProvider
         $this->callAfterResolving(RedisManager::class, function (RedisManager $redis): void {
             $redis->extend('valkey-glide', fn (): ValkeyGlideConnector => new ValkeyGlideConnector);
         });
+
+        // A manager already built keeps the configuration it was built with, so
+        // the configuration is only repaired for a manager still to be built.
+        if (!$this->app->resolved('redis')) {
+            $this->app->beforeResolving('redis', function (): void {
+                HorizonClusterConnection::configure($this->app->make(Config::class));
+            });
+        }
 
         $this->callAfterResolving(CacheManager::class, function (CacheManager $cache): void {
             $cache->extend('redis', $this->redisCacheDriver($cache));
