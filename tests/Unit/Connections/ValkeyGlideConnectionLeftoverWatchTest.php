@@ -9,9 +9,11 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ValkeyGlideBatch;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use SineMacula\Valkey\Exceptions\CommandException;
 use SineMacula\Valkey\Exceptions\ConnectionException;
 use Tests\Fakes\ValkeyGlideClusterFake;
 use Tests\Fakes\ValkeyGlideFake;
+use Tests\Fakes\ValkeyGlideLastErrorFake;
 
 /**
  * Valkey GLIDE connection test case for a WATCH left over from a transaction
@@ -27,6 +29,9 @@ final class ValkeyGlideConnectionLeftoverWatchTest extends TestCase
 {
     /** @var string Shared transient failure message for retry assertions. */
     private const string TRANSIENT_RESET_MESSAGE = 'connection reset by peer';
+
+    /** @var string Error GLIDE records for a command against a key of another type. */
+    private const string RECORDED_WRONGTYPE_ERROR = 'WRONGTYPE: Operation against a key holding the wrong kind of value';
 
     /** @var string Message for an unwatched transaction whose exec() failed. */
     private const string TRANSACTION_FAILED_MESSAGE = 'The transaction failed and its outcome is unknown; it may have been committed.';
@@ -96,6 +101,45 @@ final class ValkeyGlideConnectionLeftoverWatchTest extends TestCase
         self::assertSame('value', $connection->command('get', ['k']));
         self::assertSame('value', $connection->command('get', ['k']));
         self::assertSame(['unwatch', 'get', 'get'], array_slice($client->callOrder(), -3));
+    }
+
+    /**
+     * Verify the client's own methods, which reach no server, do not send the
+     * leftover UNWATCH, so one that fails cannot replace the error that
+     * getLastError() reads, and the next command still sends it.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clientLocalMethodsDoNotSendTheLeftoverUnwatch(): void
+    {
+        $client     = new ValkeyGlideLastErrorFake;
+        $connection = new ValkeyGlideConnection($client);
+
+        $this->leaveWatchBehind($connection, $client, 'a');
+
+        $client->willRecordError('unwatch', 'unwatch failed');
+        $client->willFail('incr', self::RECORDED_WRONGTYPE_ERROR);
+
+        try {
+            $connection->command('incr', ['counter']);
+            self::fail('Expected the recorded error to be thrown.');
+        } catch (CommandException $exception) {
+            self::assertSame(self::RECORDED_WRONGTYPE_ERROR, $exception->getMessage());
+        }
+
+        $unwatches = count($client->callsFor('unwatch'));
+
+        self::assertSame(self::RECORDED_WRONGTYPE_ERROR, $connection->command('getLastError'));
+        self::assertTrue($connection->command('clearLastError'));
+        self::assertCount($unwatches, $client->callsFor('unwatch'));
+
+        $client->willReturn('get', 'value');
+
+        self::assertSame('value', $connection->command('get', ['k']));
+        self::assertCount($unwatches + 1, $client->callsFor('unwatch'));
     }
 
     /**

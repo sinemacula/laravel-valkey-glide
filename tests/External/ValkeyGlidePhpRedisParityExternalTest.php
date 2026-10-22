@@ -205,8 +205,13 @@ final class ValkeyGlidePhpRedisParityExternalTest extends TestCase
     {
         $connection = $this->connection(self::STANDALONE, self::PREFIX);
 
+        // From 1.2, GLIDE records the server's error, which is thrown instead.
+        $message = method_exists($connection->client(), 'getLastError')
+            ? 'invalid cursor'
+            : 'Expected array response from scan on [' . self::PREFIX . '*], received [bool].';
+
         $this->expectException(\UnexpectedValueException::class);
-        $this->expectExceptionMessage('Expected array response from scan on [' . self::PREFIX . '*], received [bool].');
+        $this->expectExceptionMessage($message);
 
         $connection->scan('not-a-cursor', ['match' => self::PREFIX . '*']);
     }
