@@ -750,11 +750,12 @@ Laravel's own code unchanged.
 - Tagged writes record each key in the tag's sorted set, `tag:<name>:entries`, under the connection and cache
   prefixes. `increment()` and `decrement()` record their key with GLIDE's `['NX']` option; GLIDE ignores phpredis'
   `'NX'` string and writes nothing.
-- `flush()` reads each tag's sorted set with `ZSCAN`, deletes the entries 1,000 at a time with one `DEL` (on a cluster
-  GLIDE splits it across hash slots), then removes those entries from the tags' sorted sets with `ZREM`. An entry
-  tagged while the flush runs may or may not be removed with it; one the flush does not reach stays recorded. A sorted
-  set left empty is removed by the server. `CacheFlushing` and `CacheFlushed` are dispatched when the installed Laravel
-  version dispatches them for tags.
+- `flush()` reads each tag's sorted set with `ZSCAN` and deletes the entries 1,000 at a time. On a standalone server
+  each batch is deleted, and removed from the tags' sorted sets, in one `EVAL` script, as Laravel's own flush does over
+  a standalone phpredis or Predis connection. On a cluster each batch is deleted with one `DEL`, which GLIDE splits
+  across hash slots, then removed from each tag's sorted set with `ZREM`. An entry tagged while the flush runs may or
+  may not be removed with it; one the flush does not reach stays recorded. A sorted set left empty is removed by the
+  server. `CacheFlushing` and `CacheFlushed` are dispatched when the installed Laravel version dispatches them for tags.
 - `flushStale()` removes expired entries from each tag's sorted set with `ZREMRANGEBYSCORE`, one command per tag.
 - `cache:prune-stale-tags` finds the tag sets with a `SCAN` for sorted sets whose pattern carries the connection and
   cache prefixes, with glob characters in them escaped; on a cluster it walks every primary with a `ClusterScanCursor`.
@@ -765,11 +766,17 @@ Laravel's own code unchanged.
   Cannot Buffer); the cluster `SCAN`, which GLIDE would run at once, outside the batch, is refused the same way.
 
 > [!NOTE]
-> A tag flush is not atomic. Over a standalone phpredis or Predis connection Laravel 12.30 and later delete each batch
-> of entries and their tag records in one Lua script, which cannot run across hash slots. Here each batch is a `DEL`
-> followed by a `ZREM` per tag, so a key written again between the two can lose its tag record. Laravel's own cluster
-> connections instead delete the entries, then each tag's whole sorted set. Entries are deleted first, so an interrupted
-> flush leaves only records of deleted keys, and running it again completes it.
+> On a standalone server each batch of a tag flush is atomic: no other command runs between deleting its entries and
+> removing their tag records, so a write of a key and its record that lands during the flush is either removed with the
+> batch or kept with its record. A tagged write is itself two commands, and Laravel 12 and 13 before 13.30.1 record the
+> key before writing the value, so a flush that runs between the two still leaves that value untracked, as it does with
+> Laravel's own Lua flush. The script names every key it touches. Unlike Laravel's, it is given the tag members rather
+> than stripping the prefix from each key with a Lua pattern, so prefixes with any characters work. A whole flush is not
+> atomic, here or in Laravel: it runs one script per batch of 1,000. The script cannot run across hash slots, so on a
+> cluster a key written again between a batch's `DEL` and its `ZREM` can lose its tag record, and stays cached until it
+> expires. Laravel's own cluster connections instead delete the entries, then each tag's whole sorted set. Either way
+> entries are deleted first, so an interrupted flush leaves only records of deleted keys, and running it again completes
+> it.
 
 With `ext-valkey_glide` 1.1.2 a failed command returns `false` (see Runtime Behavior), so on these paths, outside a
 batch, a `false` reply throws an `UnexpectedValueException` naming the command and key, rather than reporting a partial
@@ -830,6 +837,12 @@ do {
 - The user running `cache:prune-stale-tags` needs `SCAN` permission. On a cluster, with 1.1.2 a `SCAN` refused by an
   ACL aborts the PHP process; on a standalone server the refusal comes back as `false` and the command throws an
   `UnexpectedValueException`.
+- On a standalone server the user running a tag `flush()` needs `EVAL` permission (the `@scripting` ACL category), as
+  with Laravel's own flush over phpredis and Predis. Earlier releases flushed with `DEL` and `ZREM` only, so a user
+  denied `EVAL`, or a server with `EVAL` disabled, could flush; now the refused script comes back as `false` and the
+  flush throws an `UnexpectedValueException` naming `EVAL` before any entry is deleted. With 1.1.2 GLIDE reports the
+  refusal only as `false`, the reply of every other failure, so the flush cannot tell it apart and does not fall back
+  to `DEL` and `ZREM`. A flush on a cluster sends no script.
 
 ## ElastiCache Serverless
 
@@ -911,7 +924,8 @@ External integration coverage includes:
 - connector/connection roundtrip behavior and retry semantics
 - command-prefix behavior, including list-style key commands (`MGET`)
 - Laravel cache roundtrip behavior, physical key writes, locks, TTL edge cases, and cache tags on a standalone server
-  and a cluster (tagged writes, `flush()`, `flushStale()` and `cache:prune-stale-tags`)
+  and a cluster (tagged writes, `flush()`, `flushStale()` and `cache:prune-stale-tags`), including a standalone flush
+  racing a second process that rewrites the flushed keys
 - Laravel queue push/pop behavior and physical queue key writes
 - Laravel session roundtrip behavior and physical session key writes
 - phpredis-compatible `setnx()`, `hsetnx()`, `zrevrange()` and options-array `scan()`, `zscan()`, `hscan()` and
