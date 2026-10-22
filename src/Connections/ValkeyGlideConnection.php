@@ -222,6 +222,9 @@ final class ValkeyGlideConnection extends Connection
     /** @var list<string>|null Prefixed keys watched with WATCH, or null when nothing is watched. */
     private ?array $watchedKeys = null;
 
+    /** @var bool Whether the watched keys are left over from an UNWATCH that failed once their WATCH was released, by unwatch() or a transaction that ended, rather than watched for one still to run. */
+    private bool $watchLeftOver = false;
+
     /** @var array<string, true> Cluster scan cursor ids this connection returned and has not yet resumed from. */
     private array $clusterScanCursors = [];
 
@@ -518,6 +521,8 @@ final class ValkeyGlideConnection extends Connection
             return $this->queueBatchCommand($this->batch, $normalizedMethod, $parameters);
         }
 
+        $this->unwatchLeftOverKeys();
+
         return $this->executeCommandWithRetry(
             $normalizedMethod,
             $this->prefixer->apply($normalizedMethod, $parameters),
@@ -543,6 +548,7 @@ final class ValkeyGlideConnection extends Connection
         $normalizedMethod = $this->normalizeSubscriptionMethod($method);
 
         $this->assertNoActiveBatch($normalizedMethod, 'subscribe outside the batch');
+        $this->unwatchLeftOverKeys();
 
         $this->invokeSubscription($normalizedMethod, $this->normalizeSubscriptionChannels($channels), $callback);
     }
@@ -614,7 +620,7 @@ final class ValkeyGlideConnection extends Connection
             $this->endBatch($this->batch);
         }
 
-        $this->watchedKeys = null;
+        $this->forgetWatchedKeys();
 
         $this->glideClient->close();
     }
@@ -857,6 +863,8 @@ final class ValkeyGlideConnection extends Connection
      */
     private function beginBatch(bool $atomic): BatchState
     {
+        $this->unwatchLeftOverKeys();
+
         $batch       = new BatchState($this, $atomic);
         $this->batch = $batch;
 
@@ -1057,7 +1065,10 @@ final class ValkeyGlideConnection extends Connection
      * so that every path that ends the transaction without EXEC also clears
      * them, as GLIDE's discard() does not. They are tracked once GLIDE has
      * watched them, before any listener hears of it, and not at all when GLIDE
-     * refuses them.
+     * refuses them. Keys left over from a transaction that has ended are
+     * unwatched first; if that fails, they stay tracked beside the new keys, as
+     * the caller's own, since the server may still hold them, and the next
+     * transaction is treated as guarded by them all.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
@@ -1068,6 +1079,7 @@ final class ValkeyGlideConnection extends Connection
     private function watchKeys(string $method, array $parameters): mixed
     {
         $this->assertNoActiveBatch($method, 'call watch() before starting the transaction');
+        $this->unwatchLeftOverKeys();
 
         $parameters = $this->prefixer->apply($method, $this->batchCommands->spreadKeyList($parameters));
 
@@ -1076,7 +1088,8 @@ final class ValkeyGlideConnection extends Connection
                 return;
             }
 
-            $this->watchedKeys = array_merge($this->watchedKeys ?? [], $this->prefixer->keys($method, $parameters) ?? []);
+            $this->watchedKeys   = array_merge($this->watchedKeys ?? [], $this->prefixer->keys($method, $parameters) ?? []);
+            $this->watchLeftOver = false;
         });
     }
 
@@ -1084,9 +1097,11 @@ final class ValkeyGlideConnection extends Connection
      * Stop watching every watched key.
      *
      * The keys are forgotten once GLIDE reports the UNWATCH done, before any
-     * listener hears of it. An UNWATCH that GLIDE fails, which 1.1.2 reports as
-     * false, or that throws, keeps them, as the server may still hold the
-     * WATCH, just as a WATCH that GLIDE refuses is not tracked.
+     * listener hears of it. The caller has released them, so an UNWATCH that
+     * GLIDE fails, which 1.1.2 reports as false, or that throws, leaves them
+     * over, as the server may still hold the WATCH: the failure still reaches
+     * the caller, and the UNWATCH is sent again before the next command. Keys
+     * already left over go with the same UNWATCH.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
@@ -1098,13 +1113,60 @@ final class ValkeyGlideConnection extends Connection
     {
         $this->assertNoActiveBatch($method, 'call unwatch() outside the transaction');
 
+        $this->watchLeftOver = $this->watchedKeys !== null;
+
         return $this->executeCommandWithRetry($method, $parameters, function (mixed $result): void {
             if ($result !== true) {
                 return;
             }
 
-            $this->watchedKeys = null;
+            $this->forgetWatchedKeys();
         });
+    }
+
+    /**
+     * Send UNWATCH again for keys left over from an UNWATCH that failed.
+     *
+     * The caller's unwatch() released them, or the transaction they were
+     * watched for has ended, so the WATCH the server may still hold guards
+     * nothing, but it would abort the next transaction, which the driver would
+     * treat as watched. It is sent before each command, outside any batch, so
+     * it is never buffered, until GLIDE reports it done; one that fails again,
+     * returning false or throwing, keeps the keys for the next command, and the
+     * command runs regardless. Keys the caller watches again are no longer left
+     * over, so it never clears a WATCH that a transaction still to run relies
+     * on.
+     *
+     * @return void
+     */
+    private function unwatchLeftOverKeys(): void
+    {
+        if (!$this->watchLeftOver) {
+            return;
+        }
+
+        try {
+            $unwatched = $this->dispatchToClient('unwatch', []) === true;
+        } catch (\Throwable) {
+            $unwatched = false;
+        }
+
+        if (!$unwatched) {
+            return;
+        }
+
+        $this->forgetWatchedKeys();
+    }
+
+    /**
+     * Forget the watched keys, and that they were left over.
+     *
+     * @return void
+     */
+    private function forgetWatchedKeys(): void
+    {
+        $this->watchedKeys   = null;
+        $this->watchLeftOver = false;
     }
 
     /**
@@ -1293,7 +1355,7 @@ final class ValkeyGlideConnection extends Connection
      * exception of its callback, a failed exec() or a refused command, is the
      * one the caller sees. The batch has closed before any cleanup is sent, so
      * a cleanup that throws cannot leave it open; keys whose UNWATCH failed
-     * stay tracked, as they do when it fails outside a failure.
+     * stay tracked as left over, as they do when it fails outside a failure.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @return void
@@ -1533,10 +1595,11 @@ final class ValkeyGlideConnection extends Connection
      * GLIDE's discard() is client-side only and leaves WATCH in place on the
      * server, so a transaction that ends without a committed EXEC unwatches. On
      * a cluster, EXEC only clears the watches on its own node, so every watched
-     * cluster transaction unwatches. The watched keys stay tracked when that
-     * UNWATCH fails and no EXEC committed, as the server may still hold the
-     * WATCH and abort the next transaction. A batch that ends while a callback
-     * owns it stays the active batch until the callback returns.
+     * cluster transaction unwatches. When that UNWATCH fails, the server may
+     * still hold the WATCH and abort the next transaction, so the keys stay
+     * tracked, as left over, and the UNWATCH is sent again before the next
+     * command. A batch that ends while a callback owns it stays the active
+     * batch until the callback returns.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  bool  $committed
@@ -1559,16 +1622,60 @@ final class ValkeyGlideConnection extends Connection
             return;
         }
 
-        // A committed standalone EXEC has already cleared the WATCH, so the
-        // short-circuit sends UNWATCH only in the other cases.
-        $unwatched = (!$committed || $this->glideClient instanceof \ValkeyGlideCluster)
-            && $this->dispatchToClient('unwatch', []) === true;
+        // The transaction the keys were watched for has ended, so a WATCH that
+        // outlives its UNWATCH guards nothing.
+        $this->watchLeftOver = true;
 
-        if (!$committed && !$unwatched) {
+        if (!$committed) {
+            $this->unwatchEndedTransaction();
+
             return;
         }
 
-        $this->watchedKeys = null;
+        $this->endCommittedWatch();
+    }
+
+    /**
+     * Send UNWATCH for a transaction that ended without a committed EXEC,
+     * forgetting the keys once GLIDE reports it done.
+     *
+     * An UNWATCH that throws reaches the caller, unless a failure that ended
+     * the batch is being thrown.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    private function unwatchEndedTransaction(): void
+    {
+        if ($this->dispatchToClient('unwatch', []) !== true) {
+            return;
+        }
+
+        $this->forgetWatchedKeys();
+    }
+
+    /**
+     * Clear the WATCH of a transaction whose EXEC committed.
+     *
+     * A committed standalone EXEC has cleared the WATCH. On a cluster, EXEC
+     * only clears the watches on its own node, so UNWATCH is sent as it is for
+     * keys left over: one that fails, returning false or throwing, does not
+     * reach the caller, as the transaction has committed and a caller told
+     * otherwise could apply it again, and the keys stay over for the next
+     * command.
+     *
+     * @return void
+     */
+    private function endCommittedWatch(): void
+    {
+        if ($this->glideClient instanceof \ValkeyGlideCluster) {
+            $this->unwatchLeftOverKeys();
+
+            return;
+        }
+
+        $this->forgetWatchedKeys();
     }
 
     /**
@@ -1616,9 +1723,9 @@ final class ValkeyGlideConnection extends Connection
      * could take it to a node the WATCH does not guard, and is refused. While
      * keys are watched, the transaction is bound to their slot from the start,
      * so a key in another slot is reported against the watched keys, which may
-     * be left over from an unwatch() that failed. The slot is only resolved
-     * here, and bound once GLIDE has buffered the command, so a command GLIDE
-     * refuses binds the transaction to nothing.
+     * be left over from an UNWATCH that keeps failing. The slot is only
+     * resolved here, and bound once GLIDE has buffered the command, so a
+     * command GLIDE refuses binds the transaction to nothing.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  string  $method
@@ -2003,7 +2110,8 @@ final class ValkeyGlideConnection extends Connection
      * the client, and with it the server connection that holds the WATCH, so
      * the next transaction would commit unguarded. The error is rethrown
      * instead, as phpredis surfaces a dropped connection, and the caller starts
-     * the WATCH again.
+     * the WATCH again. Keys left over from a transaction that has ended guard
+     * nothing, so they do not hold the retry back.
      *
      * @param  int  $attempt
      * @param  string  $method
@@ -2012,7 +2120,7 @@ final class ValkeyGlideConnection extends Connection
      */
     private function shouldRetryAttempt(int $attempt, string $method, \Throwable $exception): bool
     {
-        if ($attempt > 0 || $this->watchedKeys !== null) {
+        if ($attempt > 0 || ($this->watchedKeys !== null && !$this->watchLeftOver)) {
             return false;
         }
 
@@ -2088,7 +2196,8 @@ final class ValkeyGlideConnection extends Connection
      *
      * The replaced client is closed only once its successor exists, so a failed
      * reconnect leaves the connection holding a client rather than a closed
-     * one.
+     * one. The successor holds no WATCH, so keys left over from an ended
+     * transaction, the only ones a retry runs with, are forgotten.
      *
      * @return bool
      *
@@ -2105,6 +2214,7 @@ final class ValkeyGlideConnection extends Connection
 
         if ($previousClient !== $this->glideClient) {
             $this->closeReplacedClient($previousClient);
+            $this->forgetWatchedKeys();
         }
 
         return true;

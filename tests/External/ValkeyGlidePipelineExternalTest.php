@@ -1895,9 +1895,10 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
 
     /**
      * Verify an unwatch() that GLIDE buffers, rather than sends, on a client
-     * put in batch mode outside the driver returns null and keeps the keys
-     * watched, so the transaction that the WATCH, still on the server, aborts
-     * returns false.
+     * put in batch mode outside the driver returns null and leaves the keys
+     * over, so the UNWATCH is sent again before the next transaction, which
+     * commits although the key it no longer watches changed while the WATCH was
+     * still on the server.
      *
      * @param  string  $topology
      * @return void
@@ -1906,7 +1907,7 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
      */
     #[DataProvider('topologies')]
     #[Test]
-    public function unwatchBufferedOutsideTheDriverKeepsTheKeysWatched(string $topology): void
+    public function unwatchBufferedOutsideTheDriverLeavesTheKeysOver(string $topology): void
     {
         $connection = $this->connect($topology, ['w', 'out']);
         $other      = $this->connect($topology, [], $this->prefixOf($connection));
@@ -1923,8 +1924,8 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
 
         $other->command('set', ['w', '2']);
 
-        self::assertFalse($connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->set('out', 'aborted')));
-        self::assertFalse($other->command('get', ['out']));
+        self::assertSame([true], $connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->set('out', 'committed')));
+        self::assertSame('committed', $other->command('get', ['out']));
     }
 
     /**
