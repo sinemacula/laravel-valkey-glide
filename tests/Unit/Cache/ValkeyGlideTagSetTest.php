@@ -430,21 +430,33 @@ final class ValkeyGlideTagSetTest extends TestCase
     }
 
     /**
-     * Verify a reset of tags without entries sends no write.
+     * Verify a reset of tags without entries sends no write: on a standalone
+     * server it reads each tag's sorted set with a ZSCAN and sends no script,
+     * and on a cluster its only raw commands are the ZSCANs routed to each
+     * set's primary.
      *
      * @return void
      */
     #[Test]
     public function resetDoesNothingForEmptyTagSets(): void
     {
-        foreach ([new ValkeyGlideFake, new ValkeyGlideClusterFake] as $client) {
-            $this->tagSet($client, ['a', 'b'])->reset();
+        $client = new ValkeyGlideFake;
 
-            self::assertCount(2, $client->callsFor('zscan'));
-            self::assertSame([], $client->callsFor('del'));
-            self::assertSame([], $client->callsFor('zrem'));
-            self::assertSame([], $client->callsFor('rawcommand'));
-        }
+        $this->tagSet($client, ['a', 'b'])->reset();
+
+        self::assertCount(2, $client->callsFor('zscan'));
+        self::assertSame([], $client->callsFor('del'));
+        self::assertSame([], $client->callsFor('zrem'));
+        self::assertSame([], $client->callsFor('rawcommand'));
+
+        $cluster = new ValkeyGlideClusterFake;
+
+        $this->tagSet($cluster, ['a', 'b'])->reset();
+
+        self::assertSame([], $cluster->callsFor('zscan'));
+        self::assertSame([], $cluster->callsFor('del'));
+        self::assertSame([], $cluster->callsFor('zrem'));
+        self::assertSame(['ZSCAN', 'ZSCAN'], array_column($cluster->callsFor('rawcommand'), 1));
     }
 
     /**
@@ -527,6 +539,82 @@ final class ValkeyGlideTagSetTest extends TestCase
             ['del', ['cache:tag:a:entries']],
             ['del', ['cache:tag:b:entries']],
         ], $connection->commands);
+    }
+
+    /**
+     * Verify a standalone flush reads each page of the tag's sorted set as a
+     * pipeline of one ZSCAN, which GLIDE sends to the primary, before deleting
+     * what it read in one script, sent outside any pipeline.
+     *
+     * @return void
+     */
+    #[Test]
+    public function standaloneFlushReadsTheTagSetAsAPipelineOfOne(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('zscan', [['9', ['m1' => '1']], ['0', ['m2' => '-1']]]);
+
+        $this->tagSet($client, ['t'])->reset();
+
+        self::assertSame(['pipeline', 'zscan', 'exec', 'pipeline', 'zscan', 'exec', 'rawcommand'], $client->callOrder());
+        self::assertSame([['conn:cache:tag:t:entries', '0', '*', 1000], ['conn:cache:tag:t:entries', '9', '*', 1000]], $client->callsFor('zscan'));
+
+        $calls = $client->callsFor('rawcommand');
+
+        self::assertCount(1, $calls);
+        self::assertSame(
+            ['EVAL', 3, 'conn:cache:m1', 'conn:cache:m2', 'conn:cache:tag:t:entries', 'm1', 'm2'],
+            [$calls[0][0], ...array_slice($calls[0], 2)],
+        );
+        self::assertSame([], $client->callsFor('del'));
+        self::assertSame([], $client->callsFor('zrem'));
+    }
+
+    /**
+     * Verify a cluster flush reads each page of the tag's sorted set with a raw
+     * ZSCAN routed to the primary that owns it, and deletes the members it
+     * read, numeric ones as strings.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterFlushReadsTheTagSetFromItsPrimary(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('zscan', [['9', ['m1' => '1']], ['0', [42 => '1']]]);
+
+        $this->tagSet($client, ['t'])->reset();
+
+        $route = ['type' => 'primarySlotKey', 'key' => 'conn:cache:tag:t:entries'];
+
+        self::assertSame([
+            [$route, 'ZSCAN', 'conn:cache:tag:t:entries', '0', 'COUNT', 1000],
+            [$route, 'ZSCAN', 'conn:cache:tag:t:entries', '9', 'COUNT', 1000],
+        ], $client->callsFor('rawcommand'));
+        self::assertSame([['conn:cache:m1', 'conn:cache:42']], $client->callsFor('del'));
+        self::assertSame([['conn:cache:tag:t:entries', 'm1', '42']], $client->callsFor('zrem'));
+        self::assertSame([], $client->callsFor('zscan'));
+    }
+
+    /**
+     * Verify a cluster flush throws, deleting nothing, when the primary's ZSCAN
+     * fails.
+     *
+     * @return void
+     */
+    #[Test]
+    public function clusterFlushThrowsWhenThePrimaryScanFails(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willScan('zscan', [['0', false]]);
+
+        try {
+            $this->tagSet($client, ['t'])->reset();
+            self::fail('Expected the failed scan to throw.');
+        } catch (\UnexpectedValueException $exception) {
+            self::assertSame('Expected array response from zscan on [cache:tag:t:entries], received [bool].', $exception->getMessage());
+            self::assertSame([], $client->callsFor('del'));
+        }
     }
 
     /**

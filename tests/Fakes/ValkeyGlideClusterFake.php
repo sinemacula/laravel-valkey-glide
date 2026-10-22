@@ -372,17 +372,40 @@ class ValkeyGlideClusterFake extends \ValkeyGlideCluster
      * Record a raw cluster command invocation and apply configured behavior.
      *
      * The call is recorded as `[$route, $command, ...$args]` so tests can
-     * assert both the routing decision and the command arguments.
+     * assert both the routing decision and the command arguments. A `ZSCAN`
+     * with no configured reply answers with the next scripted `zscan` page, in
+     * the raw reply's shape: the cursor, then each member followed by its
+     * score, or false for a page that is not an array.
      *
      * @param  mixed  $route
      * @param  string  $command
      * @param  mixed  ...$args
      * @return mixed
+     *
+     * @throws \Throwable
      */
     #[\Override]
     public function rawcommand(mixed $route, string $command, mixed ...$args): mixed
     {
-        return $this->handleCommand('rawcommand', [$route, $command, ...$args], null);
+        $result = $this->handleCommand('rawcommand', [$route, $command, ...$args], null);
+
+        if ($result !== null || strtoupper($command) !== 'ZSCAN') {
+            return $result;
+        }
+
+        [$cursor, $reply] = $this->nextScanPage('zscan');
+
+        if (!is_array($reply)) {
+            return false;
+        }
+
+        $items = [];
+
+        foreach ($reply as $member => $score) {
+            array_push($items, (string) $member, $score);
+        }
+
+        return [$cursor, $items];
     }
 
     /**

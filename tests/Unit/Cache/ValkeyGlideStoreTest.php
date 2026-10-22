@@ -439,6 +439,24 @@ final class ValkeyGlideStoreTest extends TestCase
     }
 
     /**
+     * Verify a standalone prune finds the tag sets with a pipeline of one SCAN
+     * per page, which GLIDE sends to the primary.
+     *
+     * @return void
+     */
+    #[Test]
+    public function standalonePruneScansThePrimaryForTheTagSets(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [['5', ['conn:cache:tag:t:entries']], ['0', []]]);
+
+        $this->store($client, 'conn:')->flushStaleTags();
+
+        self::assertSame(['pipeline', 'scan', 'exec', 'pipeline', 'scan', 'exec', 'zremrangebyscore'], $client->callOrder());
+        self::assertSame([['0', 'conn:cache:tag:*:entries', 1000, 'zset'], ['5', 'conn:cache:tag:*:entries', 1000, 'zset']], $client->callsFor('scan'));
+    }
+
+    /**
      * Build a cluster client answering each SETEX with the given replies, in
      * turn.
      *

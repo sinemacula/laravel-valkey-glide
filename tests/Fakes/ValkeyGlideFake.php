@@ -121,14 +121,15 @@ class ValkeyGlideFake extends \ValkeyGlide
      * Record a sorted-set scan and answer with the next scripted page.
      *
      * The cursor is recorded as received and the page's cursor is written back
-     * through the reference. An explicit null pattern throws, as with GLIDE.
+     * through the reference, in batch mode only when exec() runs. An explicit
+     * null pattern throws, as with GLIDE.
      *
      * @param  string  $key
      * @param  string|null  $iterator
      * @param  string|null  $pattern
      * @param  int  $count
      *
-     * @param-out  string  $iterator
+     * @param-out  string|null  $iterator
      *
      * @return array<array-key, mixed>|false|self
      *
@@ -142,6 +143,10 @@ class ValkeyGlideFake extends \ValkeyGlide
         }
 
         $this->recordCall('zscan', [$key, $iterator, $pattern, $count]);
+
+        if ($this->batching) {
+            return $this->isRefusedInBatch('zscan') ? false : $this->bufferScan('zscan', $iterator, $this->nextScanPage('zscan'));
+        }
 
         [$iterator, $reply] = $this->nextScanPage('zscan');
 
@@ -214,14 +219,17 @@ class ValkeyGlideFake extends \ValkeyGlide
      * Record a keyspace scan and answer with the next scripted page.
      *
      * The cursor is recorded as received and the page's cursor is written back
-     * through the reference. An explicit null pattern throws, as with GLIDE.
+     * through the reference, in batch mode only when exec() runs. In batch mode
+     * ext-valkey_glide 1.1.2 returns the client, in breach of its declared
+     * return type, so the fake returns an empty array instead. An explicit null
+     * pattern throws, as with GLIDE.
      *
      * @param  string|null  $iterator
      * @param  string|null  $pattern
      * @param  int  $count
      * @param  string|null  $type
      *
-     * @param-out  string  $iterator
+     * @param-out  string|null  $iterator
      *
      * @return array<int, string>|false
      *
@@ -235,6 +243,12 @@ class ValkeyGlideFake extends \ValkeyGlide
         }
 
         $this->recordCall('scan', [$iterator, $pattern, $count, $type]);
+
+        if ($this->batching) {
+            $this->bufferScan('scan', $iterator, $this->scanPageOfKeys($this->nextScanPage('scan')));
+
+            return [];
+        }
 
         [$iterator, $reply] = $this->nextScanPage('scan');
 
@@ -685,6 +699,18 @@ class ValkeyGlideFake extends \ValkeyGlide
         $this->unscriptedScanPages[$method] = $unscripted;
 
         return ['0', []];
+    }
+
+    /**
+     * Narrow a scripted keyspace scan page's reply to the list of keys GLIDE
+     * returns, keeping a reply that is not an array as false.
+     *
+     * @param  array{0: string, 1: mixed}  $page
+     * @return array{0: string, 1: array<int, string>|false}
+     */
+    private function scanPageOfKeys(array $page): array
+    {
+        return [$page[0], is_array($page[1]) ? $this->stringList($page[1]) : false];
     }
 
     /**

@@ -799,6 +799,63 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Read one page of a sorted set's members with ZSCAN on the primary,
+     * whatever the connection's read_from, as the next cursor and the members.
+     *
+     * The cache tag upkeep deletes what it scans, and a replica can lag the
+     * primary or, with several replicas, cannot resume another's cursor. On a
+     * standalone server the ZSCAN is sent as a pipeline of one command, which
+     * GLIDE always sends to the primary; on a cluster it is sent through
+     * rawcommand to the primary that owns the key's slot.
+     *
+     * @internal
+     *
+     * @param  string  $key
+     * @param  string  $cursor
+     * @param  int  $count
+     * @return array{string, array<int, string>}
+     *
+     * @throws \Throwable
+     */
+    public function zscanOnPrimary(string $key, string $cursor, int $count): array
+    {
+        $parameters = [$key, &$cursor, '*', $count];
+
+        $members = $this->runOnPrimary('zscan', $parameters, function (array $parameters) use (&$cursor, $count): mixed {
+            if ($this->glideClient instanceof \ValkeyGlideCluster) {
+                return $this->clusterZscanMembers($this->glideClient, $parameters[0], $cursor, $count);
+            }
+
+            $page = $this->inPipelineOfOne('zscan', $parameters);
+
+            return is_array($page) ? array_map(strval(...), array_keys($page)) : $page;
+        });
+
+        return [$cursor, self::scannedKeys($members, $key, 'zscan')];
+    }
+
+    /**
+     * Read one page of a standalone server's SCAN on the primary, whatever the
+     * connection's read_from, as zscanOnPrimary() reads a sorted set.
+     *
+     * @internal
+     *
+     * @param  string  $cursor
+     * @param  string  $pattern
+     * @param  int  $count
+     * @param  string  $type
+     * @return array{string, array<int, string>}
+     *
+     * @throws \Throwable
+     */
+    public function scanOnPrimary(string $cursor, string $pattern, int $count, string $type): array
+    {
+        $keys = $this->runOnPrimary('scan', [&$cursor, $pattern, $count, $type], fn (array $parameters): mixed => $this->inPipelineOfOne('scan', $parameters));
+
+        return [$cursor, self::scannedKeys($keys, $pattern)];
+    }
+
+    /**
      * Close the underlying GLIDE connection.
      *
      * An active pipeline or transaction ends, as GLIDE drops what it buffered
@@ -964,15 +1021,16 @@ final class ValkeyGlideConnection extends Connection
      * would end the caller's scan loop early as though it had completed.
      *
      * @param  mixed  $keys
-     * @param  string  $pattern
+     * @param  string  $target
+     * @param  string  $method
      * @return array<int, string>
      *
      * @throws \UnexpectedValueException
      */
-    private static function scannedKeys(mixed $keys, string $pattern): array
+    private static function scannedKeys(mixed $keys, string $target, string $method = 'scan'): array
     {
         if (!is_array($keys)) {
-            throw new \UnexpectedValueException(sprintf('Expected array response from %s on [%s], received [%s].', 'scan', $pattern, get_debug_type($keys)));
+            throw new \UnexpectedValueException(sprintf('Expected array response from %s on [%s], received [%s].', $method, $target, get_debug_type($keys)));
         }
 
         /** @var array<int, string> $keys */
@@ -2163,11 +2221,12 @@ final class ValkeyGlideConnection extends Connection
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
      * @param  (\Closure(mixed): void)|null  $onResult
+     * @param  (\Closure(): mixed)|null  $invoke
      * @return mixed
      *
      * @throws \Throwable
      */
-    private function executeCommandWithRetry(string $method, array $parameters, ?\Closure $onResult = null): mixed
+    private function executeCommandWithRetry(string $method, array $parameters, ?\Closure $onResult = null, ?\Closure $invoke = null): mixed
     {
         $this->reconnectAfterDisconnect();
 
@@ -2177,7 +2236,7 @@ final class ValkeyGlideConnection extends Connection
             $startedAt = microtime(true);
 
             try {
-                $result = $this->invokeReportingErrors($method, $parameters);
+                $result = $this->invokeReportingErrors($method, $parameters, $invoke);
             } catch (\Throwable $exception) {
                 if ($this->shouldRetryAttempt($attempt, $method, $exception)) {
                     $attempt++;
@@ -2212,16 +2271,18 @@ final class ValkeyGlideConnection extends Connection
      * retry and the CommandFailed event handle it as any other failure. GLIDE
      * 1.1.2 records no errors, so its false reply is returned as it is. A
      * client-local method, getLastError() itself among them, reaches no server
-     * and records nothing, so it runs as it is, leaving the error in place.
+     * and records nothing, so it runs as it is, leaving the error in place. The
+     * command is sent by the given invoker, if any, instead of invokeCommand().
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
+     * @param  (\Closure(): mixed)|null  $invoke
      * @return mixed
      *
      * @throws \SineMacula\Valkey\Exceptions\CommandException
      * @throws \Throwable
      */
-    private function invokeReportingErrors(string $method, array $parameters): mixed
+    private function invokeReportingErrors(string $method, array $parameters, ?\Closure $invoke = null): mixed
     {
         if ($this->batchCommands->runsLocally($method)) {
             return $this->invokeCommand($method, $parameters);
@@ -2229,7 +2290,7 @@ final class ValkeyGlideConnection extends Connection
 
         $this->clearLastError();
 
-        $result = $this->invokeCommand($method, $parameters);
+        $result = $invoke !== null ? $invoke() : $this->invokeCommand($method, $parameters);
         $error  = $result === false ? $this->lastError() : null;
 
         if ($error !== null) {
@@ -2386,6 +2447,112 @@ final class ValkeyGlideConnection extends Connection
         }
 
         return $this->glideClient->rawcommand($method, ...$values);
+    }
+
+    /**
+     * Send a scan to the primary with the given invoker, as command() sends a
+     * command: refused inside a pipeline or transaction, and outside one after
+     * a WATCH left over from an UNWATCH that failed is unwatched.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @param  \Closure(array<array-key, mixed>): mixed  $invoke
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    private function runOnPrimary(string $method, array $parameters, \Closure $invoke): mixed
+    {
+        if ($this->batch !== null) {
+            return $this->command($method, $parameters);
+        }
+
+        $this->unwatchLeftOverKeys();
+
+        $parameters = $this->prefixer->apply($method, $parameters);
+
+        return $this->executeCommandWithRetry($method, $parameters, invoke: fn (): mixed => $invoke($parameters));
+    }
+
+    /**
+     * Send a command to a standalone server as a pipeline of one command, which
+     * GLIDE sends to the primary whatever the connection's read_from.
+     *
+     * GLIDE writes a scan's cursor back through its reference when exec() runs.
+     * A command GLIDE refuses buffers nothing, and a command or exec() that
+     * throws leaves the client in batch mode, so the pipeline is discarded
+     * then.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    private function inPipelineOfOne(string $method, array $parameters): mixed
+    {
+        $pipeline = $this->dispatchToClient('pipeline', []);
+
+        if ($pipeline !== $this->glideClient) {
+            return $pipeline;
+        }
+
+        try {
+            $buffered = $this->dispatchToClient($method, $parameters);
+
+            if ($buffered === false) {
+                $this->discardPipelineOfOne();
+
+                return $buffered;
+            }
+
+            $results = $this->dispatchToClient('exec', []);
+        } catch (\Throwable $exception) {
+            $this->discardPipelineOfOne();
+
+            throw $exception;
+        }
+
+        return is_array($results) ? $results[0] ?? false : false;
+    }
+
+    /**
+     * Discard a pipeline of one command, dropping a failure to discard it so a
+     * failure being thrown is the one the caller sees.
+     *
+     * @return void
+     */
+    private function discardPipelineOfOne(): void
+    {
+        try {
+            $this->dispatchToClient('discard', []);
+        } catch (\Throwable) {
+            // The command's own failure, if any, is the one to report.
+        }
+    }
+
+    /**
+     * Send a cluster ZSCAN through rawcommand to the primary that owns the
+     * key's slot, writing the next cursor back, and give the page's members.
+     *
+     * @param  \ValkeyGlideCluster  $client
+     * @param  mixed  $key
+     * @param  string  $cursor
+     * @param  int  $count
+     * @return array<int, string>|false
+     */
+    private function clusterZscanMembers(\ValkeyGlideCluster $client, mixed $key, string &$cursor, int $count): array|false
+    {
+        // A key a route cannot carry goes to a random node; see routeKey().
+        $reply = $client->rawcommand($this->router->routeKey($key), 'ZSCAN', $key, $cursor, 'COUNT', $count);
+
+        if (!is_array($reply) || !is_scalar($reply[0] ?? null) || !is_array($reply[1] ?? null)) {
+            return false;
+        }
+
+        $cursor = (string) $reply[0];
+
+        return array_map(strval(...), array_column(array_chunk($reply[1], 2), 0));
     }
 
     /**

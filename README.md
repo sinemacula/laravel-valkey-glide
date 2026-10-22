@@ -589,8 +589,7 @@ the string name and the integer constant are accepted):
 `client_az` is required for the AZ-affinity strategies.
 
 Replica reads are eventually consistent: a read can miss a write the replica has not received yet. Cache tag flushes
-read the tags' sorted sets the same way (see Cache Tags), so a cache store whose flushes must see the latest tagged
-writes should use a connection whose `read_from` is `primary`.
+and `cache:prune-stale-tags` read the primary instead (see Cache Tags).
 
 ```php
 'default' => [
@@ -847,11 +846,12 @@ Laravel's own code unchanged.
 - `cache:prune-stale-tags` finds the tag sets with a `SCAN` for sorted sets whose pattern carries the connection and
   cache prefixes, with glob characters in them escaped; on a cluster it scans every primary in turn, as `scan()` does
   (see Cluster Connections).
-- None of these opens a pipeline or transaction. Called inside one on the store's connection, tagged writes and
-  `flushStale()` join the batch, so their replies, failures included, come back in the batch's results rather than as
-  the exception described below. `flush()`, reading a tag's entries and `cache:prune-stale-tags` throw a
-  `LogicException` there before anything is sent, as `ZSCAN` and `SCAN` are refused in a batch (see Commands GLIDE
-  Cannot Buffer); the cluster `SCAN`, which GLIDE would run at once, outside the batch, is refused the same way.
+- None of these opens a pipeline or transaction on the connection (a standalone scan page goes to GLIDE as a pipeline of
+  that one command). Called inside one on the store's connection, tagged writes and `flushStale()` join the batch, so
+  their replies, failures included, come back in the batch's results rather than as the exception described below.
+  `flush()`, reading a tag's entries and `cache:prune-stale-tags` throw a `LogicException` there before anything is
+  sent, as `ZSCAN` and `SCAN` are refused in a batch (see Commands GLIDE Cannot Buffer); the cluster `SCAN`, which GLIDE
+  would run at once, outside the batch, is refused the same way.
 
 > [!NOTE]
 > On a standalone server each batch of a tag flush is atomic: no other command runs between deleting its entries and
@@ -872,11 +872,8 @@ flush, a lost tag record or a partial prune as success. This includes server err
 as `WRONGTYPE` on a tag's key. From 1.2 the connection throws GLIDE's recorded error instead, as a `CommandException`,
 which is an `UnexpectedValueException` too (see Runtime Behavior).
 
-> [!NOTE]
-> `flush()` reads the tags' sorted sets with `ZSCAN`, which follows the connection's `read_from` (see Read Routing).
-> With replica reads, an entry tagged within the replication lag before a flush can be missing from the scan, so it
-> stays cached until it expires or the tag is flushed again. If a flush must remove entries tagged moments earlier,
-> give the cache store a connection whose `read_from` is `primary`.
+The scans of `flush()` and `cache:prune-stale-tags` read the primary whatever the connection's `read_from`, so an entry
+tagged moments before a flush is still flushed.
 
 The connection prefixes the keys these paths use: `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, `ZREVRANGEBYSCORE` and
 `ZREVRANK`, and the key (only) of `ZSCAN`, `SSCAN` and `HSCAN`. Earlier releases sent those seven commands unprefixed,

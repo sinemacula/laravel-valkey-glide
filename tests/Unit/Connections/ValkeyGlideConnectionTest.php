@@ -104,6 +104,13 @@ final class ValkeyGlideConnectionTest extends TestCase
     /** @var string Message for a connection method refused while a batch is active. */
     private const string ACTIVE_BATCH_MESSAGE = '[%s()] cannot be called while a pipeline or transaction is active; %s.';
 
+    /** @var string The sorted set the primary scan tests read. */
+    private const string SCANNED_KEY = 'tag:t:entries';
+
+    /** @var string Message for a scan command refused inside a batch. */
+    private const string REFUSED_IN_BATCH_MESSAGE = '[%s] cannot be used inside a pipeline or transaction, as GLIDE would refuse it, block on it,'
+        . ' or write to a freed iterator.';
+
     /**
      * Verify client() returns the wrapped GLIDE client instance.
      *
@@ -8298,6 +8305,238 @@ final class ValkeyGlideConnectionTest extends TestCase
 
             self::assertSame([true, 'v'], $batch->set('k', 'v', ['EX' => 60])->get('k')->exec());
         }
+    }
+
+    /**
+     * Verify a standalone ZSCAN on the primary is sent as a pipeline of one
+     * command, under the connection prefix, heard of as the ZSCAN itself, and
+     * gives the cursor written back when the pipeline ran and the members.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function standaloneZscanOnPrimaryIsSentAsAPipelineOfOne(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('zscan', [['17', ['a' => '1', '42' => '-1']]]);
+
+        $events     = [];
+        $dispatcher = new Dispatcher;
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$events): void {
+            $events[] = [$event->command, $event->parameters];
+        });
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+        $connection->setEventDispatcher($dispatcher);
+
+        self::assertSame(['17', ['a', '42']], $connection->zscanOnPrimary(self::SCANNED_KEY, '0', 1000));
+        self::assertSame(['pipeline', 'zscan', 'exec'], $client->callOrder());
+        self::assertSame([['app:' . self::SCANNED_KEY, '0', '*', 1000]], $client->callsFor('zscan'));
+        self::assertSame([['zscan', ['app:' . self::SCANNED_KEY, '17', '*', 1000]]], $events);
+        self::assertFalse($client->isBatching());
+    }
+
+    /**
+     * Verify a standalone keyspace SCAN on the primary is sent as a pipeline of
+     * one command, and gives the cursor and the keys.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function standaloneScanOnPrimaryIsSentAsAPipelineOfOne(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('scan', [['42', ['k1', 'k2']]]);
+
+        self::assertSame(['42', ['k1', 'k2']], (new ValkeyGlideConnection($client))->scanOnPrimary('0', 'tag:*', 100, 'zset'));
+        self::assertSame(['pipeline', 'scan', 'exec'], $client->callOrder());
+        self::assertSame([['0', 'tag:*', 100, 'zset']], $client->callsFor('scan'));
+    }
+
+    /**
+     * Provide failed pipelines of one command, with the calls each reaches the
+     * client with.
+     *
+     * @return iterable<string, array{\Closure(\Tests\Fakes\ValkeyGlideFake): void, list<string>, string}>
+     */
+    public static function failedPipelinesOfOne(): iterable
+    {
+        $failed = sprintf('Expected array response from zscan on [%s], received [bool].', self::SCANNED_KEY);
+
+        yield 'a client that refuses batch mode' => [static function (ValkeyGlideFake $client): void {
+            $client->close();
+        }, ['close', 'pipeline'], $failed];
+
+        yield 'a scan GLIDE refuses to buffer' => [static function (ValkeyGlideFake $client): void {
+            $client->refuseInBatch('zscan');
+        }, ['pipeline', 'zscan', 'discard'], $failed];
+
+        yield 'a scan that throws' => [static function (ValkeyGlideFake $client): void {
+            $client->willThrow('zscan', new \RuntimeException('boom'));
+        }, ['pipeline', 'zscan', 'discard'], 'boom'];
+
+        yield 'a failing exec' => [static function (ValkeyGlideFake $client): void {
+            $client->willThrow('exec', new \RuntimeException('boom'));
+        }, ['pipeline', 'zscan', 'exec', 'discard'], 'boom'];
+
+        yield 'an exec with no results' => [static function (ValkeyGlideFake $client): void {
+            $client->willReturn('exec', []);
+        }, ['pipeline', 'zscan', 'exec'], $failed];
+    }
+
+    /**
+     * Verify a failed pipeline of one command throws, rather than reading as an
+     * empty page, and is discarded when it buffered nothing or threw, with the
+     * failure thrown even when discard() throws in turn.
+     *
+     * @param  \Closure(\Tests\Fakes\ValkeyGlideFake): void  $fail
+     * @param  list<string>  $calls
+     * @param  string  $message
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('failedPipelinesOfOne')]
+    #[Test]
+    public function standaloneZscanOnPrimaryThrowsForAFailedPipeline(\Closure $fail, array $calls, string $message): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willScan('zscan', [['0', ['a' => '1']]]);
+        $client->willThrow('discard', new \RuntimeException('discard failed'));
+        $fail($client);
+
+        try {
+            (new ValkeyGlideConnection($client))->zscanOnPrimary(self::SCANNED_KEY, '0', 10);
+            self::fail('Expected the scan to throw.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame($message, $exception->getMessage());
+            self::assertSame($calls, $client->callOrder());
+            self::assertSame(in_array('zscan', $calls, true) ? [[self::SCANNED_KEY, '0', '*', 10]] : [], $client->callsFor('zscan'));
+        }
+    }
+
+    /**
+     * Verify a pipeline of one command that fails with an error GLIDE recorded
+     * throws that error, as a failed command does.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function zscanOnPrimaryThrowsTheErrorRecordedForAFailedPipeline(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willFail('exec', self::RECORDED_WRONGTYPE_ERROR);
+
+        $this->expectException(CommandException::class);
+        $this->expectExceptionMessage(self::RECORDED_WRONGTYPE_ERROR);
+
+        (new ValkeyGlideConnection($client))->zscanOnPrimary(self::SCANNED_KEY, '0', 10);
+    }
+
+    /**
+     * Verify a scan on the primary is refused inside a pipeline, as command()
+     * refuses it, and a WATCH left over from an UNWATCH that failed is
+     * unwatched before the next one, as before any command.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function zscanOnPrimaryIsSentOnlyOutsideABatch(): void
+    {
+        $client     = new ValkeyGlideFake;
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($connection): void {
+            try {
+                $connection->zscanOnPrimary(self::SCANNED_KEY, '0', 10);
+                self::fail('Expected the scan to be refused inside the pipeline.');
+            } catch (\LogicException $exception) {
+                self::assertSame(sprintf(self::REFUSED_IN_BATCH_MESSAGE, 'ZSCAN'), $exception->getMessage());
+            }
+
+            $pipe->set('k', 'v');
+        });
+
+        self::assertSame([], $client->callsFor('zscan'));
+
+        self::assertTrue($connection->command('watch', ['k']));
+
+        $client->willReturn('unwatch', false);
+
+        self::assertFalse($connection->command('unwatch'));
+
+        $client->willReturn('unwatch', true);
+        $client->willScan('zscan', [['0', []]]);
+
+        self::assertSame(['0', []], $connection->zscanOnPrimary(self::SCANNED_KEY, '0', 10));
+        self::assertSame(['unwatch', 'unwatch', 'pipeline', 'zscan', 'exec'], array_slice($client->callOrder(), -5));
+    }
+
+    /**
+     * Verify a cluster ZSCAN on the primary goes through rawcommand with a
+     * route to the primary that owns its prefixed key, and gives the cursor as
+     * a string and the members from the flat raw page.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterZscanOnPrimaryIsRoutedToTheKeysPrimary(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', [93, ['a', '1', 42, '-1']]);
+
+        self::assertSame(['93', ['a', '42']], (new ValkeyGlideConnection($client, null, ['prefix' => 'app:']))->zscanOnPrimary(self::SCANNED_KEY, '0', 1000));
+        self::assertSame([
+            [['type' => 'primarySlotKey', 'key' => 'app:' . self::SCANNED_KEY], 'ZSCAN', 'app:' . self::SCANNED_KEY, '0', 'COUNT', 1000],
+        ], $client->callsFor('rawcommand'));
+    }
+
+    /**
+     * Provide raw replies that are not a ZSCAN page.
+     *
+     * @return iterable<string, array{mixed}>
+     */
+    public static function malformedZscanReplies(): iterable
+    {
+        yield 'a failure' => [false];
+
+        yield 'an empty reply' => [[]];
+
+        yield 'a cursor that is not scalar' => [[['0'], []]];
+
+        yield 'a page that is not a list' => [['0', 'm']];
+    }
+
+    /**
+     * Verify a cluster raw reply that is not a ZSCAN page throws, rather than
+     * reading as an empty page.
+     *
+     * @param  mixed  $reply
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('malformedZscanReplies')]
+    #[Test]
+    public function clusterZscanOnPrimaryThrowsForAReplyThatIsNotAPage(mixed $reply): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', $reply);
+
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage(sprintf('Expected array response from zscan on [%s], received [bool].', self::SCANNED_KEY));
+
+        (new ValkeyGlideConnection($client))->zscanOnPrimary(self::SCANNED_KEY, '3', 10);
     }
 
     /**
