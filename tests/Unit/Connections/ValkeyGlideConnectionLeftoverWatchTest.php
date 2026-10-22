@@ -529,7 +529,8 @@ final class ValkeyGlideConnectionLeftoverWatchTest extends TestCase
 
     /**
      * Verify disconnect() forgets a leftover WATCH, as the server drops it with
-     * the connection.
+     * the connection, so the client the next command reconnects with is sent no
+     * UNWATCH.
      *
      * @return void
      *
@@ -538,15 +539,17 @@ final class ValkeyGlideConnectionLeftoverWatchTest extends TestCase
     #[Test]
     public function disconnectForgetsTheLeftoverWatch(): void
     {
-        $client     = new ValkeyGlideFake;
-        $connection = new ValkeyGlideConnection($client);
+        $client       = new ValkeyGlideFake;
+        $secondClient = new ValkeyGlideFake;
+        $connection   = new ValkeyGlideConnection($client, static fn (): \ValkeyGlide => $secondClient);
 
         $this->leaveWatchBehind($connection, $client, 'a');
 
         $connection->disconnect();
         $connection->command('get', ['k']);
 
-        self::assertSame(['close', 'get'], array_slice($client->callOrder(), -2));
+        self::assertSame(['unwatch', 'close'], array_slice($client->callOrder(), -2));
+        self::assertSame(['get'], $secondClient->callOrder());
     }
 
     /**

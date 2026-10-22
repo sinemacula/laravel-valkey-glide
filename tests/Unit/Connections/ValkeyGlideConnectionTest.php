@@ -4779,7 +4779,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a closed client, which refuses batch mode, is reported.
+     * Verify a client closed outside the connection, which refuses batch mode,
+     * is reported.
      *
      * @return void
      *
@@ -4791,7 +4792,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         $client     = new ValkeyGlideFake;
         $connection = new ValkeyGlideConnection($client);
 
-        $connection->disconnect();
+        $client->close();
 
         $this->expectException(ConnectionException::class);
         $this->expectExceptionMessage('Unable to start the transaction; GLIDE refused batch mode, so the connection may be closed.');
@@ -7290,16 +7291,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         }
 
         self::assertFalse($connection->exec());
-        self::assertFalse($connection->command('get', ['a']));
-        self::assertSame(['watch', 'pipeline', 'set', 'discard', 'close', 'get'], $client->callOrder());
-
-        try {
-            $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1'));
-            self::fail('Expected the closed client to refuse batch mode.');
-        } catch (ConnectionException) {
-            // The closed client refuses batch mode.
-        }
-
+        self::assertSame(['watch', 'pipeline', 'set', 'discard', 'close'], $client->callOrder());
         self::assertSame([], $client->callsFor('unwatch'));
     }
 

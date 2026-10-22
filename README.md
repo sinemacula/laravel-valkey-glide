@@ -164,7 +164,9 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 - `zscan($key, $cursor, $options)`, `hscan(...)` and `sscan(...)` take the same options array and return
   `[$cursor, $members]`, with the same string cursor, defaults and failure (see Cache Tags)
 - `disconnect()` delegates to GLIDE `close()`; an open pipeline or transaction ends without sending what it buffered, as
-  GLIDE drops it on close, and any `WATCH` is forgotten
+  GLIDE drops it on close, and any `WATCH` is forgotten. The next command, pipeline, transaction or subscription
+  reconnects through the connector, as phpredis reconnects a closed client, since GLIDE answers every call on a closed
+  client with `false`. A connection created without a connector throws a `ConnectionException` instead
 
 With `ext-valkey_glide` 1.1.2, most commands that fail return `false` rather than throwing, including while a node is
 unreachable and GLIDE is reconnecting (`Connection in recovery`); the extension prints the error to stderr. The driver
@@ -370,10 +372,11 @@ cannot buffer itself:
 - **Commands GLIDE throws for**, such as `sinter('key')`, which GLIDE 1.1.2 accepts only as `sinter(['key'])`, end the
   batch, discarding everything it still buffers, whether or not a callback owns it, as GLIDE may have buffered the
   command before it threw. The error is rethrown; a batch whose error was caught cannot be used again.
-- **A closed client**, or one already put in batch mode outside the driver, refuses batch mode, so the batch throws a
-  `ConnectionException` and ends. The driver then calls the client's `discard()`, which takes a client put in batch mode
-  outside the driver out of it, dropping whatever was buffered there, and does nothing on a closed client; the next
-  command takes the usual path.
+- **A client closed outside the driver**, or one already put in batch mode outside the driver, refuses batch mode, so
+  the batch throws a `ConnectionException` and ends; a client `disconnect()` closed is replaced first (see Runtime
+  Behavior). The driver then calls the client's `discard()`, which takes a client put in batch mode outside the driver
+  out of it, dropping whatever was buffered there, and does nothing on a closed client; the next command takes the
+  usual path.
 
 ### Nested Batches
 
