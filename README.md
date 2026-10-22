@@ -789,10 +789,33 @@ and `echo($message)` run on a random node. A call with more arguments takes the 
 
 A GLIDE cluster connection's `isCluster()` returns `true`. From Laravel 13.5, the Redis queue and `Redis::funnel()`
 check it and wrap a queue or limiter name that has no hash tag in one (`queues:{default}`), so the keys each of their
-scripts touches share a slot. Laravel 12 and 13.0 to 13.4 do not, so on those give a cluster queue's name a hash tag
-yourself (`'queue' => '{default}'`), as Laravel's queue documentation advises. Without one, every push to the queue,
-not only a bulk one, fails with `CROSSSLOT`, and with `ext-valkey_glide` 1.1.2 the push returns `false` rather than
-throwing.
+scripts touches share a slot. On Laravel 12 and 13.0 to 13.4 the package's `redis` queue connector, Horizon's queue
+included, does the same on a GLIDE cluster connection, unless the queue's name or the connection's prefix already has a
+hash tag. A funnel's name is not wrapped there, so on a GLIDE cluster give it a hash tag yourself
+(`Redis::funnel('{reports}')`), or a funnel with a limit above one fails with `CROSSSLOT`.
+
+On those versions a delayed job on such a queue used to be stored under `queues:<name>:delayed`, where no worker ran
+it; workers now read `queues:{<name>}:delayed`. Once no process of your previous release is running, move those jobs
+once, from `php artisan tinker` for example, for each queue whose name and prefix had no hash tag:
+
+```php
+use Illuminate\Support\Facades\Redis;
+
+$redis = Redis::connection(config('queue.connections.redis.connection'));
+
+foreach (['default'] as $name) { // your queues whose names had no hash tag
+    $from = 'queues:'.$name.':delayed';
+    $to = 'queues:{'.$name.'}:delayed';
+
+    foreach ($redis->zrange($from, 0, -1, ['withscores' => true]) as $payload => $availableAt) {
+        if ($redis->zadd($to, $availableAt, $payload) === false) {
+            throw new RuntimeException('Could not add a job to '.$to.'; it is still in '.$from.'.');
+        }
+
+        $redis->zrem($from, $payload);
+    }
+}
+```
 
 ### Cache Store
 
@@ -1035,7 +1058,8 @@ External integration coverage includes:
 - Laravel cache roundtrip behavior, physical key writes, locks, TTL edge cases, and cache tags on a standalone server
   and a cluster (tagged writes, `flush()`, `flushStale()` and `cache:prune-stale-tags`), including a standalone flush
   racing a second process that rewrites the flushed keys
-- Laravel queue push/pop behavior, physical queue key writes, and a blocking pop waiting on the prefixed notify key
+- Laravel queue push/pop behavior, physical queue key writes, and a blocking pop waiting on the prefixed notify key; on
+  a cluster, for a queue name without a hash tag on every supported Laravel version, delayed jobs and Horizon's queue
 - Laravel session roundtrip behavior and physical session key writes
 - phpredis-compatible `setnx()`, `hsetnx()`, `zrevrange()` and options-array `scan()`, `zscan()`, `hscan()` and
   `sscan()`, including Laravel's own `RedisTagSet::entries()`, on a standalone server and a cluster

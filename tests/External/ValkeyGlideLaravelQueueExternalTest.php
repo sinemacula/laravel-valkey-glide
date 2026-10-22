@@ -182,11 +182,13 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
     }
 
     /**
-     * Verify a queue whose name has no hash tag works on a cluster connection.
+     * Verify a queue whose name has no hash tag works on a cluster connection,
+     * a delayed job included.
      *
      * The queue's scripts touch several keys at once, so they only run on a
-     * cluster when Laravel hash-tags the queue name into one slot, which it
-     * does from 13.5 for connections whose isCluster() returns true.
+     * cluster when the queue name is hash-tagged into one slot, which Laravel
+     * does from 13.5 for connections whose isCluster() returns true, and the
+     * package's queue does before.
      *
      * @return void
      */
@@ -195,17 +197,16 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
     {
         $this->skipUnlessTopologyIsConfigured(self::CLUSTER);
 
-        if (!(new \ReflectionClass(Connection::class))->hasMethod('isCluster')) {
-            self::markTestSkipped('Laravel hash-tags queue keys on cluster connections from 13.5.');
-        }
-
         $queueName = $this->uniqueQueueName('cluster');
         $queue     = $this->redisQueueConnection(self::CLUSTER_QUEUE_CONNECTION);
         $payload   = $this->queuePayload();
 
         $queue->pushRaw($payload, $queueName);
+        $queue->later(0, CallQueuedClosure::create(static fn () => null), '', $queueName);
 
-        self::assertSame(1, $queue->size($queueName));
+        self::assertSame(2, $queue->size($queueName));
+        self::assertSame(1, $queue->getConnection()->command('llen', ['queues:{' . $queueName . '}']));
+        self::assertSame(1, $queue->getConnection()->command('zcard', ['queues:{' . $queueName . '}:delayed']));
 
         $job = $queue->pop($queueName);
 
@@ -213,6 +214,13 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
         self::assertSame($payload, $job->getRawBody());
 
         $job->delete();
+
+        $delayed = $queue->pop($queueName);
+
+        self::assertInstanceOf(RedisJob::class, $delayed);
+        self::assertSame(CallQueuedClosure::class, $delayed->payload()['data']['commandName'] ?? null);
+
+        $delayed->delete();
 
         self::assertSame(0, $queue->size($queueName));
         $queue->clear($queueName);

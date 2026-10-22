@@ -8,13 +8,17 @@ use Illuminate\Cache\CacheManager;
 use Illuminate\Cache\RedisStore;
 use Illuminate\Cache\Repository;
 use Illuminate\Container\Container;
+use Illuminate\Contracts\Queue\Queue as QueueContract;
+use Illuminate\Queue\RedisQueue;
 use Illuminate\Redis\RedisManager;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Test;
 use SineMacula\Valkey\Cache\ValkeyGlideStore;
 use SineMacula\Valkey\Cache\ValkeyGlideTaggedCache;
 use SineMacula\Valkey\Connectors\ValkeyGlideConnector;
+use SineMacula\Valkey\Queue\ValkeyGlideQueue;
 use SineMacula\Valkey\ValkeyGlideServiceProvider;
 use Tests\TestCase;
 
@@ -236,6 +240,38 @@ final class ValkeyGlideServiceProviderTest extends TestCase
     }
 
     /**
+     * Verify a redis queue connection connects the GLIDE-aware queue before
+     * Laravel 13.5.
+     *
+     * @return void
+     */
+    #[Test]
+    public function redisQueueConnectsTheGlideQueueBeforeLaravel135(): void
+    {
+        if ((new \ReflectionClass(RedisQueue::class))->hasMethod('getQueueRedisKey')) {
+            self::markTestSkipped('Laravel hash-tags cluster queue keys itself from 13.5.');
+        }
+
+        self::assertInstanceOf(ValkeyGlideQueue::class, $this->redisQueue());
+    }
+
+    /**
+     * Verify a redis queue connection is left to Laravel from 13.5, whose queue
+     * hash-tags cluster queue keys itself.
+     *
+     * @return void
+     */
+    #[Test]
+    public function redisQueueIsLeftToLaravelFrom135(): void
+    {
+        if (!(new \ReflectionClass(RedisQueue::class))->hasMethod('getQueueRedisKey')) {
+            self::markTestSkipped('The package connects its own Redis queue before Laravel 13.5.');
+        }
+
+        self::assertSame(RedisQueue::class, $this->redisQueue()::class);
+    }
+
+    /**
      * Read a protected property of the given store.
      *
      * @param  object  $store
@@ -245,5 +281,17 @@ final class ValkeyGlideServiceProviderTest extends TestCase
     private function property(object $store, string $name): mixed
     {
         return (new \ReflectionProperty(RedisStore::class, $name))->getValue($store);
+    }
+
+    /**
+     * Resolve a redis queue connection.
+     *
+     * @return \Illuminate\Contracts\Queue\Queue
+     */
+    private function redisQueue(): QueueContract
+    {
+        config(['queue.connections.glide' => ['driver' => 'redis', 'queue' => 'default']]);
+
+        return Queue::connection('glide');
     }
 }
