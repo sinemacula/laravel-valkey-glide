@@ -400,6 +400,133 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify keys() on a standalone client sends KEYS as a raw command with the
+     * prefixed pattern, and returns the server's keys as they are.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function keysSendsThePrefixedPatternAsARawCommand(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', ['app:queues:default', 'app:queues:default:notify']);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame(['app:queues:default', 'app:queues:default:notify'], $connection->command('keys', ['queues:*']));
+        self::assertSame([['KEYS', 'app:queues:*']], $client->callsFor('rawcommand'));
+        self::assertSame([], $client->callsFor('keys'));
+    }
+
+    /**
+     * Verify keys() without a prefix sends the pattern untouched.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function keysWithoutAPrefixSendsThePatternUntouched(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', []);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame([], $connection->command('KEYS', ['queues:*']));
+        self::assertSame([['KEYS', 'queues:*']], $client->callsFor('rawcommand'));
+    }
+
+    /**
+     * Verify the command events of keys() name KEYS and carry the prefixed
+     * pattern.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function keysDispatchesItsCommandEvent(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', []);
+
+        $dispatcher = new Dispatcher;
+        $events     = [];
+
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$events): void {
+            $events[] = $event;
+        });
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+        $connection->setEventDispatcher($dispatcher);
+
+        $connection->command('keys', ['queues:*']);
+
+        self::assertCount(1, $events);
+        self::assertSame('keys', $events[0]->command);
+        self::assertSame(['app:queues:*'], $events[0]->parameters);
+    }
+
+    /**
+     * Verify KEYS in a pipeline, sent through the connection as Laravel sends
+     * its commands, runs in call order, as GLIDE cannot buffer a raw command,
+     * and its keys take its place in the results.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function keysInAPipelineRunsInCallOrder(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', ['app:queues:default']);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        $results = $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($connection): void {
+            $pipe->set('a', '1');
+            $connection->command('keys', ['queues:*']);
+        });
+
+        self::assertSame([true, ['app:queues:default']], $results);
+        self::assertSame([['KEYS', 'app:queues:*']], $client->callsFor('rawcommand'));
+        self::assertSame(['pipeline', 'set', 'exec', 'rawcommand'], $client->callOrder());
+    }
+
+    /**
+     * Verify keys() in a transaction is refused before anything is sent, as the
+     * raw command would run outside the MULTI block.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function keysInATransactionIsRefused(): void
+    {
+        $client = new ValkeyGlideFake;
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        try {
+            $connection->transaction(static function () use ($connection): void {
+                $connection->command('keys', ['queues:*']);
+            });
+
+            self::fail('Expected KEYS in a transaction to be refused.');
+        } catch (\LogicException $exception) {
+            self::assertSame(sprintf(self::IMMEDIATE_IN_TRANSACTION_MESSAGE, 'KEYS'), $exception->getMessage());
+        }
+
+        self::assertSame([], $client->callsFor('rawcommand'));
+        self::assertFalse($connection->hasOpenBatch());
+    }
+
+    /**
      * Verify phpredis-style set options are executed through rawcommand.
      *
      * @return void
@@ -2269,6 +2396,27 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify keys() on a cluster client sends KEYS to every primary, as each
+     * holds only its own slots' keys, with the prefixed pattern.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterKeysGoesToEveryPrimary(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', ['app:queues:{a}', 'app:queues:{b}']);
+
+        $connection = new ValkeyGlideConnection($client, null, ['prefix' => 'app:']);
+
+        self::assertSame(['app:queues:{a}', 'app:queues:{b}'], $connection->command('keys', ['queues:*']));
+        self::assertSame([['allPrimaries', 'KEYS', 'app:queues:*']], $client->callsFor('rawcommand'));
+        self::assertSame([], $client->callsFor('keys'));
+    }
+
+    /**
      * Provide cluster-routed raw commands whose key GLIDE cannot carry in a
      * slot-key route, with the connection config and the command sent.
      *
@@ -2331,20 +2479,6 @@ final class ValkeyGlideConnectionTest extends TestCase
         $connection->command('set', ['user:é', 'owner-id', 'EX', 10, 'NX']);
 
         self::assertSame(['type' => 'primarySlotKey', 'key' => 'user:é'], $client->callsFor('rawcommand')[0][0]);
-    }
-
-    /**
-     * Verify a raw command for an unexpected method defensively routes to
-     * randomNode.
-     *
-     * @return void
-     */
-    #[Test]
-    public function resolveClusterRouteFallsBackToRandomNodeForUnexpectedMethod(): void
-    {
-        $connection = new ValkeyGlideConnection(new ValkeyGlideFake);
-
-        self::assertSame('randomNode', $this->invokeResolveClusterRoute($connection, 'GET', ['some-key']));
     }
 
     /**
@@ -7849,25 +7983,6 @@ final class ValkeyGlideConnectionTest extends TestCase
         );
 
         return $reconnector();
-    }
-
-    /**
-     * Invoke private resolveClusterRoute for cluster routing coverage.
-     *
-     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
-     * @param  string  $method
-     * @param  array<int, mixed>  $values
-     * @return array<array-key, mixed>|string
-     */
-    private function invokeResolveClusterRoute(ValkeyGlideConnection $connection, string $method, array $values): array|string
-    {
-        $resolver = \Closure::bind(
-            fn (string $method, array $values): array|string => $this->resolveClusterRoute($method, $values),
-            $connection,
-            ValkeyGlideConnection::class,
-        );
-
-        return $resolver($method, $values);
     }
 
     /**

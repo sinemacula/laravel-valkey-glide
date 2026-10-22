@@ -97,6 +97,9 @@ final readonly class KeyPrefixer
         'ZSCORE',
     ];
 
+    /** @var array<int, string> Commands whose first argument takes the prefix: the single-key commands, and KEYS, whose pattern phpredis and Predis prefix. */
+    private const array FIRST_ARGUMENT_COMMANDS = [...self::SINGLE_KEY_COMMANDS, 'KEYS'];
+
     /** @var array<int, string> Commands where every argument is a key; the key-list and key-map commands below are matched first. */
     private const array ALL_KEY_COMMANDS = [
         'SDIFF',
@@ -186,8 +189,8 @@ final readonly class KeyPrefixer
                 $this->prefixParameterAt($parameters, 0),
                 1,
             ),
-            in_array($normalizedMethod, self::SINGLE_KEY_COMMANDS, true) => $this->prefixParameterAt($parameters, 0),
-            default                                                      => $parameters,
+            in_array($normalizedMethod, self::FIRST_ARGUMENT_COMMANDS, true) => $this->prefixParameterAt($parameters, 0),
+            default                                                          => $parameters,
         };
     }
 
