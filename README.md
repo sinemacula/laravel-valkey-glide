@@ -658,9 +658,14 @@ cannot name a slot, and on any other node they would read or change that node's 
 `Cache::flush()` and `cache:clear` do) run on every primary, so the whole keyspace is cleared. Calls that pass an
 explicit GLIDE route are sent unchanged.
 
-`ValkeyGlideCluster::ping()` takes a route before its optional message and returns `false` without one, so a bare
-`ping()` (as health checks call it) runs on every primary instead and returns `true` once each one answers. A `ping()`
-with arguments takes the first as its route, as phpredis' `RedisCluster::ping()` does, and is sent unchanged.
+`ValkeyGlideCluster::ping()`, `dbSize()`, `randomKey()`, `time()` and `echo()` take a route before their other
+arguments and return `false` without one, so a call without one takes the route GLIDE gives the command: a bare
+`ping()` (as health checks call it) runs on every primary and returns `true` once each one answers, `dbSize()` counts
+the keys on every primary and returns their sum, `randomKey()` returns a key from one of the primaries, and `time()`
+and `echo($message)` run on a random node. A call with more arguments takes the first as its route, as phpredis'
+`RedisCluster` methods do, and is sent unchanged. Each node reports only itself to `INFO`, so a bare `info()` throws an
+`InvalidArgumentException` before anything is sent; pass a route, as in `info('randomNode')` or
+`info('randomNode', 'memory')`.
 
 A GLIDE cluster connection's `isCluster()` returns `true`. From Laravel 13.5, the Redis queue and `Redis::funnel()`
 check it and wrap a queue or limiter name that has no hash tag in one (`queues:{default}`), so the keys each of their
