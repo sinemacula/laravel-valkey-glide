@@ -484,6 +484,70 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Add members to a sorted set, or update their scores, with Laravel's
+     * argument forms.
+     *
+     * As with Laravel's phpredis connection, the scores may be given as a
+     * trailing array keyed by member, as in `zadd($key, ['a' => 1])`, and the
+     * options as strings among the first three arguments after the key, as in
+     * `zadd($key, 'NX', 1, 'a')`, which Laravel's tagged cache sends; GLIDE
+     * takes neither. An options array after the key, as GLIDE takes it, is
+     * kept. The pipeline or transaction's own `zadd()` takes the client's form,
+     * as a phpredis pipeline does. The key is taken as `command()` takes it.
+     *
+     * @param  mixed  $key
+     * @param  mixed  ...$dictionary
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    public function zadd(mixed $key, mixed ...$dictionary): mixed
+    {
+        return $this->command('zadd', [$key, ...$this->sortedSetArguments->zaddArguments($dictionary)]);
+    }
+
+    /**
+     * Store the intersection of sorted sets, with Laravel's options array.
+     *
+     * As with Laravel's phpredis connection, the weights and aggregate may be
+     * given as an options array in place of the weights, as in
+     * `zinterstore($destination, $keys, ['weights' => [2, 1], 'aggregate' =>
+     * 'max'])`. GLIDE's own weights list and aggregate are taken too, by
+     * position or by name. The destination and keys are taken as `command()`
+     * takes them.
+     *
+     * @param  mixed  $dst
+     * @param  mixed  $keys
+     * @param  mixed  $weights
+     * @param  mixed  $aggregate
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    public function zinterstore(mixed $dst, mixed $keys, mixed $weights = null, mixed $aggregate = null): mixed
+    {
+        return $this->command('zinterstore', [$dst, $keys, ...$this->sortedSetArguments->storeArguments($weights, $aggregate)]);
+    }
+
+    /**
+     * Store the union of sorted sets, with Laravel's options array.
+     *
+     * This takes the same forms as `zinterstore()`.
+     *
+     * @param  mixed  $dst
+     * @param  mixed  $keys
+     * @param  mixed  $weights
+     * @param  mixed  $aggregate
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    public function zunionstore(mixed $dst, mixed $keys, mixed $weights = null, mixed $aggregate = null): mixed
+    {
+        return $this->command('zunionstore', [$dst, $keys, ...$this->sortedSetArguments->storeArguments($weights, $aggregate)]);
+    }
+
+    /**
      * Scan the keyspace for one page of keys, with Laravel's options array.
      *
      * As with Laravel's phpredis connection, the scan starts from cursor '0'
@@ -599,7 +663,9 @@ final class ValkeyGlideConnection extends Connection
      * instead, and the batch is returned. The scores and members of ZADD, and
      * the weights of ZUNIONSTORE, ZINTERSTORE, ZUNION, ZINTER and ZDIFFSTORE,
      * are sent as strings, as GLIDE corrupts memory on some other values, and
-     * one with no string form is refused before anything is sent.
+     * one with no string form is refused before anything is sent. A ZINCRBY
+     * with a numeric increment is sent as the ZADD ... INCR it is equivalent
+     * to, as GLIDE writes its increment with six significant digits.
      *
      * @param  mixed  $method
      * @param  array<array-key, mixed>  $parameters
@@ -619,6 +685,8 @@ final class ValkeyGlideConnection extends Connection
         if (in_array(strtoupper($normalizedMethod), self::BATCH_CONTROL_COMMANDS, true)) {
             return $this->controlBatch($normalizedMethod, $parameters);
         }
+
+        [$normalizedMethod, $parameters] = $this->sortedSetArguments->rewriteIncrement($normalizedMethod, $parameters);
 
         $parameters = $this->sortedSetArguments->normalize($normalizedMethod, $parameters);
 

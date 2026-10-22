@@ -35,6 +35,7 @@ application business code.
 - Laravel compatibility fallback for phpredis-style `SET` and `EVAL` command argument shapes
 - Phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, as Laravel's locks and Horizon call them, and
   phpredis-compatible `hsetnx()` and options-array `zscan()`, `hscan()` and `sscan()`
+- Laravel's `zadd()`, `zinterstore()` and `zunionstore()` argument forms, and exact `zincrby()` increments
 - Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
   standalone and cluster connections
 - External test lane for extension and real Redis connectivity validation
@@ -139,6 +140,22 @@ Command execution goes through `ValkeyGlideConnection::command()`.
   `zadd($key, 1, 123)` stores the member `'123'` where GLIDE returned `false`. A score, member or weight with no string
   form, such as an array, throws an `InvalidArgumentException` before anything is sent, inside a batch or outside one.
   `CommandExecuted` carries the strings sent
+- `zincrby()` adds its increment exactly. GLIDE's `zIncrBy()` takes the increment as a float and writes it with six
+  significant digits, so `1.23456789` was added as `1.23457`. A `zincrby()` with a numeric increment is sent as the
+  `ZADD ... INCR` it is equivalent to, with the increment read as a float and sent as phpredis sends it, inside a
+  pipeline or transaction too, and returns the new score as a float, as phpredis does. `CommandExecuted` names the
+  `zAdd` sent. A `zincrby()` with an increment that is not numeric, or with named arguments, is left to GLIDE
+- `zadd()` takes Laravel's forms, as Laravel's phpredis connection does: a trailing array of scores keyed by member, as
+  in `zadd($key, ['a' => 1, 'b' => 2])`, and option strings among the first three arguments after the key, as in
+  `zadd($key, 'NX', 1, 'a')`, which Laravel's tagged cache sends; GLIDE took neither. As there, a member among those
+  three named after an option, such as `'ch'`, is read as the option. GLIDE's options array, as in
+  `zadd($key, ['NX'], 1, 'a')`, is taken as it is
+- `zinterstore()` and `zunionstore()` take Laravel's options array in place of the weights, as Laravel's phpredis
+  connection does, as in `zunionstore($destination, $keys, ['weights' => [2, 1], 'aggregate' => 'max'])`, with `SUM`
+  when it names no aggregate; GLIDE sent the array as the weights, which the server refused. An empty array is read as
+  no weights, where GLIDE sent an empty `WEIGHTS`. GLIDE's own weights, keyed by integers in any order, as from
+  `array_filter()`, and aggregate string are taken too. As with a phpredis pipeline, the `zadd()`, `zinterstore()` and
+  `zunionstore()` of a pipeline or transaction take the client's own forms
 - `scan($cursor, ['match' => ..., 'count' => ...])` takes Laravel's options array and returns `[$cursor, $keys]`, as
   Laravel's phpredis connection does: start from `'0'` and stop once the cursor is `'0'` again. The `match` pattern is
   not prefixed, and `count` defaults to 10. A scan that fails throws an `UnexpectedValueException` rather than
@@ -324,7 +341,8 @@ cannot buffer itself:
   the connection. The connection's own typed `get()` and `mget()` are refused too while a batch is open, as their
   value is not known until the batch runs; call them on the batch instead.
 - **Arguments GLIDE rejects**: GLIDE checks some arguments itself and buffers nothing when it rejects them, for example
-  `zadd($key, 'NX', 1, $member)` with a string option, where it expects `zadd($key, ['NX'], 1, $member)`. The driver
+  the batch's `zadd($key, 'NX', 1, $member)` with a string option, where it expects `zadd($key, ['NX'], 1, $member)`
+  (the connection's own `zadd()` converts it; see Runtime Behavior). The driver
   throws an `InvalidArgumentException` naming the command rather than return a result list with a slot missing. GLIDE
   reports `zrem()` and `zmscore()` given a key but no member, as from `zrem($key, ...$ids)` with no ids, and `zinter()`
   given an empty key list, as buffered without buffering them, so the driver refuses them the same way before they are
@@ -898,6 +916,8 @@ External integration coverage includes:
 - Laravel session roundtrip behavior and physical session key writes
 - phpredis-compatible `setnx()`, `hsetnx()`, `zrevrange()` and options-array `scan()`, `zscan()`, `hscan()` and
   `sscan()`, including Laravel's own `RedisTagSet::entries()`, on a standalone server and a cluster
+- sorted-set scores, members and weights sent as strings, exact `zincrby()` increments, and Laravel's `zadd()`,
+  `zinterstore()` and `zunionstore()` argument forms, on a standalone server and a cluster
 - pipelines and transactions on a standalone server and a cluster: result order, physical prefixed keys, empty and
   nested batches with and without callbacks, `EVAL` in a batch, `WATCH`, cross-slot transactions, closed clients,
   throwing event listeners and a 5,000-command pipeline

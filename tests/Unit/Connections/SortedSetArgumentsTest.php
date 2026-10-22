@@ -169,6 +169,139 @@ final class SortedSetArgumentsTest extends TestCase
     }
 
     /**
+     * Provide commands and parameters, and the command and parameters sent for
+     * them.
+     *
+     * @return iterable<string, array{string, array<array-key, mixed>, array{string, array<array-key, mixed>}}>
+     */
+    public static function rewriteIncrementProvider(): iterable
+    {
+        yield 'a float increment' => ['zincrby', ['z', 1.23456789, 'm'], ['zAdd', ['z', ['INCR'], 1.23456789, 'm']]];
+        yield 'an integer increment, as a float' => ['zIncrBy', ['z', -3, 7], ['zAdd', ['z', ['INCR'], -3.0, 7]]];
+        yield 'a numeric string increment, as a float' => ['ZINCRBY', ['z', ' 1.5e3', 'm'], ['zAdd', ['z', ['INCR'], 1500.0, 'm']]];
+        yield 'an infinite increment' => ['zincrby', ['z', -INF, 'm'], ['zAdd', ['z', ['INCR'], -INF, 'm']]];
+        yield 'a non-numeric increment is kept' => ['zincrby', ['z', 'abc', 'm'], ['zincrby', ['z', 'abc', 'm']]];
+        yield 'a boolean increment is kept' => ['zincrby', ['z', true, 'm'], ['zincrby', ['z', true, 'm']]];
+        yield 'too few arguments are kept' => ['zincrby', ['z', 1.5], ['zincrby', ['z', 1.5]]];
+        yield 'too many arguments are kept' => ['zincrby', ['z', 1.5, 'm', 'n'], ['zincrby', ['z', 1.5, 'm', 'n']]];
+        yield 'other commands are kept' => ['hincrbyfloat', ['h', 1.5, 'f'], ['hincrbyfloat', ['h', 1.5, 'f']]];
+        yield 'named arguments are kept' => ['zincrby', ['z', 'value' => 1.5, 'member' => 'm'], ['zincrby', ['z', 'value' => 1.5, 'member' => 'm']]];
+    }
+
+    /**
+     * Verify rewriteIncrement sends a ZINCRBY with a numeric increment as the
+     * ZADD ... INCR it is equivalent to, and leaves everything else as it is.
+     *
+     * @param  string  $command
+     * @param  array<array-key, mixed>  $parameters
+     * @param  array{string, array<array-key, mixed>}  $expected
+     * @return void
+     */
+    #[DataProvider('rewriteIncrementProvider')]
+    #[Test]
+    public function rewriteIncrementSendsANumericIncrementAsZaddIncr(string $command, array $parameters, array $expected): void
+    {
+        self::assertSame($expected, (new SortedSetArguments)->rewriteIncrement($command, $parameters));
+    }
+
+    /**
+     * Verify the increment rewritten as a ZADD ... INCR score is sent with 17
+     * significant digits, where GLIDE's zIncrBy() would write six.
+     *
+     * @return void
+     */
+    #[Test]
+    public function rewrittenIncrementIsSentExactly(): void
+    {
+        $arguments = new SortedSetArguments;
+
+        [$command, $parameters] = $arguments->rewriteIncrement('zincrby', ['z', 1.23456789, 'm']);
+
+        self::assertSame(['z', ['INCR'], '1.2345678899999999', 'm'], $arguments->normalize($command, $parameters));
+    }
+
+    /**
+     * Provide the arguments of a zadd() after its key, and the arguments sent
+     * for them.
+     *
+     * @return iterable<string, array{array<array-key, mixed>, list<mixed>}>
+     */
+    public static function zaddArgumentsProvider(): iterable
+    {
+        yield 'score and member pairs' => [[1, 'a', 2.5, 'b'], [[], 1, 'a', 2.5, 'b']];
+        yield 'a dictionary of scores by member' => [[['a' => 1, 'b' => 2.5, 7 => 3]], [[], 1, 'a', 2.5, 'b', 3, 7]];
+        yield 'pairs, then a dictionary' => [[1, 'a', ['b' => 2]], [[], 1, 'a', 2, 'b']];
+        yield 'an option string' => [['NX', 1, 'a'], [['NX'], 1, 'a']];
+        yield 'option strings in either case' => [['xx', 'CH', 1, 'a'], [['xx', 'CH'], 1, 'a']];
+        yield 'the increment option' => [['INCR', 0.5, 'a'], [['INCR'], 0.5, 'a']];
+        yield 'three option strings' => [['gt', 'ch', 'INCR', 1, 'a'], [['gt', 'ch', 'INCR'], 1, 'a']];
+        yield 'option strings, then a dictionary' => [['LT', 'CH', ['a' => 4]], [['LT', 'CH'], 4, 'a']];
+        yield 'an option string among the first three values' => [[1, 'xx', 'a'], [['xx'], 1, 'a']];
+        yield 'an option string after the first three values is a member' => [[1, 'a', 2, 'nx'], [[], 1, 'a', 2, 'nx']];
+        yield 'an option string in mixed case is a member' => [[1, 'Nx'], [[], 1, 'Nx']];
+        yield 'a GLIDE options array is kept' => [[['NX', 'CH'], 1, 'a'], [['NX', 'CH'], 1, 'a']];
+        yield 'a GLIDE options array, then a dictionary' => [[['XX'], ['a' => 1]], [['XX'], 1, 'a']];
+        yield 'a GLIDE options array keeps a member named after an option' => [[['XX'], 1, 'ch'], [['XX'], 1, 'ch']];
+        yield 'values are taken in call order whatever their keys' => [[3 => 'NX', 'score' => 1, 9 => 'a'], [['NX'], 1, 'a']];
+        yield 'no values' => [[], [[]]];
+    }
+
+    /**
+     * Verify zaddArguments reads a zadd() as Laravel's phpredis connection
+     * reads it, and keeps GLIDE's own options array.
+     *
+     * @param  array<array-key, mixed>  $dictionary
+     * @param  list<mixed>  $expected
+     * @return void
+     */
+    #[DataProvider('zaddArgumentsProvider')]
+    #[Test]
+    public function zaddArgumentsReadsLaravelsForms(array $dictionary, array $expected): void
+    {
+        self::assertSame($expected, (new SortedSetArguments)->zaddArguments($dictionary));
+    }
+
+    /**
+     * Provide the weights and aggregate of a ZINTERSTORE or ZUNIONSTORE, and
+     * the weights and aggregate sent for them.
+     *
+     * @return iterable<string, array{mixed, mixed, array{mixed, mixed}}>
+     */
+    public static function storeArgumentsProvider(): iterable
+    {
+        yield 'Laravel options' => [['weights' => [2, 1], 'aggregate' => 'max'], null, [[2, 1], 'max']];
+        yield 'Laravel options without an aggregate' => [['weights' => [2, 1]], null, [[2, 1], 'sum']];
+        yield 'Laravel options without weights' => [['aggregate' => 'MIN'], null, [null, 'MIN']];
+        yield 'Laravel options with other keys only' => [['AGGREGATE' => 'MIN'], null, [null, 'sum']];
+        yield 'Laravel options name the aggregate before a later one' => [['aggregate' => 'MIN'], 'MAX', [null, 'MIN']];
+        yield 'an aggregate after Laravel options that name none' => [['weights' => [1, 2]], 'MAX', [[1, 2], 'MAX']];
+        yield 'empty options' => [[], null, [null, 'sum']];
+        yield 'empty options, then an aggregate' => [[], 'MAX', [null, 'MAX']];
+        yield 'a weights list is kept' => [[2, 1], 'MAX', [[2, 1], 'MAX']];
+        yield 'a weights list without an aggregate is kept' => [[2, 1], null, [[2, 1], null]];
+        yield 'weights keyed by integers out of order are kept' => [[3 => 2, 1 => 1], 'MAX', [[3 => 2, 1 => 1], 'MAX']];
+        yield 'Laravel options beside integer keys' => [[0 => 2, 'aggregate' => 'max'], null, [null, 'max']];
+        yield 'no weights are kept' => [null, 'MIN', [null, 'MIN']];
+        yield 'nothing is kept' => [null, null, [null, null]];
+    }
+
+    /**
+     * Verify storeArguments reads Laravel's options array as Laravel's phpredis
+     * connection reads it, and keeps GLIDE's weights list and aggregate.
+     *
+     * @param  mixed  $weights
+     * @param  mixed  $aggregate
+     * @param  array{mixed, mixed}  $expected
+     * @return void
+     */
+    #[DataProvider('storeArgumentsProvider')]
+    #[Test]
+    public function storeArgumentsReadsLaravelsOptions(mixed $weights, mixed $aggregate, array $expected): void
+    {
+        self::assertSame($expected, (new SortedSetArguments)->storeArguments($weights, $aggregate));
+    }
+
+    /**
      * Provide commands and parameters holding a value with no string form.
      *
      * @return iterable<string, array{string, array<array-key, mixed>, string}>
