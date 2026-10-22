@@ -200,7 +200,8 @@ final class ValkeyGlideReconnectExternalTest extends TestCase
 
     /**
      * Verify a scan resumed after disconnect() continues from its cursor on the
-     * new client and returns every key.
+     * new client and returns every key. Enough keys are written that the scan
+     * takes several pages even on an otherwise empty server.
      *
      * @param  string  $topology
      * @return void
@@ -211,7 +212,7 @@ final class ValkeyGlideReconnectExternalTest extends TestCase
     #[Test]
     public function scanResumedAfterDisconnectReturnsEveryKey(string $topology): void
     {
-        $keys       = ['k1', 'k2', 'k3', 'k4', 'k5', 'k6'];
+        $keys       = array_map(static fn (int $index): string => 'k' . $index, range(1, 100));
         $connection = $this->connect($topology, $keys);
         $options    = ['match' => $connection->getPrefix() . '*', 'count' => 2];
 
@@ -233,6 +234,7 @@ final class ValkeyGlideReconnectExternalTest extends TestCase
 
         $expected = array_map(static fn (string $key): string => $connection->getPrefix() . $key, $keys);
 
+        sort($expected);
         sort($found);
 
         self::assertGreaterThan(0, $resumes);
