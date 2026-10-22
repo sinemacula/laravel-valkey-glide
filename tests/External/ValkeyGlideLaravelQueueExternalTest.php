@@ -254,7 +254,7 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
 
             self::assertEqualsCanonicalizing(
                 array_map(static fn (string $name): string => 'job-' . $name, $listed),
-                $pending->map(static fn (InspectedJob $job): mixed => $job->payload['job'] ?? null)->all(),
+                $pending->map(static fn (InspectedJob $job): mixed => $job->payload['job'] ?? null)->values()->all(),
             );
             self::assertSame([$listed[0]], $delayed->map(static fn (InspectedJob $job): ?string => $job->queue)->values()->all());
             self::assertGreaterThanOrEqual(count($names) + 1, $queue->totalSize());
