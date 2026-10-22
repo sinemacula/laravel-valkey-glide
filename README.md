@@ -69,6 +69,10 @@ Example single-node Redis connection:
 'redis' => [
     'client' => env('REDIS_CLIENT', 'valkey-glide'),
 
+    'options' => [
+        'prefix' => env('REDIS_PREFIX', ''),
+    ],
+
     'default' => [
         'host' => env('REDIS_HOST', '127.0.0.1'),
         'port' => (int) env('REDIS_PORT', 6379),
@@ -76,11 +80,43 @@ Example single-node Redis connection:
         'password' => env('REDIS_PASSWORD'),
         'database' => (int) env('REDIS_DB', 0),
         'name' => env('REDIS_CLIENT_NAME'),
-        'prefix' => env('REDIS_PREFIX', ''),
         'tls' => env('REDIS_TLS', false),
     ],
 ],
 ```
+
+### Key Prefix Precedence
+
+A key prefix can be set in the shared `database.redis.options`, in a connection's own `options`, or on the connection
+itself. The connector resolves it as Laravel's phpredis connector does, on every supported Laravel release:
+
+- A standalone connection's own `prefix` takes precedence over its `options` and the shared `options`. Its `options`
+  take precedence over the shared `options`. A `prefix` that is set counts even when it is an empty string, so
+  `'prefix' => ''` on the connection leaves it unprefixed whatever the shared `options` say; a `null` prefix counts as
+  unset.
+- Only `prefix` is lifted this way. For every other key, such as `database` or `timeout`, the connection's `options`
+  take precedence over the shared `options`, which take precedence over the connection's own keys.
+- Horizon's `Horizon::use()` copies the app connection it is given and sets Horizon's prefix in the copy's `options`,
+  so if that connection sets its own `prefix`, Horizon's connection uses that prefix, as it does on phpredis. To keep
+  Horizon under `horizon:` (or `horizon.prefix`), set the app prefix in the shared or the connection's `options`
+  instead.
+- A cluster does not lift a node's `prefix`: as on phpredis, a prefix in the options takes precedence over one on the
+  first node. Unlike phpredis, which ignores the nodes' own keys, the first node's `prefix` and nested `options` still
+  apply (see Cluster Connections).
+
+> [!NOTE]
+> In 1.2.x and earlier, a `prefix` set on a standalone connection itself was overridden by a prefix in its own
+> `options` or, failing that, in the shared `options` (Laravel's default config sets one there), and Horizon's
+> standalone connection used `horizon:` (or `horizon.prefix`) even when the connection it was copied from set its own
+> `prefix`. Such a connection now uses its own prefix, an empty one included. Where that differs from the prefix it
+> used before, it reads and writes different keys after the upgrade: its cache entries, sessions, locks and queued
+> jobs, and Horizon's data, are left under the old prefix. A connection without its own `prefix`, with a `null` one, or
+> with no prefix in either `options` keeps its keys. Before upgrading, check each standalone connection that sets its
+> own `prefix`, and each one Horizon uses. To stay on the keys it used, remove that `prefix`, or set it to the prefix
+> the connection used (its `options` prefix, else the shared one); for Horizon, move the app prefix into the shared or
+> the connection's `options`. To move to the connection's own prefix instead, drain its queues and Horizon first, then
+> migrate the keys you need to the new prefix (`RENAME`, or `COPY` then `DEL`) and expect a cold cache. Cluster
+> connections are not affected.
 
 ## Supported Config Mapping
 
@@ -113,8 +149,8 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 - The retry runs on a fresh client; the replaced client is closed, and any error from closing it is ignored
 - Nothing is retried while keys are watched for a transaction still to run, as the fresh client would not hold the
   `WATCH` (see WATCH)
-- Before each command, a `WATCH` left over from an `UNWATCH` that failed, sent by `unwatch()` or when a transaction
-  ended, is unwatched again (see WATCH)
+- Before each command that reaches the server, a `WATCH` left over from an `UNWATCH` that failed, sent by `unwatch()`
+  or when a transaction ended, is unwatched again (see WATCH)
 - Non-idempotent commands are not retried
 - Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`); a cluster `scan()` reports the id its
   `ClusterScanCursor` scans from in place of the cursor, so listeners can turn the parameters into strings
@@ -164,7 +200,9 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 - `zscan($key, $cursor, $options)`, `hscan(...)` and `sscan(...)` take the same options array and return
   `[$cursor, $members]`, with the same string cursor, defaults and failure (see Cache Tags)
 - `disconnect()` delegates to GLIDE `close()`; an open pipeline or transaction ends without sending what it buffered, as
-  GLIDE drops it on close, and any `WATCH` is forgotten
+  GLIDE drops it on close, and any `WATCH` is forgotten. The next command, pipeline, transaction or subscription
+  reconnects through the connector, as phpredis reconnects a closed client, since GLIDE answers every call on a closed
+  client with `false`. A connection created without a connector throws a `ConnectionException` instead
 
 With `ext-valkey_glide` 1.1.2, most commands that fail return `false` rather than throwing, including while a node is
 unreachable and GLIDE is reconnecting (`Connection in recovery`); the extension prints the error to stderr. The driver
@@ -172,8 +210,25 @@ cannot tell that `false` from a reply, so it passes it on: a cache `get()` reads
 lock acquisition reports failure. Laravel's `putMany()` on a standalone connection queues its writes in a transaction: a
 transaction that fails as a whole throws a `ConnectionException` (see Failures under Pipelines and Transactions), but
 `putMany()` does not check the result of each write in it, so a write that fails inside the transaction still reports
-success. The retry above applies only to errors the extension throws. `getLastError()`, which the extension gains after
-1.1.2 (in the 1.2.0 release candidates), is what would let the driver raise these as exceptions.
+success. The retry above applies only to errors the extension throws.
+
+From 1.2 (in its release candidates), GLIDE records the error of a command that fails and returns `false`, which its
+`getLastError()` reports; a `false` reply, such as a `SETNX` that sets nothing or a `SISMEMBER` that finds nothing,
+records none. On a client that has `getLastError()`, the driver clears the client's last error before each command,
+and a command that returns `false` with an error recorded throws a `SineMacula\Valkey\Exceptions\CommandException`
+carrying GLIDE's message, such as `timed out` or `WRONGTYPE: Operation against a key holding the wrong kind of value`.
+It goes through the retry above and dispatches `CommandFailed` as any error the extension throws does, so a cache
+`get()` that fails throws rather than reading as a miss. `CommandException` is an `UnexpectedValueException`, which the
+driver throws for a failed scan or tag write on 1.1.2, so code that catches those failures catches it too. The error
+stays on the client until the next command clears it, so `Redis::getLastError()` reads it; `getLastError()` and
+`clearLastError()` run on the client without clearing it first, or sending a leftover `UNWATCH` (see WATCH). A pipeline
+or transaction whose `exec()` fails carries the error as its `ConnectionException`'s previous exception (see Failures
+under Pipelines and Transactions). Some failures still return `false`, as GLIDE records nothing for them:
+
+- `rawcommand()`, which runs `EVAL` and `EVALSHA`, `executeRaw()` and phpredis-style `SET` options such as
+  `set($key, $value, 'EX', 60, 'NX')`; its `false` cannot be read as a failure, as a script that returns `false` gives
+  `false` too
+- a command that fails inside a pipeline or transaction, which gives `false` in its own place in the results
 
 > [!NOTE]
 > In 1.2.x and earlier, a bare `multi()` ... `exec()` on the connection went straight to GLIDE, so a transaction that
@@ -316,9 +371,9 @@ cannot buffer itself:
 - **Commands GLIDE runs immediately**: `EVAL`, `EVALSHA` and their `_RO` forms, `SCRIPT`, `FUNCTION`, `PUBLISH`,
   `PUBSUB`, `rawCommand()` and `executeRaw()` (on the connection or the batch), the search (`FT.*`) commands, the
   connection password and IAM token methods (`updateConnectionPassword()`, `clearConnectionPassword()` and
-  `refreshIamToken()`), and the client's own methods, such as `getOption()`, `getStatistics()` and the OpenTelemetry
-  sampling methods; on a cluster also the keyless `PING`, `ECHO`, `INFO`, `DBSIZE`, `TIME`, `RANDOMKEY`, `FLUSHDB`,
-  `FLUSHALL` and `CLIENT`.
+  `refreshIamToken()`), and the client's own methods, such as `getOption()`, `getStatistics()`, `getLastError()` and
+  the OpenTelemetry sampling methods; on a cluster also the keyless `PING`, `ECHO`, `INFO`, `DBSIZE`, `TIME`,
+  `RANDOMKEY`, `FLUSHDB`, `FLUSHALL` and `CLIENT`.
   - In a pipeline, what is buffered before such a command is sent first, then the command runs on its own and its
     result takes its place in the list, so the results stay in call order; it costs extra round trips. What the event
     listeners of that send, or of the command, run on the same connection is sent at once and takes no place in the
@@ -353,10 +408,11 @@ cannot buffer itself:
 - **Commands GLIDE throws for**, such as `sinter('key')`, which GLIDE 1.1.2 accepts only as `sinter(['key'])`, end the
   batch, discarding everything it still buffers, whether or not a callback owns it, as GLIDE may have buffered the
   command before it threw. The error is rethrown; a batch whose error was caught cannot be used again.
-- **A closed client**, or one already put in batch mode outside the driver, refuses batch mode, so the batch throws a
-  `ConnectionException` and ends. The driver then calls the client's `discard()`, which takes a client put in batch mode
-  outside the driver out of it, dropping whatever was buffered there, and does nothing on a closed client; the next
-  command takes the usual path.
+- **A client closed outside the driver**, or one already put in batch mode outside the driver, refuses batch mode, so
+  the batch throws a `ConnectionException` and ends; a client `disconnect()` closed is replaced first (see Runtime
+  Behavior). The driver then calls the client's `discard()`, which takes a client put in batch mode outside the driver
+  out of it, dropping whatever was buffered there, and does nothing on a closed client; the next command takes the
+  usual path.
 
 ### Nested Batches
 
@@ -408,10 +464,14 @@ applied by the server. The driver never retries a batch, and:
 - a failed pipeline throws a `ConnectionException`; some of its commands may have been applied
 - a failed transaction throws a `ConnectionException`; its outcome is unknown, and it may have been committed
 - a failed transaction guarded by `WATCH` returns `false`, as phpredis does when a watched key changed; on 1.1.2 a
-  timeout looks the same, so `false` does not prove the transaction was not applied
+  timeout looks the same, so `false` does not prove the transaction was not applied. From 1.2, GLIDE records an error
+  for a timeout or a connection failure but not for an abort, so a watched transaction whose `exec()` fails with an
+  error throws a `ConnectionException` instead, its outcome unknown
 - a batch whose results do not line up with the commands it buffered throws a `ConnectionException`, rather than return
   results out of call order; the server ran it, so it has most likely been applied, and a watched transaction throws
   too rather than return `false`
+- from 1.2, the error GLIDE records for a failed `exec()`, such as `timed out`, is the `ConnectionException`'s previous
+  exception, a `CommandException`
 
 A command that fails on the server, such as a `WRONGTYPE` error, gives `false` in its own place in the results, in a
 pipeline and in a transaction alike, and the other commands still apply. An error the server raises while queueing a
@@ -452,20 +512,23 @@ write idempotent, for example by recording a unique operation id in the same tra
 - Pipelines leave a `WATCH` alone, but a transaction cannot join a pipeline while keys are watched: the pipeline would
   flatten it, and it would commit over a change to a watched key, so it throws a `LogicException` before anything
   changes. Under phpredis the nested transaction would stay atomic and abort.
-- A `WATCH` that GLIDE refuses, returning `false`, is not tracked. An `UNWATCH` that fails, returning `false` or
-  throwing, leaves the keys tracked, as the server may still hold the `WATCH`; a transaction it then aborts returns
-  `false`. That covers an `unwatch()` called on the connection, whose failure the caller still gets, and the `UNWATCH`
-  sent when a transaction ends, committed on a cluster or not committed.
+- A `WATCH` that GLIDE refuses, returning `false` or, from 1.2, throwing the error it records, is not tracked. An
+  `UNWATCH` that fails, returning `false` or throwing, leaves the keys tracked, as the server may still hold the
+  `WATCH`; a transaction it then aborts returns `false`. That covers an `unwatch()` called on the connection, whose
+  failure the caller still gets, and the `UNWATCH` sent when a transaction ends, committed on a cluster or not
+  committed.
 - Either way the `WATCH` is released, so the keys left tracked guard nothing, and the driver sends `UNWATCH` again
-  before the next command on the connection, a `watch()`, `pipeline()`, `transaction()` or subscription included,
-  once per command and never inside a batch, until it succeeds; the command runs either way. Until then the next
-  transaction is still treated as watched, as the server may abort it, but the leftover keys do not turn the retry
-  off, and a retry's fresh client drops them. A `watch()` whose `UNWATCH` first succeeds tracks only its own keys; if
-  that `UNWATCH` fails but the `WATCH` succeeds, the leftover keys stay watched beside the new ones, as the caller's
-  own, until the transaction ends.
+  before the next command on the connection, a `watch()`, `pipeline()`, `transaction()` or subscription included, once
+  per command and never inside a batch, until it succeeds; the command runs either way. The client's own methods, such
+  as `getOption()` and `getLastError()`, reach no server and do not send it, so it cannot replace the error
+  `getLastError()` reads. Until an `UNWATCH` succeeds, the next transaction is still treated as watched, as the server
+  may abort it, but the leftover keys do not turn the retry off, and a retry's fresh client drops them. A `watch()`
+  whose `UNWATCH` first succeeds tracks only its own keys; if that `UNWATCH` fails but the `WATCH` succeeds, the
+  leftover keys stay watched beside the new ones, as the caller's own, until the transaction ends.
 - The `UNWATCH` a cluster sends after a committed transaction never reaches the caller when it fails, returning `false`
   or throwing: the transaction has committed, so its results are returned and its `CommandExecuted` event dispatched,
-  rather than leading the caller to retry it and apply it twice.
+  rather than leading the caller to retry it and apply it twice. From 1.2 the error GLIDE records for it stays on the
+  client, where `getLastError()` reads it, until the next command clears it.
 
 ### Cluster Batches
 
@@ -611,7 +674,11 @@ Configure a cluster the standard Laravel way:
 
 Connection keys such as `prefix` can be set on the first node, in the shared `clusters.options`, or in an `options`
 entry beside the cluster's nodes, which takes precedence over both, as it does for phpredis; on Laravel 13, Horizon sets
-its cluster prefix that way.
+its cluster prefix that way. In full, from highest to lowest: the `options` entry beside the nodes, the first node's own
+`options`, `clusters.options`, the shared `database.redis.options`, then the first node's own keys. Unlike a standalone
+connection, a `prefix` on the first node does not take precedence over the options, as phpredis applies the options'
+prefix to a cluster. phpredis ignores the nodes' own keys altogether; this driver keeps applying the first node's keys
+and nested `options` as above, so a `prefix` there applies when no options set one.
 
 > [!NOTE]
 > In 1.2.x and earlier, an `options` entry listed after a cluster's nodes, as Horizon writes it, was ignored. It is now
@@ -781,7 +848,8 @@ Laravel's own code unchanged.
 With `ext-valkey_glide` 1.1.2 a failed command returns `false` (see Runtime Behavior), so on these paths, outside a
 batch, a `false` reply throws an `UnexpectedValueException` naming the command and key, rather than reporting a partial
 flush, a lost tag record or a partial prune as success. This includes server errors that phpredis would let pass, such
-as `WRONGTYPE` on a tag's key.
+as `WRONGTYPE` on a tag's key. From 1.2 the connection throws GLIDE's recorded error instead, as a `CommandException`,
+which is an `UnexpectedValueException` too (see Runtime Behavior).
 
 > [!NOTE]
 > `flush()` reads the tags' sorted sets with `ZSCAN`, which follows the connection's `read_from` (see Read Routing).
@@ -939,6 +1007,9 @@ External integration coverage includes:
   transaction on a standalone server, key by key across slots on a cluster), tagged writes and a refused tag flush
   inside a pipeline, and Laravel Horizon's own Redis repositories under the `horizon:` prefix (the Horizon cluster
   cases run on Laravel 13 only, as Horizon supports clusters only there)
+- the key prefix a Laravel connection resolves to when the shared options, a connection's own options and the
+  connection itself each set one, including an empty prefix and Horizon's connection, read back as physical keys on a
+  standalone server and a cluster
 
 The external suite reads connection details from optional environment variables:
 

@@ -18,6 +18,11 @@ final class Config
     /**
      * Merge Laravel connection config with options and nested option overrides.
      *
+     * The connection's nested `options` override the given (shared) options,
+     * which override the connection's own keys. A `prefix` set on the
+     * connection itself, even an empty one, overrides both, as Laravel's
+     * phpredis connector applies it; a null prefix counts as unset.
+     *
      * @param  array<string, mixed>  $config
      * @param  array<string, mixed>  $options
      * @return array<string, mixed>
@@ -28,6 +33,10 @@ final class Config
 
         if (!is_array($nestedOptions)) {
             $nestedOptions = [];
+        }
+
+        if (isset($config['prefix'])) {
+            $nestedOptions['prefix'] = $config['prefix'];
         }
 
         $configWithoutOptions = $config;

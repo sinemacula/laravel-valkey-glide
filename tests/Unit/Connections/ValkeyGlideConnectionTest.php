@@ -13,9 +13,12 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ValkeyGlideBatch;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use SineMacula\Valkey\Exceptions\CommandException;
 use SineMacula\Valkey\Exceptions\ConnectionException;
 use Tests\Fakes\ValkeyGlideClusterFake;
+use Tests\Fakes\ValkeyGlideClusterLastErrorFake;
 use Tests\Fakes\ValkeyGlideFake;
+use Tests\Fakes\ValkeyGlideLastErrorFake;
 
 /**
  * Valkey GLIDE connection test case.
@@ -38,6 +41,15 @@ final class ValkeyGlideConnectionTest extends TestCase
 
     /** @var string Shared Lua script used in EVAL prefix normalization tests. */
     private const string EVAL_TEST_SCRIPT = 'return 1';
+
+    /** @var string A server error, as GLIDE 1.2 records it for getLastError(). */
+    private const string RECORDED_WRONGTYPE_ERROR = 'WRONGTYPE: Operation against a key holding the wrong kind of value';
+
+    /** @var string A transport error, as GLIDE 1.2 records it for getLastError(). */
+    private const string RECORDED_RECOVERY_ERROR = 'Connection in recovery';
+
+    /** @var string Message for an unwatched transaction whose exec() failed. */
+    private const string TRANSACTION_FAILED_MESSAGE = 'The transaction failed and its outcome is unknown; it may have been committed.';
 
     /** @var string Message for a key-list command given a key list in a form GLIDE does not take as keys. */
     private const string UNSUPPORTED_KEY_LIST_MESSAGE = '[%s] takes its keys as separate arguments or as a single list of keys, not a list beside other'
@@ -817,6 +829,536 @@ final class ValkeyGlideConnectionTest extends TestCase
             self::assertCount(1, $events);
             self::assertSame(['42', 'user:*'], $events[0]->parameters);
         }
+    }
+
+    /**
+     * Provide a standalone and a cluster client that record command errors.
+     *
+     * @return iterable<string, array{0: \Closure(): (\Tests\Fakes\ValkeyGlideClusterLastErrorFake|\Tests\Fakes\ValkeyGlideLastErrorFake)}>
+     */
+    public static function lastErrorClients(): iterable
+    {
+        yield 'standalone' => [static fn (): ValkeyGlideLastErrorFake => new ValkeyGlideLastErrorFake];
+        yield 'cluster' => [static fn (): ValkeyGlideClusterLastErrorFake => new ValkeyGlideClusterLastErrorFake];
+    }
+
+    /**
+     * Verify a command that fails with an error recorded throws the error, and
+     * leaves it recorded on the client.
+     *
+     * @param  \Closure(): (\Tests\Fakes\ValkeyGlideClusterLastErrorFake|\Tests\Fakes\ValkeyGlideLastErrorFake)  $makeClient
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('lastErrorClients')]
+    #[Test]
+    public function commandThrowsTheErrorRecordedForAFailedCommand(\Closure $makeClient): void
+    {
+        $client = $makeClient();
+        $client->willFail('incr', self::RECORDED_WRONGTYPE_ERROR);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->command('incr', ['counter']);
+            self::fail('Expected the recorded error to be thrown.');
+        } catch (CommandException $exception) {
+            self::assertSame(self::RECORDED_WRONGTYPE_ERROR, $exception->getMessage());
+            self::assertSame(self::RECORDED_WRONGTYPE_ERROR, $client->getLastError());
+        }
+    }
+
+    /**
+     * Verify a command that fails with an error recorded dispatches a command
+     * failed event carrying the error, and no command executed event.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandDispatchesCommandFailedForTheRecordedError(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willFail('incr', self::RECORDED_WRONGTYPE_ERROR);
+
+        $dispatcher = new Dispatcher;
+        $failed     = [];
+        $executed   = [];
+
+        $dispatcher->listen(CommandFailed::class, static function (CommandFailed $event) use (&$failed): void {
+            $failed[] = $event;
+        });
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$executed): void {
+            $executed[] = $event;
+        });
+
+        $connection = new ValkeyGlideConnection($client);
+        $connection->setEventDispatcher($dispatcher);
+
+        try {
+            $connection->command('incr', ['counter']);
+            self::fail('Expected the recorded error to be thrown.');
+        } catch (CommandException $exception) {
+            self::assertCount(1, $failed);
+            self::assertSame('incr', $failed[0]->command);
+            self::assertSame(['counter'], $failed[0]->parameters);
+            self::assertSame($exception, $failed[0]->exception);
+            self::assertSame([], $executed);
+        }
+    }
+
+    /**
+     * Verify a false reply with no error recorded is returned as a reply.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function falseReplyWithoutARecordedErrorIsReturned(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willReturn('sismember', false);
+
+        $dispatcher = new Dispatcher;
+        $executed   = [];
+
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$executed): void {
+            $executed[] = $event;
+        });
+
+        $connection = new ValkeyGlideConnection($client);
+        $connection->setEventDispatcher($dispatcher);
+
+        self::assertFalse($connection->command('sismember', ['set', 'member']));
+        self::assertCount(1, $executed);
+    }
+
+    /**
+     * Verify an error left on the client by an earlier call is cleared before a
+     * command, so the command's false reply is not taken for a failure.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function errorLeftByAnEarlierCallIsNotTakenForTheCommandsOwn(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->recordError(self::RECORDED_WRONGTYPE_ERROR);
+        $client->willReturn('setnx', false);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(0, $connection->setnx('lock', 'owner'));
+        self::assertNull($client->getLastError());
+    }
+
+    /**
+     * Verify a reply other than false is returned, even when an error was
+     * recorded, as GLIDE only answers a failure with false.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function replyOtherThanFalseIsReturnedEvenWithAnErrorRecorded(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willReturn('incr', 5);
+        $client->willRecordError('incr', self::RECORDED_WRONGTYPE_ERROR);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(5, $connection->command('incr', ['counter']));
+    }
+
+    /**
+     * Verify a get() that fails throws rather than reading as a miss.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function getThrowsAFailureRatherThanReadingItAsAMiss(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willFail('get', self::RECORDED_RECOVERY_ERROR);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $this->expectException(CommandException::class);
+        $this->expectExceptionMessage(self::RECORDED_RECOVERY_ERROR);
+
+        $connection->get('cache-key');
+    }
+
+    /**
+     * Verify a get() whose key is missing still reads as a miss.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function getOfAMissingKeyStillReadsAsAMiss(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willReturn('get', false);
+
+        self::assertNull((new ValkeyGlideConnection($client))->get('cache-key'));
+    }
+
+    /**
+     * Verify an idempotent command whose recorded error is transient is retried
+     * once on a fresh client, which is cleared before it runs.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function idempotentCommandWithATransientRecordedErrorIsRetriedOnAFreshClient(): void
+    {
+        $failing = new ValkeyGlideLastErrorFake;
+        $failing->willFail('get', self::TRANSIENT_RESET_MESSAGE);
+
+        $fresh = new ValkeyGlideLastErrorFake;
+        $fresh->recordError(self::RECORDED_WRONGTYPE_ERROR);
+        $fresh->willReturn('get', false);
+
+        $connection = new ValkeyGlideConnection($failing, static fn (): ValkeyGlideLastErrorFake => $fresh, ['retry_delay_ms' => 0, 'retry_jitter_ms' => 0]);
+
+        self::assertNull($connection->get('cache-key'));
+        self::assertSame($fresh, $connection->client());
+        self::assertCount(1, $fresh->callsFor('get'));
+    }
+
+    /**
+     * Verify a command that is not idempotent is not retried for a transient
+     * recorded error.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function nonIdempotentCommandWithATransientRecordedErrorIsNotRetried(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willFail('incr', self::TRANSIENT_RESET_MESSAGE);
+
+        $reconnects = 0;
+        $connection = new ValkeyGlideConnection($client, static function () use (&$reconnects): ValkeyGlideLastErrorFake {
+            $reconnects++;
+
+            return new ValkeyGlideLastErrorFake;
+        });
+
+        try {
+            $connection->command('incr', ['counter']);
+            self::fail('Expected the recorded error to be thrown.');
+        } catch (CommandException $exception) {
+            self::assertSame(self::TRANSIENT_RESET_MESSAGE, $exception->getMessage());
+            self::assertSame(0, $reconnects);
+            self::assertCount(1, $client->callsFor('incr'));
+        }
+    }
+
+    /**
+     * Verify a client without the last-error API, as with GLIDE 1.1.2, still
+     * returns a failed command's false.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clientWithoutTheLastErrorApiReturnsFalse(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('incr', false);
+
+        self::assertFalse((new ValkeyGlideConnection($client))->command('incr', ['counter']));
+    }
+
+    /**
+     * Verify a pipeline whose exec() fails with an error recorded throws, with
+     * the error as the previous exception.
+     *
+     * @param  \Closure(): (\Tests\Fakes\ValkeyGlideClusterLastErrorFake|\Tests\Fakes\ValkeyGlideLastErrorFake)  $makeClient
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('lastErrorClients')]
+    #[Test]
+    public function pipelineWhoseExecFailsCarriesTheRecordedError(\Closure $makeClient): void
+    {
+        $client = $makeClient();
+        $client->willFail('exec', self::RECORDED_RECOVERY_ERROR);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->pipeline(static function (ValkeyGlideBatch $pipe): void {
+                $pipe->set('{a}1', 'x');
+            });
+            self::fail('Expected the pipeline to throw.');
+        } catch (ConnectionException $exception) {
+            self::assertSame(self::PIPELINE_FAILED_MESSAGE, $exception->getMessage());
+            self::assertInstanceOf(CommandException::class, $exception->getPrevious());
+            self::assertSame(self::RECORDED_RECOVERY_ERROR, $exception->getPrevious()->getMessage());
+        }
+    }
+
+    /**
+     * Verify a pipeline whose buffered commands are sent ahead of a command
+     * GLIDE cannot buffer carries the error recorded when that send fails.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function pipelineSentAheadOfAnImmediateCommandCarriesTheRecordedError(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willFail('exec', self::RECORDED_RECOVERY_ERROR);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->pipeline(static function (ValkeyGlideBatch $pipe): void {
+                $pipe->set('a', 'x');
+                $pipe->publish('channel', 'message');
+            });
+            self::fail('Expected the pipeline to throw.');
+        } catch (ConnectionException $exception) {
+            self::assertSame(self::PIPELINE_FAILED_MESSAGE, $exception->getMessage());
+            self::assertInstanceOf(CommandException::class, $exception->getPrevious());
+            self::assertSame(self::RECORDED_RECOVERY_ERROR, $exception->getPrevious()->getMessage());
+            self::assertSame([], $client->callsFor('publish'));
+        }
+    }
+
+    /**
+     * Verify a command GLIDE cannot buffer that fails inside a pipeline throws
+     * its recorded error and ends the pipeline.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function immediateCommandThatFailsInsideAPipelineThrowsItsRecordedError(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willFail('publish', self::RECORDED_RECOVERY_ERROR);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->pipeline(static function (ValkeyGlideBatch $pipe): void {
+                $pipe->publish('channel', 'message');
+            });
+            self::fail('Expected the pipeline to throw.');
+        } catch (CommandException $exception) {
+            self::assertSame(self::RECORDED_RECOVERY_ERROR, $exception->getMessage());
+            self::assertFalse($connection->hasOpenBatch());
+        }
+    }
+
+    /**
+     * Verify a watched transaction whose exec() fails with an error recorded
+     * throws, as the failure is not a WATCH abort.
+     *
+     * @param  \Closure(): (\Tests\Fakes\ValkeyGlideClusterLastErrorFake|\Tests\Fakes\ValkeyGlideLastErrorFake)  $makeClient
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('lastErrorClients')]
+    #[Test]
+    public function watchedTransactionWhoseExecFailsWithARecordedErrorThrows(\Closure $makeClient): void
+    {
+        $client = $makeClient();
+        $client->willFail('exec', self::RECORDED_RECOVERY_ERROR);
+
+        $dispatcher = new Dispatcher;
+        $failed     = [];
+
+        $dispatcher->listen(CommandFailed::class, static function (CommandFailed $event) use (&$failed): void {
+            $failed[] = $event;
+        });
+
+        $connection = new ValkeyGlideConnection($client);
+        $connection->setEventDispatcher($dispatcher);
+        $connection->watch('{a}1');
+
+        try {
+            $connection->transaction(static function (ValkeyGlideBatch $transaction): void {
+                $transaction->set('{a}1', 'x');
+            });
+            self::fail('Expected the transaction to throw.');
+        } catch (ConnectionException $exception) {
+            self::assertSame(self::TRANSACTION_FAILED_MESSAGE, $exception->getMessage());
+            self::assertInstanceOf(CommandException::class, $exception->getPrevious());
+            self::assertSame(self::RECORDED_RECOVERY_ERROR, $exception->getPrevious()->getMessage());
+            self::assertCount(1, $failed);
+            self::assertSame('transaction', $failed[0]->command);
+            self::assertSame($exception, $failed[0]->exception);
+        }
+    }
+
+    /**
+     * Verify a watched transaction whose exec() returns false with no error
+     * recorded, as GLIDE answers a WATCH abort, still returns false, even when
+     * an earlier call left an error on the client.
+     *
+     * @param  \Closure(): (\Tests\Fakes\ValkeyGlideClusterLastErrorFake|\Tests\Fakes\ValkeyGlideLastErrorFake)  $makeClient
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('lastErrorClients')]
+    #[Test]
+    public function watchedTransactionAbortedWithoutARecordedErrorReturnsFalse(\Closure $makeClient): void
+    {
+        $client = $makeClient();
+        $client->willReturn('exec', false);
+
+        $connection = new ValkeyGlideConnection($client);
+        $connection->watch('{a}1');
+
+        $client->recordError(self::RECORDED_WRONGTYPE_ERROR);
+
+        self::assertFalse($connection->transaction(static function (ValkeyGlideBatch $transaction): void {
+            $transaction->set('{a}1', 'x');
+        }));
+    }
+
+    /**
+     * Verify a batch whose exec() fails with no error recorded carries no
+     * previous exception.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function pipelineWhoseExecFailsWithoutARecordedErrorCarriesNone(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willReturn('exec', false);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->pipeline(static function (ValkeyGlideBatch $pipe): void {
+                $pipe->set('a', 'x');
+            });
+            self::fail('Expected the pipeline to throw.');
+        } catch (ConnectionException $exception) {
+            self::assertSame(self::PIPELINE_FAILED_MESSAGE, $exception->getMessage());
+            self::assertNull($exception->getPrevious());
+        }
+    }
+
+    /**
+     * Verify a WATCH that fails with an error recorded throws and leaves the
+     * keys unwatched, so a later transaction that fails throws rather than
+     * reading as a WATCH abort.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function watchThatFailsWithARecordedErrorThrowsAndWatchesNothing(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willFail('watch', self::RECORDED_RECOVERY_ERROR);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->command('watch', ['a']);
+            self::fail('Expected the WATCH to throw.');
+        } catch (CommandException $exception) {
+            self::assertSame(self::RECORDED_RECOVERY_ERROR, $exception->getMessage());
+        }
+
+        $client->willReturn('exec', false);
+
+        $this->expectException(ConnectionException::class);
+        $this->expectExceptionMessage(self::TRANSACTION_FAILED_MESSAGE);
+
+        $connection->transaction(static function (ValkeyGlideBatch $transaction): void {
+            $transaction->set('a', 'x');
+        });
+    }
+
+    /**
+     * Verify getLastError() called through the connection reports the error the
+     * last command recorded, rather than one cleared before it is read, and
+     * clearLastError() clears it.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function lastErrorReadThroughTheConnectionIsTheLastCommandsError(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willFail('incr', self::RECORDED_WRONGTYPE_ERROR);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->command('incr', ['counter']);
+            self::fail('Expected the recorded error to be thrown.');
+        } catch (CommandException) {
+            self::assertSame(self::RECORDED_WRONGTYPE_ERROR, $connection->command('getLastError'));
+            self::assertTrue($connection->command('clearLastError'));
+            self::assertNull($connection->command('getLastError'));
+        }
+    }
+
+    /**
+     * Verify getLastError() runs in call order inside a pipeline, as GLIDE runs
+     * it at once, and is refused inside a transaction.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function lastErrorReadInsideABatchRunsInCallOrder(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willReturn('get', 'v');
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame([true, null, 'v'], $connection->pipeline(static function (ValkeyGlideBatch $pipe): void {
+            $pipe->set('k', 'v');
+            $pipe->__call('getLastError', []);
+            $pipe->get('k');
+        }));
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage(sprintf(self::LOCAL_IN_TRANSACTION_MESSAGE, 'GETLASTERROR'));
+
+        $connection->transaction(static function (ValkeyGlideBatch $transaction): void {
+            $transaction->__call('getLastError', []);
+        });
     }
 
     /**
@@ -4237,7 +4779,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a closed client, which refuses batch mode, is reported.
+     * Verify a client closed outside the connection, which refuses batch mode,
+     * is reported.
      *
      * @return void
      *
@@ -4249,7 +4792,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         $client     = new ValkeyGlideFake;
         $connection = new ValkeyGlideConnection($client);
 
-        $connection->disconnect();
+        $client->close();
 
         $this->expectException(ConnectionException::class);
         $this->expectExceptionMessage('Unable to start the transaction; GLIDE refused batch mode, so the connection may be closed.');
@@ -6748,16 +7291,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         }
 
         self::assertFalse($connection->exec());
-        self::assertFalse($connection->command('get', ['a']));
-        self::assertSame(['watch', 'pipeline', 'set', 'discard', 'close', 'get'], $client->callOrder());
-
-        try {
-            $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1'));
-            self::fail('Expected the closed client to refuse batch mode.');
-        } catch (ConnectionException) {
-            // The closed client refuses batch mode.
-        }
-
+        self::assertSame(['watch', 'pipeline', 'set', 'discard', 'close'], $client->callOrder());
         self::assertSame([], $client->callsFor('unwatch'));
     }
 

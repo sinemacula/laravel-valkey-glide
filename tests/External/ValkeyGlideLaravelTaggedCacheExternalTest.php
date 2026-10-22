@@ -20,6 +20,7 @@ use SineMacula\Valkey\Cache\ValkeyGlideStore;
 use SineMacula\Valkey\Cache\ValkeyGlideTaggedCache;
 use SineMacula\Valkey\Cache\ValkeyGlideTagSet;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use SineMacula\Valkey\Exceptions\CommandException;
 use Tests\External\Concerns\ConnectsToTestServers;
 use Tests\TestCase;
 
@@ -789,6 +790,13 @@ final class ValkeyGlideLaravelTaggedCacheExternalTest extends TestCase
         try {
             $callback();
         } catch (\UnexpectedValueException $exception) {
+            // From 1.2, GLIDE records the error, which is thrown instead.
+            if ($exception instanceof CommandException) {
+                self::assertStringStartsWith('WRONGTYPE', $exception->getMessage());
+
+                return;
+            }
+
             self::assertSame($message, $exception->getMessage());
 
             return;

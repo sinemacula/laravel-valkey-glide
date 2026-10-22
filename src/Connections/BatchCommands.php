@@ -61,6 +61,8 @@ final readonly class BatchCommands
 
     /** @var list<string> Client-local methods, which GLIDE runs immediately without reaching the server. */
     private const array LOCAL_COMMANDS = [
+        'CLEARLASTERROR',
+        'GETLASTERROR',
         'GETOPTION',
         'GETOTELSAMPLEPERCENTAGE',
         'GETSTATISTICS',

@@ -62,9 +62,13 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
     /**
      * Create a Valkey GLIDE connection for cluster-style configuration.
      *
-     * An `options` entry beside the cluster's nodes overrides the shared and
-     * cluster-wide options and the first node's own, as it does for phpredis.
-     * On Laravel 13, Horizon sets its cluster key prefix this way.
+     * The first node's keys are the base, the shared and cluster-wide options
+     * override them, and the first node's nested `options` override those. An
+     * `options` entry beside the cluster's nodes overrides all of them, as it
+     * does for phpredis. On Laravel 13, Horizon sets its cluster key prefix
+     * this way. Unlike connect(), a `prefix` on the first node does not
+     * override the options: phpredis applies the options' prefix to a cluster
+     * and ignores the nodes' own.
      *
      * @param  array<array-key, mixed>  $config
      * @param  array<array-key, mixed>  $clusterOptions
@@ -81,8 +85,18 @@ final readonly class ValkeyGlideConnector implements ConnectorContract
 
         unset($config['options']);
 
-        $seedNode                    = $this->firstClusterNode($config);
-        $resolvedConfig              = array_replace(Config::merge($seedNode, array_merge($options, $clusterOptions)), is_array($ownOptions) ? $ownOptions : []);
+        $seedNode    = $this->firstClusterNode($config);
+        $nodeOptions = $seedNode['options'] ?? [];
+
+        unset($seedNode['options']);
+
+        $resolvedConfig = array_replace(
+            $seedNode,
+            array_merge($options, $clusterOptions),
+            is_array($nodeOptions) ? $nodeOptions : [],
+            is_array($ownOptions) ? $ownOptions : [],
+        );
+
         $resolvedConfig['addresses'] = Config::clusterAddresses($config);
 
         return $this->createClusterConnection($resolvedConfig);
