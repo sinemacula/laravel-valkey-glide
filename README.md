@@ -35,6 +35,7 @@ application business code.
 - Laravel compatibility fallback for phpredis-style `SET` and `EVAL` command argument shapes
 - Phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, as Laravel's locks and Horizon call them, and
   phpredis-compatible `hsetnx()` and options-array `zscan()`, `hscan()` and `sscan()`
+- Laravel's `zadd()`, `zinterstore()` and `zunionstore()` argument forms, and exact `zincrby()` increments
 - Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
   standalone and cluster connections
 - External test lane for extension and real Redis connectivity validation
@@ -148,8 +149,8 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 - The retry runs on a fresh client; the replaced client is closed, and any error from closing it is ignored
 - Nothing is retried while keys are watched for a transaction still to run, as the fresh client would not hold the
   `WATCH` (see WATCH)
-- Before each command, a `WATCH` left over from an `UNWATCH` that failed, sent by `unwatch()` or when a transaction
-  ended, is unwatched again (see WATCH)
+- Before each command that reaches the server, a `WATCH` left over from an `UNWATCH` that failed, sent by `unwatch()`
+  or when a transaction ended, is unwatched again (see WATCH)
 - Non-idempotent commands are not retried
 - Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`); a cluster `scan()` reports the id its
   `ClusterScanCursor` scans from in place of the cursor, so listeners can turn the parameters into strings
@@ -175,6 +176,22 @@ Command execution goes through `ValkeyGlideConnection::command()`.
   `zadd($key, 1, 123)` stores the member `'123'` where GLIDE returned `false`. A score, member or weight with no string
   form, such as an array, throws an `InvalidArgumentException` before anything is sent, inside a batch or outside one.
   `CommandExecuted` carries the strings sent
+- `zincrby()` adds its increment exactly. GLIDE's `zIncrBy()` takes the increment as a float and writes it with six
+  significant digits, so `1.23456789` was added as `1.23457`. A `zincrby()` with a numeric increment is sent as the
+  `ZADD ... INCR` it is equivalent to, with the increment read as a float and sent as phpredis sends it, inside a
+  pipeline or transaction too, and returns the new score as a float, as phpredis does. `CommandExecuted` names the
+  `zAdd` sent. A `zincrby()` with an increment that is not numeric, or with named arguments, is left to GLIDE
+- `zadd()` takes Laravel's forms, as Laravel's phpredis connection does: a trailing array of scores keyed by member, as
+  in `zadd($key, ['a' => 1, 'b' => 2])`, and option strings among the first three arguments after the key, as in
+  `zadd($key, 'NX', 1, 'a')`, which Laravel's tagged cache sends; GLIDE took neither. As there, a member among those
+  three named after an option, such as `'ch'`, is read as the option. GLIDE's options array, as in
+  `zadd($key, ['NX'], 1, 'a')`, is taken as it is
+- `zinterstore()` and `zunionstore()` take Laravel's options array in place of the weights, as Laravel's phpredis
+  connection does, as in `zunionstore($destination, $keys, ['weights' => [2, 1], 'aggregate' => 'max'])`, with `SUM`
+  when it names no aggregate; GLIDE sent the array as the weights, which the server refused. An empty array is read as
+  no weights, where GLIDE sent an empty `WEIGHTS`. GLIDE's own weights, keyed by integers in any order, as from
+  `array_filter()`, and aggregate string are taken too. As with a phpredis pipeline, the `zadd()`, `zinterstore()` and
+  `zunionstore()` of a pipeline or transaction take the client's own forms
 - `scan($cursor, ['match' => ..., 'count' => ...])` takes Laravel's options array and returns `[$cursor, $keys]`, as
   Laravel's phpredis connection does: start from `'0'` and stop once the cursor is `'0'` again. The `match` pattern is
   not prefixed, and `count` defaults to 10. A scan that fails throws an `UnexpectedValueException` rather than
@@ -183,7 +200,9 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 - `zscan($key, $cursor, $options)`, `hscan(...)` and `sscan(...)` take the same options array and return
   `[$cursor, $members]`, with the same string cursor, defaults and failure (see Cache Tags)
 - `disconnect()` delegates to GLIDE `close()`; an open pipeline or transaction ends without sending what it buffered, as
-  GLIDE drops it on close, and any `WATCH` is forgotten
+  GLIDE drops it on close, and any `WATCH` is forgotten. The next command, pipeline, transaction or subscription
+  reconnects through the connector, as phpredis reconnects a closed client, since GLIDE answers every call on a closed
+  client with `false`. A connection created without a connector throws a `ConnectionException` instead
 
 With `ext-valkey_glide` 1.1.2, most commands that fail return `false` rather than throwing, including while a node is
 unreachable and GLIDE is reconnecting (`Connection in recovery`); the extension prints the error to stderr. The driver
@@ -191,8 +210,25 @@ cannot tell that `false` from a reply, so it passes it on: a cache `get()` reads
 lock acquisition reports failure. Laravel's `putMany()` on a standalone connection queues its writes in a transaction: a
 transaction that fails as a whole throws a `ConnectionException` (see Failures under Pipelines and Transactions), but
 `putMany()` does not check the result of each write in it, so a write that fails inside the transaction still reports
-success. The retry above applies only to errors the extension throws. `getLastError()`, which the extension gains after
-1.1.2 (in the 1.2.0 release candidates), is what would let the driver raise these as exceptions.
+success. The retry above applies only to errors the extension throws.
+
+From 1.2 (in its release candidates), GLIDE records the error of a command that fails and returns `false`, which its
+`getLastError()` reports; a `false` reply, such as a `SETNX` that sets nothing or a `SISMEMBER` that finds nothing,
+records none. On a client that has `getLastError()`, the driver clears the client's last error before each command,
+and a command that returns `false` with an error recorded throws a `SineMacula\Valkey\Exceptions\CommandException`
+carrying GLIDE's message, such as `timed out` or `WRONGTYPE: Operation against a key holding the wrong kind of value`.
+It goes through the retry above and dispatches `CommandFailed` as any error the extension throws does, so a cache
+`get()` that fails throws rather than reading as a miss. `CommandException` is an `UnexpectedValueException`, which the
+driver throws for a failed scan or tag write on 1.1.2, so code that catches those failures catches it too. The error
+stays on the client until the next command clears it, so `Redis::getLastError()` reads it; `getLastError()` and
+`clearLastError()` run on the client without clearing it first, or sending a leftover `UNWATCH` (see WATCH). A pipeline
+or transaction whose `exec()` fails carries the error as its `ConnectionException`'s previous exception (see Failures
+under Pipelines and Transactions). Some failures still return `false`, as GLIDE records nothing for them:
+
+- `rawcommand()`, which runs `EVAL` and `EVALSHA`, `executeRaw()` and phpredis-style `SET` options such as
+  `set($key, $value, 'EX', 60, 'NX')`; its `false` cannot be read as a failure, as a script that returns `false` gives
+  `false` too
+- a command that fails inside a pipeline or transaction, which gives `false` in its own place in the results
 
 > [!NOTE]
 > In 1.2.x and earlier, a bare `multi()` ... `exec()` on the connection went straight to GLIDE, so a transaction that
@@ -335,9 +371,9 @@ cannot buffer itself:
 - **Commands GLIDE runs immediately**: `EVAL`, `EVALSHA` and their `_RO` forms, `SCRIPT`, `FUNCTION`, `PUBLISH`,
   `PUBSUB`, `rawCommand()` and `executeRaw()` (on the connection or the batch), the search (`FT.*`) commands, the
   connection password and IAM token methods (`updateConnectionPassword()`, `clearConnectionPassword()` and
-  `refreshIamToken()`), and the client's own methods, such as `getOption()`, `getStatistics()` and the OpenTelemetry
-  sampling methods; on a cluster also the keyless `PING`, `ECHO`, `INFO`, `DBSIZE`, `TIME`, `RANDOMKEY`, `FLUSHDB`,
-  `FLUSHALL` and `CLIENT`.
+  `refreshIamToken()`), and the client's own methods, such as `getOption()`, `getStatistics()`, `getLastError()` and
+  the OpenTelemetry sampling methods; on a cluster also the keyless `PING`, `ECHO`, `INFO`, `DBSIZE`, `TIME`,
+  `RANDOMKEY`, `FLUSHDB`, `FLUSHALL` and `CLIENT`.
   - In a pipeline, what is buffered before such a command is sent first, then the command runs on its own and its
     result takes its place in the list, so the results stay in call order; it costs extra round trips. What the event
     listeners of that send, or of the command, run on the same connection is sent at once and takes no place in the
@@ -360,7 +396,8 @@ cannot buffer itself:
   the connection. The connection's own typed `get()` and `mget()` are refused too while a batch is open, as their
   value is not known until the batch runs; call them on the batch instead.
 - **Arguments GLIDE rejects**: GLIDE checks some arguments itself and buffers nothing when it rejects them, for example
-  `zadd($key, 'NX', 1, $member)` with a string option, where it expects `zadd($key, ['NX'], 1, $member)`. The driver
+  the batch's `zadd($key, 'NX', 1, $member)` with a string option, where it expects `zadd($key, ['NX'], 1, $member)`
+  (the connection's own `zadd()` converts it; see Runtime Behavior). The driver
   throws an `InvalidArgumentException` naming the command rather than return a result list with a slot missing. GLIDE
   reports `zrem()` and `zmscore()` given a key but no member, as from `zrem($key, ...$ids)` with no ids, and `zinter()`
   given an empty key list, as buffered without buffering them, so the driver refuses them the same way before they are
@@ -371,10 +408,11 @@ cannot buffer itself:
 - **Commands GLIDE throws for**, such as `sinter('key')`, which GLIDE 1.1.2 accepts only as `sinter(['key'])`, end the
   batch, discarding everything it still buffers, whether or not a callback owns it, as GLIDE may have buffered the
   command before it threw. The error is rethrown; a batch whose error was caught cannot be used again.
-- **A closed client**, or one already put in batch mode outside the driver, refuses batch mode, so the batch throws a
-  `ConnectionException` and ends. The driver then calls the client's `discard()`, which takes a client put in batch mode
-  outside the driver out of it, dropping whatever was buffered there, and does nothing on a closed client; the next
-  command takes the usual path.
+- **A client closed outside the driver**, or one already put in batch mode outside the driver, refuses batch mode, so
+  the batch throws a `ConnectionException` and ends; a client `disconnect()` closed is replaced first (see Runtime
+  Behavior). The driver then calls the client's `discard()`, which takes a client put in batch mode outside the driver
+  out of it, dropping whatever was buffered there, and does nothing on a closed client; the next command takes the
+  usual path.
 
 ### Nested Batches
 
@@ -426,10 +464,14 @@ applied by the server. The driver never retries a batch, and:
 - a failed pipeline throws a `ConnectionException`; some of its commands may have been applied
 - a failed transaction throws a `ConnectionException`; its outcome is unknown, and it may have been committed
 - a failed transaction guarded by `WATCH` returns `false`, as phpredis does when a watched key changed; on 1.1.2 a
-  timeout looks the same, so `false` does not prove the transaction was not applied
+  timeout looks the same, so `false` does not prove the transaction was not applied. From 1.2, GLIDE records an error
+  for a timeout or a connection failure but not for an abort, so a watched transaction whose `exec()` fails with an
+  error throws a `ConnectionException` instead, its outcome unknown
 - a batch whose results do not line up with the commands it buffered throws a `ConnectionException`, rather than return
   results out of call order; the server ran it, so it has most likely been applied, and a watched transaction throws
   too rather than return `false`
+- from 1.2, the error GLIDE records for a failed `exec()`, such as `timed out`, is the `ConnectionException`'s previous
+  exception, a `CommandException`
 
 A command that fails on the server, such as a `WRONGTYPE` error, gives `false` in its own place in the results, in a
 pipeline and in a transaction alike, and the other commands still apply. An error the server raises while queueing a
@@ -470,20 +512,23 @@ write idempotent, for example by recording a unique operation id in the same tra
 - Pipelines leave a `WATCH` alone, but a transaction cannot join a pipeline while keys are watched: the pipeline would
   flatten it, and it would commit over a change to a watched key, so it throws a `LogicException` before anything
   changes. Under phpredis the nested transaction would stay atomic and abort.
-- A `WATCH` that GLIDE refuses, returning `false`, is not tracked. An `UNWATCH` that fails, returning `false` or
-  throwing, leaves the keys tracked, as the server may still hold the `WATCH`; a transaction it then aborts returns
-  `false`. That covers an `unwatch()` called on the connection, whose failure the caller still gets, and the `UNWATCH`
-  sent when a transaction ends, committed on a cluster or not committed.
+- A `WATCH` that GLIDE refuses, returning `false` or, from 1.2, throwing the error it records, is not tracked. An
+  `UNWATCH` that fails, returning `false` or throwing, leaves the keys tracked, as the server may still hold the
+  `WATCH`; a transaction it then aborts returns `false`. That covers an `unwatch()` called on the connection, whose
+  failure the caller still gets, and the `UNWATCH` sent when a transaction ends, committed on a cluster or not
+  committed.
 - Either way the `WATCH` is released, so the keys left tracked guard nothing, and the driver sends `UNWATCH` again
-  before the next command on the connection, a `watch()`, `pipeline()`, `transaction()` or subscription included,
-  once per command and never inside a batch, until it succeeds; the command runs either way. Until then the next
-  transaction is still treated as watched, as the server may abort it, but the leftover keys do not turn the retry
-  off, and a retry's fresh client drops them. A `watch()` whose `UNWATCH` first succeeds tracks only its own keys; if
-  that `UNWATCH` fails but the `WATCH` succeeds, the leftover keys stay watched beside the new ones, as the caller's
-  own, until the transaction ends.
+  before the next command on the connection, a `watch()`, `pipeline()`, `transaction()` or subscription included, once
+  per command and never inside a batch, until it succeeds; the command runs either way. The client's own methods, such
+  as `getOption()` and `getLastError()`, reach no server and do not send it, so it cannot replace the error
+  `getLastError()` reads. Until an `UNWATCH` succeeds, the next transaction is still treated as watched, as the server
+  may abort it, but the leftover keys do not turn the retry off, and a retry's fresh client drops them. A `watch()`
+  whose `UNWATCH` first succeeds tracks only its own keys; if that `UNWATCH` fails but the `WATCH` succeeds, the
+  leftover keys stay watched beside the new ones, as the caller's own, until the transaction ends.
 - The `UNWATCH` a cluster sends after a committed transaction never reaches the caller when it fails, returning `false`
   or throwing: the transaction has committed, so its results are returned and its `CommandExecuted` event dispatched,
-  rather than leading the caller to retry it and apply it twice.
+  rather than leading the caller to retry it and apply it twice. From 1.2 the error GLIDE records for it stays on the
+  client, where `getLastError()` reads it, until the next command clears it.
 
 ### Cluster Batches
 
@@ -772,11 +817,12 @@ Laravel's own code unchanged.
 - Tagged writes record each key in the tag's sorted set, `tag:<name>:entries`, under the connection and cache
   prefixes. `increment()` and `decrement()` record their key with GLIDE's `['NX']` option; GLIDE ignores phpredis'
   `'NX'` string and writes nothing.
-- `flush()` reads each tag's sorted set with `ZSCAN`, deletes the entries 1,000 at a time with one `DEL` (on a cluster
-  GLIDE splits it across hash slots), then removes those entries from the tags' sorted sets with `ZREM`. An entry
-  tagged while the flush runs may or may not be removed with it; one the flush does not reach stays recorded. A sorted
-  set left empty is removed by the server. `CacheFlushing` and `CacheFlushed` are dispatched when the installed Laravel
-  version dispatches them for tags.
+- `flush()` reads each tag's sorted set with `ZSCAN` and deletes the entries 1,000 at a time. On a standalone server
+  each batch is deleted, and removed from the tags' sorted sets, in one `EVAL` script, as Laravel's own flush does over
+  a standalone phpredis or Predis connection. On a cluster each batch is deleted with one `DEL`, which GLIDE splits
+  across hash slots, then removed from each tag's sorted set with `ZREM`. An entry tagged while the flush runs may or
+  may not be removed with it; one the flush does not reach stays recorded. A sorted set left empty is removed by the
+  server. `CacheFlushing` and `CacheFlushed` are dispatched when the installed Laravel version dispatches them for tags.
 - `flushStale()` removes expired entries from each tag's sorted set with `ZREMRANGEBYSCORE`, one command per tag.
 - `cache:prune-stale-tags` finds the tag sets with a `SCAN` for sorted sets whose pattern carries the connection and
   cache prefixes, with glob characters in them escaped; on a cluster it walks every primary with a `ClusterScanCursor`.
@@ -787,16 +833,23 @@ Laravel's own code unchanged.
   Cannot Buffer); the cluster `SCAN`, which GLIDE would run at once, outside the batch, is refused the same way.
 
 > [!NOTE]
-> A tag flush is not atomic. Over a standalone phpredis or Predis connection Laravel 12.30 and later delete each batch
-> of entries and their tag records in one Lua script, which cannot run across hash slots. Here each batch is a `DEL`
-> followed by a `ZREM` per tag, so a key written again between the two can lose its tag record. Laravel's own cluster
-> connections instead delete the entries, then each tag's whole sorted set. Entries are deleted first, so an interrupted
-> flush leaves only records of deleted keys, and running it again completes it.
+> On a standalone server each batch of a tag flush is atomic: no other command runs between deleting its entries and
+> removing their tag records, so a write of a key and its record that lands during the flush is either removed with the
+> batch or kept with its record. A tagged write is itself two commands, and Laravel 12 and 13 before 13.30.1 record the
+> key before writing the value, so a flush that runs between the two still leaves that value untracked, as it does with
+> Laravel's own Lua flush. The script names every key it touches. Unlike Laravel's, it is given the tag members rather
+> than stripping the prefix from each key with a Lua pattern, so prefixes with any characters work. A whole flush is not
+> atomic, here or in Laravel: it runs one script per batch of 1,000. The script cannot run across hash slots, so on a
+> cluster a key written again between a batch's `DEL` and its `ZREM` can lose its tag record, and stays cached until it
+> expires. Laravel's own cluster connections instead delete the entries, then each tag's whole sorted set. Either way
+> entries are deleted first, so an interrupted flush leaves only records of deleted keys, and running it again completes
+> it.
 
 With `ext-valkey_glide` 1.1.2 a failed command returns `false` (see Runtime Behavior), so on these paths, outside a
 batch, a `false` reply throws an `UnexpectedValueException` naming the command and key, rather than reporting a partial
 flush, a lost tag record or a partial prune as success. This includes server errors that phpredis would let pass, such
-as `WRONGTYPE` on a tag's key.
+as `WRONGTYPE` on a tag's key. From 1.2 the connection throws GLIDE's recorded error instead, as a `CommandException`,
+which is an `UnexpectedValueException` too (see Runtime Behavior).
 
 > [!NOTE]
 > `flush()` reads the tags' sorted sets with `ZSCAN`, which follows the connection's `read_from` (see Read Routing).
@@ -852,6 +905,12 @@ do {
 - The user running `cache:prune-stale-tags` needs `SCAN` permission. On a cluster, with 1.1.2 a `SCAN` refused by an
   ACL aborts the PHP process; on a standalone server the refusal comes back as `false` and the command throws an
   `UnexpectedValueException`.
+- On a standalone server the user running a tag `flush()` needs `EVAL` permission (the `@scripting` ACL category), as
+  with Laravel's own flush over phpredis and Predis. Earlier releases flushed with `DEL` and `ZREM` only, so a user
+  denied `EVAL`, or a server with `EVAL` disabled, could flush; now the refused script comes back as `false` and the
+  flush throws an `UnexpectedValueException` naming `EVAL` before any entry is deleted. With 1.1.2 GLIDE reports the
+  refusal only as `false`, the reply of every other failure, so the flush cannot tell it apart and does not fall back
+  to `DEL` and `ZREM`. A flush on a cluster sends no script.
 
 ## ElastiCache Serverless
 
@@ -933,11 +992,14 @@ External integration coverage includes:
 - connector/connection roundtrip behavior and retry semantics
 - command-prefix behavior, including list-style key commands (`MGET`)
 - Laravel cache roundtrip behavior, physical key writes, locks, TTL edge cases, and cache tags on a standalone server
-  and a cluster (tagged writes, `flush()`, `flushStale()` and `cache:prune-stale-tags`)
+  and a cluster (tagged writes, `flush()`, `flushStale()` and `cache:prune-stale-tags`), including a standalone flush
+  racing a second process that rewrites the flushed keys
 - Laravel queue push/pop behavior and physical queue key writes
 - Laravel session roundtrip behavior and physical session key writes
 - phpredis-compatible `setnx()`, `hsetnx()`, `zrevrange()` and options-array `scan()`, `zscan()`, `hscan()` and
   `sscan()`, including Laravel's own `RedisTagSet::entries()`, on a standalone server and a cluster
+- sorted-set scores, members and weights sent as strings, exact `zincrby()` increments, and Laravel's `zadd()`,
+  `zinterstore()` and `zunionstore()` argument forms, on a standalone server and a cluster
 - pipelines and transactions on a standalone server and a cluster: result order, physical prefixed keys, empty and
   nested batches with and without callbacks, `EVAL` in a batch, `WATCH`, cross-slot transactions, closed clients,
   throwing event listeners and a 5,000-command pipeline

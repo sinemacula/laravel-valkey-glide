@@ -5,20 +5,27 @@ declare(strict_types = 1);
 namespace Tests\External;
 
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Queue\CallQueuedClosure;
+use Illuminate\Queue\Jobs\InspectedJob;
 use Illuminate\Queue\Jobs\RedisJob;
 use Illuminate\Queue\QueueManager;
 use Illuminate\Queue\RedisQueue;
 use Illuminate\Redis\Connections\Connection;
 use Illuminate\Redis\RedisManager;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\Test;
+use SineMacula\Valkey\Connections\ClusterRouter;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use Tests\External\Concerns\ConnectsToTestServers;
 use Tests\TestCase;
 
 /**
  * External Laravel queue integration checks for the valkey-glide Redis client.
+ *
+ * The cluster cases run when VALKEY_GLIDE_TEST_CLUSTER_HOST and
+ * VALKEY_GLIDE_TEST_CLUSTER_PORT are set, and are skipped otherwise.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -34,6 +41,9 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
     /** @var string Prefix configured on the Redis queue connection. */
     private const string REDIS_CONNECTION_PREFIX = 'lvkglide:queue:conn:';
 
+    /** @var string Prefix configured on the cluster's Redis queue connection. */
+    private const string CLUSTER_CONNECTION_PREFIX = 'lvkglide:queue:cluster:';
+
     /** @var string Default queue name used for Redis queue configuration. */
     private const string DEFAULT_QUEUE_NAME = 'default';
 
@@ -42,6 +52,12 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
 
     /** @var string Queue connection configured on the cluster, when one is set. */
     private const string CLUSTER_QUEUE_CONNECTION = 'redis-cluster';
+
+    /** @var array<string, string> Queue connection for each topology. */
+    private const array QUEUE_CONNECTIONS = [
+        self::STANDALONE => 'redis',
+        self::CLUSTER    => self::CLUSTER_QUEUE_CONNECTION,
+    ];
 
     /**
      * Ensure extension preconditions are met before each external test.
@@ -200,6 +216,91 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
     }
 
     /**
+     * Verify Laravel's queue inspection, which lists the queue names with KEYS
+     * on a connection that is not a phpredis cluster connection, finds the
+     * pending and delayed jobs of every queue under the connection prefix.
+     *
+     * On the cluster there is a queue on every primary, as each primary holds
+     * only its own slots' keys.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function queueInspectionFindsTheJobsOfEveryQueue(string $topology): void
+    {
+        $this->skipUnlessTopologyIsConfigured($topology);
+
+        if (!(new \ReflectionClass(RedisQueue::class))->hasMethod('allPendingJobs')) {
+            self::markTestSkipped('Laravel added queue inspection to its Redis queue in 13.');
+        }
+
+        $queue  = $this->redisQueueConnection(self::QUEUE_CONNECTIONS[$topology]);
+        $names  = $this->queueNamesOnEveryPrimary($topology);
+        $listed = array_map(static fn (string $name): string => trim($name, '{}'), $names);
+
+        try {
+            foreach ($names as $name) {
+                $queue->pushRaw($this->queuePayload('job-' . trim($name, '{}')), $name);
+            }
+
+            $queue->later(600, CallQueuedClosure::create(static fn () => null), '', $names[0]);
+
+            $pending = $queue->allPendingJobs()->filter(static fn (InspectedJob $job): bool => in_array($job->queue, $listed, true));
+            $delayed = $queue->allDelayedJobs()->filter(static fn (InspectedJob $job): bool => in_array($job->queue, $listed, true));
+
+            self::assertEqualsCanonicalizing(
+                array_map(static fn (string $name): string => 'job-' . $name, $listed),
+                $pending->map(static fn (InspectedJob $job): mixed => $job->payload['job'] ?? null)->all(),
+            );
+            self::assertSame([$listed[0]], $delayed->map(static fn (InspectedJob $job): ?string => $job->queue)->values()->all());
+            self::assertGreaterThanOrEqual(count($names) + 1, $queue->totalSize());
+        } finally {
+            foreach ($names as $name) {
+                $queue->clear($name);
+            }
+        }
+    }
+
+    /**
+     * Verify clearing a queue, as `queue:clear` does, removes its pending and
+     * delayed jobs with one script over the queue's keys, and reports how many
+     * it removed.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function queueClearRemovesEveryJobOfTheQueue(string $topology): void
+    {
+        $this->skipUnlessTopologyIsConfigured($topology);
+
+        $queue = $this->redisQueueConnection(self::QUEUE_CONNECTIONS[$topology]);
+        $name  = $this->topologyQueueName($topology, 'clear');
+
+        $key = $queue->getQueue($name);
+
+        try {
+            $queue->pushRaw($this->queuePayload(), $name);
+            $queue->pushRaw($this->queuePayload(), $name);
+            $queue->later(600, CallQueuedClosure::create(static fn () => null), '', $name);
+
+            self::assertSame(3, $queue->size($name));
+            self::assertSame(3, $queue->clear($name));
+            self::assertSame(0, $queue->size($name));
+            self::assertNull($queue->pop($name));
+        } finally {
+            $queue->getConnection()->command('del', [$key, $key . ':delayed', $key . ':reserved', $key . ':notify']);
+        }
+    }
+
+    /**
      * Configure Redis and queue defaults used by queue integration tests.
      *
      * @param  \Illuminate\Contracts\Foundation\Application  $app
@@ -226,7 +327,10 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
             return;
         }
 
-        $app['config']->set('database.redis.clusters.' . self::CLUSTER_REDIS_CONNECTION, [$this->clusterSeed()]);
+        $app['config']->set('database.redis.clusters.' . self::CLUSTER_REDIS_CONNECTION, [
+            $this->clusterSeed(),
+            'options' => ['prefix' => self::CLUSTER_CONNECTION_PREFIX],
+        ]);
         $app['config']->set('queue.connections.' . self::CLUSTER_QUEUE_CONNECTION, [
             'driver'       => 'redis',
             'connection'   => self::CLUSTER_REDIS_CONNECTION,
@@ -289,16 +393,17 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
     /**
      * Build a JSON payload accepted by Laravel's Redis queue driver.
      *
+     * @param  string  $job
      * @return string
      */
-    private function queuePayload(): string
+    private function queuePayload(string $job = 'tests.stub'): string
     {
         $id = str_replace('.', '', uniqid('job', true));
 
         return json_encode(
             [
                 'id'       => $id,
-                'job'      => 'tests.stub',
+                'job'      => $job,
                 'data'     => ['message' => 'payload'],
                 'attempts' => 0,
             ],
@@ -317,6 +422,104 @@ final class ValkeyGlideLaravelQueueExternalTest extends TestCase
         $entropy = str_replace('.', '', uniqid('', true));
 
         return sprintf('lvkglide:queue:%s:%s', $suffix, $entropy);
+    }
+
+    /**
+     * Build a unique queue name for the topology; on the cluster it is
+     * hash-tagged, so the queue's keys share one slot whichever Laravel version
+     * runs.
+     *
+     * @param  string  $topology
+     * @param  string  $suffix
+     * @return string
+     */
+    private function topologyQueueName(string $topology, string $suffix): string
+    {
+        $name = $this->uniqueQueueName($suffix);
+
+        return $topology === self::CLUSTER ? '{' . $name . '}' : $name;
+    }
+
+    /**
+     * Build unique queue names, one on each primary of the cluster, or two on
+     * the standalone server.
+     *
+     * Each primary's slot ranges are read from CLUSTER SLOTS, and names are
+     * drawn until one falls in the ranges of every primary.
+     *
+     * @param  string  $topology
+     * @return non-empty-list<string>
+     *
+     * @throws \UnexpectedValueException
+     */
+    private function queueNamesOnEveryPrimary(string $topology): array
+    {
+        if ($topology !== self::CLUSTER) {
+            return [$this->topologyQueueName($topology, 'inspect'), $this->topologyQueueName($topology, 'inspect')];
+        }
+
+        $ranges    = $this->clusterSlotRanges();
+        $primaries = count(array_unique(array_column($ranges, 2)));
+        $names     = [];
+        $router    = new ClusterRouter;
+
+        while (count($names) < $primaries) {
+            $name = $this->topologyQueueName($topology, 'inspect');
+            $slot = $router->slot($name);
+
+            foreach ($ranges as [$start, $end, $primary]) {
+                if ($slot < $start || $slot > $end) {
+                    continue;
+                }
+
+                $names[$primary] ??= $name;
+            }
+        }
+
+        return array_values($names);
+    }
+
+    /**
+     * Read the cluster's slot ranges, each with the address of the primary that
+     * owns it.
+     *
+     * @return non-empty-list<array{int, int, string}>
+     *
+     * @throws \UnexpectedValueException
+     */
+    private function clusterSlotRanges(): array
+    {
+        $reply = $this->redisConnection(self::CLUSTER_REDIS_CONNECTION)->executeRaw(['CLUSTER', 'SLOTS']);
+
+        if (!is_array($reply) || $reply === []) {
+            throw new \UnexpectedValueException(sprintf('Expected the cluster slots, received [%s].', get_debug_type($reply)));
+        }
+
+        return array_values(array_map(self::slotRange(...), $reply));
+    }
+
+    /**
+     * Read a slot range of a CLUSTER SLOTS reply as its first and last slots
+     * and the address of its primary.
+     *
+     * @param  mixed  $range
+     * @return array{int, int, string}
+     *
+     * @throws \UnexpectedValueException
+     */
+    private static function slotRange(mixed $range): array
+    {
+        $primary = is_array($range) ? ($range[2] ?? null) : null;
+
+        if (!is_array($range) || !is_int($range[0] ?? null) || !is_int($range[1] ?? null) || !is_array($primary)) {
+            throw new \UnexpectedValueException('Unexpected CLUSTER SLOTS reply.');
+        }
+
+        if (!is_string($primary[0] ?? null) || !is_int($primary[1] ?? null)) {
+            throw new \UnexpectedValueException('Unexpected CLUSTER SLOTS primary.');
+        }
+
+        return [$range[0], $range[1], $primary[0] . ':' . $primary[1]];
     }
 
     /**

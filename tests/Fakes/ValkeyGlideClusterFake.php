@@ -13,8 +13,10 @@ use Tests\Fakes\Concerns\EmulatesBatchMode;
  * @copyright   2026 Sine Macula Limited.
  *
  * @internal
+ *
+ * @inheritable
  */
-final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
+class ValkeyGlideClusterFake extends \ValkeyGlideCluster
 {
     use EmulatesBatchMode;
 

@@ -62,6 +62,7 @@ final class KeyPrefixerTest extends TestCase
         yield 'mset without a map is left untouched' => ['app:', 'mset', ['a', '1'], ['a', '1']];
         yield 'mset keeps arguments after its map' => ['app:', 'mset', [['a' => '1'], 'extra'], [['app:a' => '1'], 'extra']];
         yield 'scan match pattern is left untouched' => ['app:', 'scan', [0, 'MATCH', 'user:*'], [0, 'MATCH', 'user:*']];
+        yield 'keys prefixes its match pattern' => ['app:', 'keys', ['queues:*'], ['app:queues:*']];
         yield 'double-key command prefixes both keys' => ['app:', 'rename', ['old', 'new'], ['app:old', 'app:new']];
         yield 'double-key command tolerates missing second key' => ['app:', 'rename', ['old'], ['app:old']];
         yield 'bitop prefixes the destination and source keys' => ['app:', 'bitop', ['AND', 'dest', 'a', 'b'], ['AND', 'app:dest', 'app:a', 'app:b']];

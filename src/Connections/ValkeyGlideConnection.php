@@ -7,6 +7,7 @@ namespace SineMacula\Valkey\Connections;
 use Illuminate\Redis\Connections\Connection;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Redis\Events\CommandFailed;
+use SineMacula\Valkey\Exceptions\CommandException;
 use SineMacula\Valkey\Exceptions\ConnectionException;
 use SineMacula\Valkey\Support\Cast;
 
@@ -185,6 +186,9 @@ final class ValkeyGlideConnection extends Connection
     /** @var string Message for a connection method refused while a batch is active. */
     private const string ACTIVE_BATCH_MESSAGE = '[%s()] cannot be called while a pipeline or transaction is active; %s.';
 
+    /** @var string Message for a disconnected connection that has no connector to reconnect it. */
+    private const string DISCONNECTED_MESSAGE = 'The connection was closed by disconnect() and has no connector to reconnect it.';
+
     /** @var array<int, string> Error fragments treated as transient transport faults. */
     private const array TRANSIENT_ERROR_FRAGMENTS = [
         'connection reset by peer',
@@ -210,6 +214,9 @@ final class ValkeyGlideConnection extends Connection
 
     /** @var array<string, mixed> Connection-level configuration. */
     protected array $config;
+
+    /** @var bool Whether disconnect() closed the client, which is then replaced before it is used again. */
+    private bool $disconnected = false;
 
     /** @var \SineMacula\Valkey\Connections\KeyPrefixer Key prefixer instance for command parameter normalization. */
     private readonly KeyPrefixer $prefixer;
@@ -484,6 +491,70 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Add members to a sorted set, or update their scores, with Laravel's
+     * argument forms.
+     *
+     * As with Laravel's phpredis connection, the scores may be given as a
+     * trailing array keyed by member, as in `zadd($key, ['a' => 1])`, and the
+     * options as strings among the first three arguments after the key, as in
+     * `zadd($key, 'NX', 1, 'a')`, which Laravel's tagged cache sends; GLIDE
+     * takes neither. An options array after the key, as GLIDE takes it, is
+     * kept. The pipeline or transaction's own `zadd()` takes the client's form,
+     * as a phpredis pipeline does. The key is taken as `command()` takes it.
+     *
+     * @param  mixed  $key
+     * @param  mixed  ...$dictionary
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    public function zadd(mixed $key, mixed ...$dictionary): mixed
+    {
+        return $this->command('zadd', [$key, ...$this->sortedSetArguments->zaddArguments($dictionary)]);
+    }
+
+    /**
+     * Store the intersection of sorted sets, with Laravel's options array.
+     *
+     * As with Laravel's phpredis connection, the weights and aggregate may be
+     * given as an options array in place of the weights, as in
+     * `zinterstore($destination, $keys, ['weights' => [2, 1], 'aggregate' =>
+     * 'max'])`. GLIDE's own weights list and aggregate are taken too, by
+     * position or by name. The destination and keys are taken as `command()`
+     * takes them.
+     *
+     * @param  mixed  $dst
+     * @param  mixed  $keys
+     * @param  mixed  $weights
+     * @param  mixed  $aggregate
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    public function zinterstore(mixed $dst, mixed $keys, mixed $weights = null, mixed $aggregate = null): mixed
+    {
+        return $this->command('zinterstore', [$dst, $keys, ...$this->sortedSetArguments->storeArguments($weights, $aggregate)]);
+    }
+
+    /**
+     * Store the union of sorted sets, with Laravel's options array.
+     *
+     * This takes the same forms as `zinterstore()`.
+     *
+     * @param  mixed  $dst
+     * @param  mixed  $keys
+     * @param  mixed  $weights
+     * @param  mixed  $aggregate
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    public function zunionstore(mixed $dst, mixed $keys, mixed $weights = null, mixed $aggregate = null): mixed
+    {
+        return $this->command('zunionstore', [$dst, $keys, ...$this->sortedSetArguments->storeArguments($weights, $aggregate)]);
+    }
+
+    /**
      * Scan the keyspace for one page of keys, with Laravel's options array.
      *
      * As with Laravel's phpredis connection, the scan starts from cursor '0'
@@ -599,7 +670,9 @@ final class ValkeyGlideConnection extends Connection
      * instead, and the batch is returned. The scores and members of ZADD, and
      * the weights of ZUNIONSTORE, ZINTERSTORE, ZUNION, ZINTER and ZDIFFSTORE,
      * are sent as strings, as GLIDE corrupts memory on some other values, and
-     * one with no string form is refused before anything is sent.
+     * one with no string form is refused before anything is sent. A ZINCRBY
+     * with a numeric increment is sent as the ZADD ... INCR it is equivalent
+     * to, as GLIDE writes its increment with six significant digits.
      *
      * @param  mixed  $method
      * @param  array<array-key, mixed>  $parameters
@@ -620,13 +693,19 @@ final class ValkeyGlideConnection extends Connection
             return $this->controlBatch($normalizedMethod, $parameters);
         }
 
+        [$normalizedMethod, $parameters] = $this->sortedSetArguments->rewriteIncrement($normalizedMethod, $parameters);
+
         $parameters = $this->sortedSetArguments->normalize($normalizedMethod, $parameters);
 
         if ($this->batch !== null) {
             return $this->queueBatchCommand($this->batch, $normalizedMethod, $parameters);
         }
 
-        $this->unwatchLeftOverKeys();
+        // A client-local method reaches no server, so it needs no leftover
+        // UNWATCH, which could replace the error getLastError() reads.
+        if (!$this->batchCommands->runsLocally($normalizedMethod)) {
+            $this->unwatchLeftOverKeys();
+        }
 
         return $this->executeCommandWithRetry(
             $normalizedMethod,
@@ -653,6 +732,7 @@ final class ValkeyGlideConnection extends Connection
         $normalizedMethod = $this->normalizeSubscriptionMethod($method);
 
         $this->assertNoActiveBatch($normalizedMethod, 'subscribe outside the batch');
+        $this->reconnectAfterDisconnect();
         $this->unwatchLeftOverKeys();
 
         $this->invokeSubscription($normalizedMethod, $this->normalizeSubscriptionChannels($channels), $callback);
@@ -713,7 +793,9 @@ final class ValkeyGlideConnection extends Connection
      *
      * An active pipeline or transaction ends, as GLIDE drops what it buffered
      * when it closes, and the keys the connection watched are forgotten, as the
-     * server drops the WATCH with the connection.
+     * server drops the WATCH with the connection. The next command, batch or
+     * subscription reconnects through the connector, as phpredis reconnects a
+     * closed client.
      *
      * @return void
      *
@@ -728,6 +810,8 @@ final class ValkeyGlideConnection extends Connection
         $this->forgetWatchedKeys();
 
         $this->glideClient->close();
+
+        $this->disconnected = true;
     }
 
     /**
@@ -835,6 +919,9 @@ final class ValkeyGlideConnection extends Connection
         if ($cursor !== '0' && !isset($this->clusterScanCursors[$cursor])) {
             throw new \InvalidArgumentException(sprintf('Cannot resume a cluster scan from cursor [%s]: only a cursor this connection returned can be resumed, once.', $cursor));
         }
+
+        // A reconnect that fails sends no scan, so it must not use the id up.
+        $this->reconnectAfterDisconnect();
 
         unset($this->clusterScanCursors[$cursor]);
 
@@ -1041,6 +1128,7 @@ final class ValkeyGlideConnection extends Connection
      */
     private function beginBatch(bool $atomic): BatchState
     {
+        $this->reconnectAfterDisconnect();
         $this->unwatchLeftOverKeys();
 
         $batch       = new BatchState($this, $atomic);
@@ -1467,9 +1555,10 @@ final class ValkeyGlideConnection extends Connection
      * is sent at once rather than joining the pipeline, where it would start
      * GLIDE's batch again under the command and be heard of only as another
      * send. A batch a listener leaves open is ended, as the pipeline cannot
-     * take it back. Anything that throws along the way, the command, the send,
-     * or a listener of either, ends the pipeline, whether or not a callback
-     * owns it.
+     * take it back, and a client a listener disconnects is replaced before the
+     * pipeline resumes. Anything that throws along the way, the command, the
+     * send, a listener of either, or the reconnect, ends the pipeline, whether
+     * or not a callback owns it.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  string  $method
@@ -1493,6 +1582,7 @@ final class ValkeyGlideConnection extends Connection
             });
 
             $this->assertNoBatchLeftByListener($method);
+            $this->reconnectAfterDisconnect();
         } catch (\Throwable $exception) {
             if ($this->batch !== null) {
                 $this->endBatchAfterFailure($this->batch);
@@ -1626,7 +1716,7 @@ final class ValkeyGlideConnection extends Connection
         $outcome   = $this->executeNativeBatch($batch);
 
         if ($outcome !== true) {
-            throw $this->failBatch($batch, $commands, false, $outcome === null);
+            throw $this->failBatch($batch, $commands, false, $outcome === null, $this->lastError());
         }
 
         $this->dispatchCommandExecutedEvent($this->resolveBatchEventName($batch), $commands, $startedAt);
@@ -1657,9 +1747,10 @@ final class ValkeyGlideConnection extends Connection
      * unwatched transaction throws, as some or all of it may still have been
      * applied; a watched transaction returns false, as phpredis does, unless
      * exec() returned results that do not match its commands, as the server
-     * then ran the EXEC, and it throws instead. The batch has ended before any
-     * listener hears of it, so a listener that throws cannot leave the
-     * connection in batch mode.
+     * then ran the EXEC, or GLIDE recorded an error for it, as it does from 1.2
+     * for a failure but not for a WATCH abort, and it throws instead. The batch
+     * has ended before any listener hears of it, so a listener that throws
+     * cannot leave the connection in batch mode.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @return false|list<mixed>
@@ -1681,8 +1772,9 @@ final class ValkeyGlideConnection extends Connection
         $outcome   = $this->executeNativeBatch($batch);
 
         if ($outcome !== true) {
-            $aborted   = $watched && $outcome === false;
-            $exception = $this->failBatch($batch, $commands, $aborted, $outcome === null);
+            $error     = $this->lastError();
+            $aborted   = $watched && $outcome === false && $error === null;
+            $exception = $this->failBatch($batch, $commands, $aborted, $outcome === null, $error);
 
             if ($aborted) {
                 return false;
@@ -1704,8 +1796,9 @@ final class ValkeyGlideConnection extends Connection
      * applied. Returns true once the results are recorded, false when exec()
      * failed, and null when it returned a result list that does not match what
      * was buffered: the batch was sent, but its results cannot be put in call
-     * order. An exec() that throws ends the batch, and its exception is
-     * rethrown even if the batch's cleanup throws too.
+     * order. The client's last error is cleared first, so what it records
+     * afterwards is the exec()'s own. An exec() that throws ends the batch, and
+     * its exception is rethrown even if the batch's cleanup throws too.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @return bool|null
@@ -1714,6 +1807,8 @@ final class ValkeyGlideConnection extends Connection
      */
     private function executeNativeBatch(BatchState $batch): ?bool
     {
+        $this->clearLastError();
+
         try {
             $results = $this->dispatchToClient('exec', []);
         } catch (\Throwable $exception) {
@@ -1743,15 +1838,18 @@ final class ValkeyGlideConnection extends Connection
      * failure as false, so a WATCH abort cannot be told apart from a timeout or
      * a closed connection, and a batch that timed out may still have been
      * applied; results that do not match the batch's commands mean it was sent.
-     * A cleanup that throws as the batch ends does not replace the failure.
+     * The error GLIDE recorded for the exec(), from 1.2, is the exception's
+     * previous exception. A cleanup that throws as the batch ends does not
+     * replace the failure.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  list<string>  $commands
      * @param  bool  $watched
      * @param  bool  $misaligned
+     * @param  \SineMacula\Valkey\Exceptions\CommandException|null  $error
      * @return \SineMacula\Valkey\Exceptions\ConnectionException
      */
-    private function failBatch(BatchState $batch, array $commands, bool $watched, bool $misaligned): ConnectionException
+    private function failBatch(BatchState $batch, array $commands, bool $watched, bool $misaligned, ?CommandException $error): ConnectionException
     {
         $this->endBatchAfterFailure($batch);
 
@@ -1760,7 +1858,7 @@ final class ValkeyGlideConnection extends Connection
             $watched        => self::WATCHED_TRANSACTION_FAILED_MESSAGE,
             !$batch->atomic => self::PIPELINE_FAILED_MESSAGE,
             default         => self::TRANSACTION_FAILED_MESSAGE,
-        });
+        }, previous: $error);
 
         $this->dispatchCommandFailedEvent($this->resolveBatchEventName($batch), $commands, $exception);
 
@@ -2049,13 +2147,15 @@ final class ValkeyGlideConnection extends Connection
      */
     private function executeCommandWithRetry(string $method, array $parameters, ?\Closure $onResult = null): mixed
     {
+        $this->reconnectAfterDisconnect();
+
         $attempt = 0;
 
         while (true) {
             $startedAt = microtime(true);
 
             try {
-                $result = $this->invokeCommand($method, $parameters);
+                $result = $this->invokeReportingErrors($method, $parameters);
             } catch (\Throwable $exception) {
                 if ($this->shouldRetryAttempt($attempt, $method, $exception)) {
                     $attempt++;
@@ -2077,6 +2177,85 @@ final class ValkeyGlideConnection extends Connection
 
             return $result;
         }
+    }
+
+    /**
+     * Invoke a command, throwing the error GLIDE records when it fails.
+     *
+     * From 1.2, GLIDE records the error of a command that fails and returns
+     * false, which getLastError() reports until it is cleared, while a false
+     * reply, such as a SETNX that sets nothing, records none. The error is
+     * cleared before the command, so one left by an earlier call is not taken
+     * for its own, and a false reply with an error recorded is thrown, so the
+     * retry and the CommandFailed event handle it as any other failure. GLIDE
+     * 1.1.2 records no errors, so its false reply is returned as it is. A
+     * client-local method, getLastError() itself among them, reaches no server
+     * and records nothing, so it runs as it is, leaving the error in place.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return mixed
+     *
+     * @throws \SineMacula\Valkey\Exceptions\CommandException
+     * @throws \Throwable
+     */
+    private function invokeReportingErrors(string $method, array $parameters): mixed
+    {
+        if ($this->batchCommands->runsLocally($method)) {
+            return $this->invokeCommand($method, $parameters);
+        }
+
+        $this->clearLastError();
+
+        $result = $this->invokeCommand($method, $parameters);
+        $error  = $result === false ? $this->lastError() : null;
+
+        if ($error !== null) {
+            throw $error;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Clear the error GLIDE last recorded, on a client that records them.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    private function clearLastError(): void
+    {
+        if (!$this->recordsLastError()) {
+            return;
+        }
+
+        $this->dispatchToClient('clearLastError', []);
+    }
+
+    /**
+     * Return the error GLIDE recorded since it was last cleared, if any.
+     *
+     * @return \SineMacula\Valkey\Exceptions\CommandException|null
+     *
+     * @throws \Throwable
+     */
+    private function lastError(): ?CommandException
+    {
+        $error = $this->recordsLastError() ? $this->dispatchToClient('getLastError', []) : null;
+
+        return is_string($error) ? new CommandException($error) : null;
+    }
+
+    /**
+     * Determine whether the client records the errors of failed commands, as
+     * GLIDE does from 1.2 with getLastError().
+     *
+     * @return bool
+     */
+    private function recordsLastError(): bool
+    {
+        return method_exists($this->glideClient, 'getLastError');
     }
 
     /**
@@ -2139,7 +2318,9 @@ final class ValkeyGlideConnection extends Connection
      *
      * Scripts take phpredis' argument shape, and so do SET options GLIDE's own
      * set() cannot take or refuses, as in `set($key, $value, 'EX', 60, 'NX')`
-     * or `set($key, $value, 'NX')`.
+     * or `set($key, $value, 'NX')`. GLIDE has no `keys()`, which Laravel's
+     * Redis queue calls to list its queues on any connection but a phpredis
+     * cluster connection.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
@@ -2147,7 +2328,7 @@ final class ValkeyGlideConnection extends Connection
      */
     private function shouldInvokeAsRawCommand(string $method, array $parameters): bool
     {
-        if ($method === 'EVAL' || $method === 'EVALSHA') {
+        if ($method === 'EVAL' || $method === 'EVALSHA' || $method === 'KEYS') {
             return true;
         }
 
@@ -2157,8 +2338,13 @@ final class ValkeyGlideConnection extends Connection
     /**
      * Execute a command through rawcommand with Redis protocol arguments.
      *
-     * Cluster clients require a leading route argument so the command lands on
-     * the primary that owns the key's slot. Standalone clients use the existing
+     * Cluster clients require a leading route argument, which the cluster
+     * router resolves as it does for executeRaw(): a keyed script or SET goes
+     * to the primary that owns its key's slot, a keyless one, or one whose key
+     * cannot travel in a GLIDE route, to `randomNode`, and `KEYS` to every
+     * primary, as each holds only its own slots' keys, and GLIDE joins their
+     * replies into one list. The parameters are already prefixed, so the route
+     * names the key the command targets. Standalone clients use the existing
      * two-argument form (no route).
      *
      * @param  string  $method
@@ -2174,7 +2360,7 @@ final class ValkeyGlideConnection extends Connection
         $values = array_values($parameters);
 
         if ($this->glideClient instanceof \ValkeyGlideCluster) {
-            return $this->glideClient->rawcommand($this->resolveClusterRoute($method, $values), $method, ...$values);
+            return $this->glideClient->rawcommand($this->router->route([$method, ...$values]), $method, ...$values);
         }
 
         return $this->glideClient->rawcommand($method, ...$values);
@@ -2242,50 +2428,6 @@ final class ValkeyGlideConnection extends Connection
         $async = $flag === true || (is_string($flag) && strtoupper($flag) === 'ASYNC');
 
         return call_user_func([$this->glideClient, $method], 'allPrimaries', $async);
-    }
-
-    /**
-     * Resolve the cluster route for a raw command.
-     *
-     * Keyed write/script commands (EVAL, EVALSHA, phpredis-style
-     * SET-with-options) must land on the primary that owns the key's hash slot.
-     * Using `primarySlotKey` tells GLIDE to compute the slot from the supplied
-     * key and route there, preserving the same per-key semantics as standalone.
-     * Fan-out routes (`allPrimaries`, `allNodes`) would execute the write on
-     * every shard. A keyless call, or one whose key is empty or not valid UTF-8
-     * and so cannot travel in a GLIDE route, goes to `randomNode`, and GLIDE
-     * follows the node's `MOVED` redirect to the key's owner.
-     *
-     * The parameters array is already prefix-normalised before this method
-     * runs, so the key used for routing is identical to the key the command
-     * targets.
-     *
-     * @param  string  $method
-     * @param  array<int, mixed>  $values
-     * @return array{type: string, key: string}|string
-     */
-    private function resolveClusterRoute(string $method, array $values): array|string
-    {
-        $keyIndex = match ($method) {
-            'SET'             => 0,
-            'EVAL', 'EVALSHA' => $this->hasScriptKeys($values) ? 2 : null,
-            default           => null,
-        };
-
-        return $this->router->routeKey($keyIndex !== null ? ($values[$keyIndex] ?? null) : null);
-    }
-
-    /**
-     * Determine whether a phpredis-style script call names at least one key.
-     *
-     * @param  array<int, mixed>  $values
-     * @return bool
-     */
-    private function hasScriptKeys(array $values): bool
-    {
-        $keyCount = Cast::toNonNegativeInt($values[1] ?? null);
-
-        return $keyCount !== null && $keyCount > 0;
     }
 
     /**
@@ -2403,6 +2545,35 @@ final class ValkeyGlideConnection extends Connection
         }
 
         return true;
+    }
+
+    /**
+     * Replace the client that disconnect() closed before it is used again.
+     *
+     * GLIDE answers every call on a closed client with false, not an error, so
+     * nothing would reach the server and no retry would run. The client is
+     * recreated through the connector instead, and any command may follow, as
+     * nothing was sent on the closed one. A reconnect that fails leaves the
+     * connection disconnected, so the next call tries again.
+     *
+     * @return void
+     *
+     * @throws \SineMacula\Valkey\Exceptions\ConnectionException
+     *
+     * @imperative
+     */
+    private function reconnectAfterDisconnect(): void
+    {
+        if (!$this->disconnected) {
+            return;
+        }
+
+        if ($this->connector === null) {
+            throw new ConnectionException(self::DISCONNECTED_MESSAGE);
+        }
+
+        $this->glideClient  = ($this->connector)();
+        $this->disconnected = false;
     }
 
     /**

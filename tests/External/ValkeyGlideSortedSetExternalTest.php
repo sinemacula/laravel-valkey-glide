@@ -21,7 +21,11 @@ use Tests\External\Concerns\ConnectsToTestServers;
  * ZINTERSTORE, ZUNION or ZINTER with more than 20 integer or float weights.
  * Through the connection each is sent as strings, so it stores what was asked
  * and the process carries on; each test ends by allocating and running more
- * commands, where a corrupted heap would abort the process.
+ * commands, where a corrupted heap would abort the process. The sorted-set
+ * forms GLIDE takes differently from phpredis and Laravel are checked too: a
+ * ZINCRBY increment, which GLIDE writes with six significant digits, Laravel's
+ * zadd() dictionary and option strings, and Laravel's zinterstore() and
+ * zunionstore() options array.
  *
  * Every test runs against the standalone server and, when
  * VALKEY_GLIDE_TEST_CLUSTER_HOST and VALKEY_GLIDE_TEST_CLUSTER_PORT are set,
@@ -250,6 +254,104 @@ final class ValkeyGlideSortedSetExternalTest extends TestCase
         self::assertSame(['m' => $total], $connection->command('zunion', [$keys, $weights, ['withscores' => true]]));
         self::assertSame(['m'], $connection->command('zinter', [$keys, $weights]));
         self::assertFalse($connection->command('zdiffstore', [$destination, $keys, $weights]));
+
+        $this->assertProcessCarriesOn($topology);
+    }
+
+    /**
+     * Verify ZINCRBY adds the exact increment, where GLIDE's zIncrBy() would
+     * add it with six significant digits, and returns the new score as a float,
+     * directly and in a pipeline and a transaction.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function zincrbyAddsTheExactIncrement(string $topology): void
+    {
+        $connection = $this->connection($topology, self::PREFIX);
+        $key        = $this->track($topology, $this->uniqueName('increment'));
+
+        self::assertSame(1.23456789, $connection->command('zIncrBy', [$key, 1.23456789, 'm']));
+        self::assertSame(1.23456789, $connection->command('zscore', [$key, 'm']));
+        self::assertSame(3.0, $connection->command('zincrby', [$key, 3, 'n']));
+        self::assertSame([1.23456789 + 2.3456789], $connection->pipeline(static fn (ValkeyGlideBatch $pipe): ValkeyGlideBatch => $pipe->zincrby($key, '2.3456789', 'm')));
+        self::assertSame([1.23456789 + 2.3456789 - 0.123456789, 1.23456789 + 2.3456789 - 0.123456789], $connection->transaction(
+            static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->zincrby($key, -0.123456789, 'm')->zscore($key, 'm'),
+        ));
+        self::assertSame(['n' => 3.0, 'm' => 1.23456789 + 2.3456789 - 0.123456789], $connection->command('zrange', [$key, 0, -1, true]));
+
+        $this->assertProcessCarriesOn($topology);
+    }
+
+    /**
+     * Verify zadd() takes Laravel's dictionary of scores by member and its
+     * option strings, as Laravel's phpredis connection does, and returns what
+     * GLIDE returns for them.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function zaddTakesLaravelsDictionaryAndOptionStrings(string $topology): void
+    {
+        $connection = $this->connection($topology, self::PREFIX);
+        $key        = $this->track($topology, $this->uniqueName('dictionary'));
+
+        self::assertSame(2, $connection->zadd($key, ['a' => 1, 'b' => 2.5]));
+        self::assertSame(1, $connection->zadd($key, 'NX', ['a' => 9, 'c' => 3]));
+        self::assertSame(1, $connection->zadd($key, 'XX', 'CH', 7, 'a', 8, 'd'));
+        self::assertSame(7.5, $connection->zadd($key, 'INCR', 0.5, 'a'));
+        self::assertFalse($connection->zadd($key, 'NX', 'INCR', 1, 'a'));
+        self::assertSame(['b' => 2.5, 'c' => 3.0, 'a' => 7.5], $connection->command('zrange', [$key, 0, -1, true]));
+
+        $this->assertProcessCarriesOn($topology);
+    }
+
+    /**
+     * Verify zinterstore() and zunionstore() take Laravel's options array, as
+     * Laravel's phpredis connection does, where GLIDE would send it as the
+     * weights, and GLIDE's own weights list and aggregate.
+     *
+     * The keys share a hash tag so a cluster takes them in one command; these
+     * commands' keys are not prefixed, so they are named in full.
+     *
+     * @param  string  $topology
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('topologies')]
+    #[Test]
+    public function storeCommandsTakeLaravelsOptions(string $topology): void
+    {
+        $connection  = $this->connection($topology, '');
+        $tag         = '{' . $this->uniqueName('store') . '}';
+        $destination = $this->track($topology, $tag . ':destination', '');
+        $first       = $this->track($topology, $tag . ':first', '');
+        $second      = $this->track($topology, $tag . ':second', '');
+
+        $connection->zadd($first, ['m' => 1, 'n' => 5]);
+        $connection->zadd($second, ['m' => 3, 'n' => 2]);
+
+        self::assertSame(2, $connection->zinterstore($destination, [$first, $second], ['weights' => [2, 1], 'aggregate' => 'max']));
+        self::assertSame(['m' => 3.0, 'n' => 10.0], $connection->command('zrange', [$destination, 0, -1, true]));
+        self::assertSame(2, $connection->zunionstore($destination, [$first, $second], ['aggregate' => 'min']));
+        self::assertSame(['m' => 1.0, 'n' => 2.0], $connection->command('zrange', [$destination, 0, -1, true]));
+        self::assertSame(2, $connection->zunionstore($destination, [$first, $second], []));
+        self::assertSame(['m' => 4.0, 'n' => 7.0], $connection->command('zrange', [$destination, 0, -1, true]));
+        self::assertSame(2, $connection->zinterstore($destination, [$first, $second], [1, 3], 'MIN'));
+        self::assertSame(['m' => 1.0, 'n' => 5.0], $connection->command('zrange', [$destination, 0, -1, true]));
+        self::assertSame(2, $connection->zunionstore($destination, [$first, $second], array_filter([0, 2, 1])));
+        self::assertSame(['m' => 5.0, 'n' => 12.0], $connection->command('zrange', [$destination, 0, -1, true]));
+        self::assertSame(2, $connection->zunionstore($destination, [$first, $second]));
+        self::assertSame(['m' => 4.0, 'n' => 7.0], $connection->command('zrange', [$destination, 0, -1, true]));
 
         $this->assertProcessCarriesOn($topology);
     }

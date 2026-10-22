@@ -80,6 +80,8 @@ final class BatchCommandsTest extends TestCase
         yield 'otel sample percentage read' => ['getOtelSamplePercentage', false, true];
         yield 'otel sample percentage write' => ['setOtelSamplePercentage', false, true];
         yield 'phpredis alias registration' => ['registerPHPRedisAliases', false, true];
+        yield 'last error read' => ['getLastError', false, true];
+        yield 'last error clear' => ['clearLastError', false, true];
         yield 'script family' => ['scriptLoad', false, true];
         yield 'script' => ['script', false, true];
         yield 'function family' => ['functionLoad', false, true];
@@ -144,6 +146,8 @@ final class BatchCommandsTest extends TestCase
         yield 'otel sample percentage read' => ['getOtelSamplePercentage', true];
         yield 'otel sample percentage write' => ['setOtelSamplePercentage', true];
         yield 'phpredis alias registration' => ['registerPHPRedisAliases', true];
+        yield 'last error read' => ['getLastError', true];
+        yield 'last error clear' => ['clearLastError', true];
         yield 'cache statistics family' => ['getCacheHitRate', true];
         yield 'eval reaches the server' => ['eval', false];
         yield 'password update reaches the server' => ['updateConnectionPassword', false];
