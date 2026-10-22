@@ -106,6 +106,34 @@ class ValkeyGlideCluster
     public function zscan(string $key, ?string &$iterator, ?string $pattern = null, int $count = 0): array|bool|self {}
 
     /**
+     * Iterate the members of a set.
+     *
+     * The cursor is written back through the reference, and is '0' once the
+     * scan is complete. An explicit null pattern throws a TypeError.
+     *
+     * @param  string  $key
+     * @param  string|null  $iterator
+     * @param  string|null  $pattern
+     * @param  int  $count
+     * @return array<int, mixed>|false
+     */
+    public function sscan(string $key, ?string &$iterator, ?string $pattern = null, int $count = 0): array|false {}
+
+    /**
+     * Iterate the fields and values of a hash.
+     *
+     * The cursor is written back through the reference, and is '0' once the
+     * scan is complete. An explicit null pattern throws a TypeError.
+     *
+     * @param  string  $key
+     * @param  string|null  $iterator
+     * @param  string|null  $pattern
+     * @param  int  $count
+     * @return array<array-key, mixed>|bool
+     */
+    public function hscan(string $key, ?string &$iterator, ?string $pattern = null, int $count = 0): array|bool {}
+
+    /**
      * Iterate the keyspace of every primary, one node after another.
      *
      * The scan writes the next cursor id into the cursor, read with
