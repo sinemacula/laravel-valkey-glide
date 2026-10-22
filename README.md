@@ -38,6 +38,7 @@ application business code.
 - Laravel's `zadd()`, `zinterstore()` and `zunionstore()` argument forms, and exact `zincrby()` increments
 - Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
   standalone and cluster connections
+- Laravel Pulse's `redis` ingest driver on standalone and cluster connections (see Laravel Pulse)
 - External test lane for extension and real Redis connectivity validation
 
 ## Requirements
@@ -320,10 +321,9 @@ $results = Redis::pipeline()->set('a', 1)->get('a')->exec(); // without a callba
   sent together, and the results come back as a list in call order, shaped as phpredis shapes them (`false` for a
   missing `GET`, an associative array for `HMGET`).
 - The batch is not a phpredis `\Redis` client, so a callback whose parameter is typed `\Redis` gets a `TypeError`.
-  Laravel Pulse types its pipeline callback that way and matches on the phpredis and Predis clients, so Pulse's Redis
-  ingest is not supported on this driver. Type the parameter as the batch, as in
-  `Redis::pipeline(function (ValkeyGlideBatch $pipe) { ... })`, or leave it untyped, so the callback works with every
-  driver.
+  Type the parameter as the batch, as in `Redis::pipeline(function (ValkeyGlideBatch $pipe) { ... })`, or leave it
+  untyped, so the callback works with every driver. Laravel Pulse's own Redis ingest types its callback that way; the
+  package runs Pulse's ingest on this driver instead (see Laravel Pulse).
 - Horizon's pipelines and transactions run, as do its lock, its dashboard's tag and monitored-job pages and clearing its
   metrics, which use `setnx()`, `zrevrange()` and `scan()` (see What Is Implemented). In 1.2.0 and earlier, Horizon's
   lock was never taken, and each attempt wrote its lock key with no expiry: if Horizon ran on one of those releases,
@@ -927,6 +927,20 @@ do {
   refusal only as `false`, the reply of every other failure, so the flush cannot tell it apart and does not fall back
   to `DEL` and `ZREM`. A flush on a cluster sends no script.
 
+## Laravel Pulse
+
+Pulse's `redis` ingest driver (`PULSE_INGEST_DRIVER=redis`) runs on valkey-glide connections. Pulse's own Redis ingest
+only talks to the phpredis, Predis and Relay clients, so when Pulse is installed the service provider wraps it in
+`SineMacula\Valkey\Pulse\ValkeyGlideIngest`, which runs Pulse's ingest, digest and trim on the connection
+`pulse.ingest.redis.connection` names when that is a valkey-glide connection, and leaves every other connection, ingest
+driver and custom `Ingest` binding to Pulse.
+
+The entries go to Pulse's own stream in Pulse's own format, under the shared `database.redis.options.prefix` alone and
+never the connection's own prefix, the same physical key Pulse uses over phpredis, so processes on either driver share
+it. A command GLIDE fails throws an `UnexpectedValueException`. Pulse's ingest refuses a connection with an open
+pipeline or transaction, so if the application batches on that connection, give Pulse its own
+(`PULSE_REDIS_CONNECTION`).
+
 ## ElastiCache Serverless
 
 AWS ElastiCache Serverless runs in cluster mode (single logical database, TLS required) and exposes the primary on port
@@ -1023,6 +1037,8 @@ External integration coverage includes:
   transaction on a standalone server, key by key across slots on a cluster), tagged writes and a refused tag flush
   inside a pipeline, and Laravel Horizon's own Redis repositories under the `horizon:` prefix (the Horizon cluster
   cases run on Laravel 13 only, as Horizon supports clusters only there)
+- Laravel Pulse's `redis` ingest on a standalone server and a cluster, over connections with the shared prefix and with
+  one of their own
 - the key prefix a Laravel connection resolves to when the shared options, a connection's own options and the
   connection itself each set one, including an empty prefix and Horizon's connection, read back as physical keys on a
   standalone server and a cluster

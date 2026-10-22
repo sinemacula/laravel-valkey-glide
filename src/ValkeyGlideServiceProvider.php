@@ -8,17 +8,22 @@ use Illuminate\Cache\CacheManager;
 use Illuminate\Cache\Repository;
 use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Container\Container;
+use Illuminate\Contracts\Redis\Factory as RedisFactory;
 use Illuminate\Redis\RedisManager;
 use Illuminate\Support\ServiceProvider;
+use Laravel\Pulse\Contracts\Ingest;
+use Laravel\Pulse\Ingests\RedisIngest;
 use SineMacula\Valkey\Cache\ValkeyGlideStore;
 use SineMacula\Valkey\Connectors\ValkeyGlideConnector;
+use SineMacula\Valkey\Pulse\ValkeyGlideIngest;
 
 /**
  * Valkey GLIDE service provider.
  *
  * Registers the "valkey-glide" Redis client driver with Laravel's RedisManager,
- * and a "redis" cache driver whose store stays safe on GLIDE cluster
- * connections and otherwise behaves as Laravel's.
+ * a "redis" cache driver whose store stays safe on GLIDE cluster connections
+ * and otherwise behaves as Laravel's, and, when Laravel Pulse is installed, a
+ * Redis ingest that runs on GLIDE connections.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -40,6 +45,29 @@ final class ValkeyGlideServiceProvider extends ServiceProvider
         $this->callAfterResolving(CacheManager::class, function (CacheManager $cache): void {
             $cache->extend('redis', $this->redisCacheDriver($cache));
         });
+
+        $this->app->extend(Ingest::class, $this->pulseIngest(...));
+    }
+
+    /**
+     * Wrap Pulse's Redis ingest in one that also runs on GLIDE connections,
+     * leaving any other ingest, including a subclass of Pulse's, as it is.
+     *
+     * Pulse binds its ingest by its configured driver, so the extension sees
+     * whichever ingest that resolves; it is never called when Pulse is not
+     * installed, as nothing then resolves the contract.
+     *
+     * @param  \Laravel\Pulse\Contracts\Ingest  $ingest
+     * @param  \Illuminate\Contracts\Container\Container  $app
+     * @return \Laravel\Pulse\Contracts\Ingest
+     */
+    private function pulseIngest(Ingest $ingest, Container $app): Ingest
+    {
+        if ($ingest::class !== RedisIngest::class) {
+            return $ingest;
+        }
+
+        return new ValkeyGlideIngest($ingest, $app->make(RedisFactory::class), $app->make(Config::class));
     }
 
     /**
