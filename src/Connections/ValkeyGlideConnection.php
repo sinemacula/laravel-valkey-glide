@@ -76,6 +76,15 @@ final class ValkeyGlideConnection extends Connection
         'FLUSHDB',
     ];
 
+    /** @var array<string, int> Keyless commands a cluster client takes a leading route for, by the argument count of a call that carries none. */
+    private const array CLUSTER_ROUTED_COMMANDS = [
+        'DBSIZE'    => 0,
+        'ECHO'      => 1,
+        'PING'      => 0,
+        'RANDOMKEY' => 0,
+        'TIME'      => 0,
+    ];
+
     /** @var array<int, string> phpredis-style flush mode flags. */
     private const array FLUSH_MODE_FLAGS = [
         'ASYNC',
@@ -148,6 +157,10 @@ final class ValkeyGlideConnection extends Connection
     private const string UNSUPPORTED_KEY_LIST_MESSAGE = '[%s] takes its keys as separate arguments or as a single list of keys, not a list beside other'
         . ' arguments or a list of lists, which GLIDE would send as the key "Array" or drop.';
 
+    /** @var string Message for a cluster INFO called without a route. */
+    private const string UNROUTED_CLUSTER_INFO_MESSAGE = '[INFO] on a cluster connection needs a route, as each node reports only itself;'
+        . ' pass one first, such as info(\'randomNode\') or info(\'randomNode\', \'memory\').';
+
     /** @var string Message for a command GLIDE refused to buffer. */
     private const string BUFFER_REFUSED_MESSAGE = 'GLIDE refused to buffer [%s], most likely due to its arguments, so it was not added to the batch.';
 
@@ -213,11 +226,17 @@ final class ValkeyGlideConnection extends Connection
     /** @var \SineMacula\Valkey\Connections\BatchCommands Classifier for commands issued while a batch is active. */
     private readonly BatchCommands $batchCommands;
 
+    /** @var \SineMacula\Valkey\Connections\SortedSetArguments Converter for the scores, members and weights of sorted-set commands. */
+    private readonly SortedSetArguments $sortedSetArguments;
+
     /** @var \SineMacula\Valkey\Connections\BatchState|null The active pipeline or transaction, if any. */
     private ?BatchState $batch = null;
 
     /** @var list<string>|null Prefixed keys watched with WATCH, or null when nothing is watched. */
     private ?array $watchedKeys = null;
+
+    /** @var bool Whether the watched keys are left over from an UNWATCH that failed once their WATCH was released, by unwatch() or a transaction that ended, rather than watched for one still to run. */
+    private bool $watchLeftOver = false;
 
     /** @var array<string, true> Cluster scan cursor ids this connection returned and has not yet resumed from. */
     private array $clusterScanCursors = [];
@@ -240,6 +259,7 @@ final class ValkeyGlideConnection extends Connection
         $this->randomIntGenerator = $this->resolveRandomIntGenerator($config['random_int'] ?? null);
         $this->sleepCallback      = $this->resolveSleepCallback($config['sleep'] ?? null);
         $this->batchCommands      = new BatchCommands;
+        $this->sortedSetArguments = new SortedSetArguments;
     }
 
     /**
@@ -417,6 +437,29 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Set the given hash field if it does not exist.
+     *
+     * GLIDE answers with a bool; the result is returned as 1 or 0, as phpredis
+     * returns it through Laravel. Refused while a pipeline or transaction is
+     * active, as the result is only known once the batch runs; call `hsetnx()`
+     * on the batch instead.
+     *
+     * @param  string  $key
+     * @param  mixed  $field
+     * @param  mixed  $value
+     * @return int
+     *
+     * @throws \LogicException
+     * @throws \Throwable
+     */
+    public function hsetnx(string $key, mixed $field, mixed $value): int
+    {
+        $this->assertNoActiveBatch('hsetnx', 'call hsetnx() on the batch instead');
+
+        return $this->command('hsetnx', [$key, $field, $value]) === true ? 1 : 0;
+    }
+
+    /**
      * Return a range of a sorted set's members by index, from the highest score
      * to the lowest.
      *
@@ -438,6 +481,70 @@ final class ValkeyGlideConnection extends Connection
         $withScores = is_array($scores) ? ($scores['withscores'] ?? false) : $scores;
 
         return $this->command('zRange', [$key, $start, $end, ['rev' => true, 'withscores' => (bool) $withScores]]);
+    }
+
+    /**
+     * Add members to a sorted set, or update their scores, with Laravel's
+     * argument forms.
+     *
+     * As with Laravel's phpredis connection, the scores may be given as a
+     * trailing array keyed by member, as in `zadd($key, ['a' => 1])`, and the
+     * options as strings among the first three arguments after the key, as in
+     * `zadd($key, 'NX', 1, 'a')`, which Laravel's tagged cache sends; GLIDE
+     * takes neither. An options array after the key, as GLIDE takes it, is
+     * kept. The pipeline or transaction's own `zadd()` takes the client's form,
+     * as a phpredis pipeline does. The key is taken as `command()` takes it.
+     *
+     * @param  mixed  $key
+     * @param  mixed  ...$dictionary
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    public function zadd(mixed $key, mixed ...$dictionary): mixed
+    {
+        return $this->command('zadd', [$key, ...$this->sortedSetArguments->zaddArguments($dictionary)]);
+    }
+
+    /**
+     * Store the intersection of sorted sets, with Laravel's options array.
+     *
+     * As with Laravel's phpredis connection, the weights and aggregate may be
+     * given as an options array in place of the weights, as in
+     * `zinterstore($destination, $keys, ['weights' => [2, 1], 'aggregate' =>
+     * 'max'])`. GLIDE's own weights list and aggregate are taken too, by
+     * position or by name. The destination and keys are taken as `command()`
+     * takes them.
+     *
+     * @param  mixed  $dst
+     * @param  mixed  $keys
+     * @param  mixed  $weights
+     * @param  mixed  $aggregate
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    public function zinterstore(mixed $dst, mixed $keys, mixed $weights = null, mixed $aggregate = null): mixed
+    {
+        return $this->command('zinterstore', [$dst, $keys, ...$this->sortedSetArguments->storeArguments($weights, $aggregate)]);
+    }
+
+    /**
+     * Store the union of sorted sets, with Laravel's options array.
+     *
+     * This takes the same forms as `zinterstore()`.
+     *
+     * @param  mixed  $dst
+     * @param  mixed  $keys
+     * @param  mixed  $weights
+     * @param  mixed  $aggregate
+     * @return mixed
+     *
+     * @throws \Throwable
+     */
+    public function zunionstore(mixed $dst, mixed $keys, mixed $weights = null, mixed $aggregate = null): mixed
+    {
+        return $this->command('zunionstore', [$dst, $keys, ...$this->sortedSetArguments->storeArguments($weights, $aggregate)]);
     }
 
     /**
@@ -482,10 +589,83 @@ final class ValkeyGlideConnection extends Connection
     }
 
     /**
+     * Scan a sorted set for one page of members and their scores, with
+     * Laravel's options array.
+     *
+     * As with Laravel's phpredis connection, the scan starts from cursor '0'
+     * (or `null`), takes the `match` pattern and the `count` hint from the
+     * options, and returns the next cursor and the page, which maps each member
+     * to its score as a float, where GLIDE returns a string. The cursor is '0'
+     * again once the scan is complete. The key is prefixed; the pattern, which
+     * matches members, is not. GLIDE writes the cursor back through a
+     * reference, which a method call cannot carry, so GLIDE's own form goes
+     * through `command()` with the cursor by reference. A failed scan throws,
+     * as the keyspace `scan()` does, rather than reading as an empty last page,
+     * and like the SCAN family the scan is refused inside a pipeline or
+     * transaction.
+     *
+     * @param  string  $key
+     * @param  mixed  $cursor
+     * @param  array<array-key, mixed>  $options
+     * @return array{0: string, 1: array<array-key, float>}
+     *
+     * @throws \Throwable
+     */
+    public function zscan(string $key, mixed $cursor, array $options = []): array
+    {
+        [$cursor, $members] = $this->scanMembers('zscan', $key, $cursor, $options);
+
+        /** @var array<array-key, string> $members */
+        return [$cursor, array_map(self::score(...), $members)];
+    }
+
+    /**
+     * Scan a hash for one page of fields and their values, with Laravel's
+     * options array.
+     *
+     * The page maps each field to its value. The cursor, the options and a
+     * failed scan are handled as `zscan()` handles them.
+     *
+     * @param  string  $key
+     * @param  mixed  $cursor
+     * @param  array<array-key, mixed>  $options
+     * @return array{0: string, 1: array<array-key, mixed>}
+     *
+     * @throws \Throwable
+     */
+    public function hscan(string $key, mixed $cursor, array $options = []): array
+    {
+        return $this->scanMembers('hscan', $key, $cursor, $options);
+    }
+
+    /**
+     * Scan a set for one page of members, with Laravel's options array.
+     *
+     * The page lists the members. The cursor, the options and a failed scan are
+     * handled as `zscan()` handles them.
+     *
+     * @param  string  $key
+     * @param  mixed  $cursor
+     * @param  array<array-key, mixed>  $options
+     * @return array{0: string, 1: array<array-key, mixed>}
+     *
+     * @throws \Throwable
+     */
+    public function sscan(string $key, mixed $cursor, array $options = []): array
+    {
+        return $this->scanMembers('sscan', $key, $cursor, $options);
+    }
+
+    /**
      * Execute a Redis command with one safe retry on transient disconnects.
      *
      * While a pipeline or transaction is active, the command is added to it
-     * instead, and the batch is returned.
+     * instead, and the batch is returned. The scores and members of ZADD, and
+     * the weights of ZUNIONSTORE, ZINTERSTORE, ZUNION, ZINTER and ZDIFFSTORE,
+     * are sent as strings, as GLIDE corrupts memory on some other values, and
+     * one with no string form is refused before anything is sent. A ZINCRBY
+     * with a numeric increment is sent as the ZADD ... INCR it is equivalent
+     * to, as GLIDE writes its increment with six significant digits.
      *
      * @param  mixed  $method
      * @param  array<array-key, mixed>  $parameters
@@ -500,14 +680,21 @@ final class ValkeyGlideConnection extends Connection
 
         $this->assertBatchNotEnded($normalizedMethod);
         $this->assertSupportedKeyList($normalizedMethod, $parameters);
+        $this->assertClusterInfoRouted($normalizedMethod, $parameters);
 
         if (in_array(strtoupper($normalizedMethod), self::BATCH_CONTROL_COMMANDS, true)) {
             return $this->controlBatch($normalizedMethod, $parameters);
         }
 
+        [$normalizedMethod, $parameters] = $this->sortedSetArguments->rewriteIncrement($normalizedMethod, $parameters);
+
+        $parameters = $this->sortedSetArguments->normalize($normalizedMethod, $parameters);
+
         if ($this->batch !== null) {
             return $this->queueBatchCommand($this->batch, $normalizedMethod, $parameters);
         }
+
+        $this->unwatchLeftOverKeys();
 
         return $this->executeCommandWithRetry(
             $normalizedMethod,
@@ -534,6 +721,7 @@ final class ValkeyGlideConnection extends Connection
         $normalizedMethod = $this->normalizeSubscriptionMethod($method);
 
         $this->assertNoActiveBatch($normalizedMethod, 'subscribe outside the batch');
+        $this->unwatchLeftOverKeys();
 
         $this->invokeSubscription($normalizedMethod, $this->normalizeSubscriptionChannels($channels), $callback);
     }
@@ -605,7 +793,7 @@ final class ValkeyGlideConnection extends Connection
             $this->endBatch($this->batch);
         }
 
-        $this->watchedKeys = null;
+        $this->forgetWatchedKeys();
 
         $this->glideClient->close();
     }
@@ -647,6 +835,29 @@ final class ValkeyGlideConnection extends Connection
     {
         if ($this->prefixer->hasUnsupportedKeyList($method, $parameters)) {
             throw new \InvalidArgumentException(sprintf(self::UNSUPPORTED_KEY_LIST_MESSAGE, strtoupper($method)));
+        }
+    }
+
+    /**
+     * Assert that a cluster INFO carries a route.
+     *
+     * `ValkeyGlideCluster::info()` takes a route before its sections and
+     * returns false without one. Each node reports only its own memory, clients
+     * and keyspace, and GLIDE's own route, every primary, returns each node's
+     * report in one list, so no route would give the single report the call
+     * expects. It is refused before anything is sent, inside a batch or outside
+     * one, as phpredis' `RedisCluster::info()` refuses a call without a node.
+     *
+     * @param  string  $method
+     * @param  array<array-key, mixed>  $parameters
+     * @return void
+     *
+     * @throws \InvalidArgumentException
+     */
+    private function assertClusterInfoRouted(string $method, array $parameters): void
+    {
+        if ($parameters === [] && strtoupper($method) === 'INFO' && $this->glideClient instanceof \ValkeyGlideCluster) {
+            throw new \InvalidArgumentException(self::UNROUTED_CLUSTER_INFO_MESSAGE);
         }
     }
 
@@ -725,6 +936,56 @@ final class ValkeyGlideConnection extends Connection
 
         /** @var array<int, string> $keys */
         return $keys;
+    }
+
+    /**
+     * Read a score GLIDE returns as a string as the float phpredis returns.
+     *
+     * The server writes a score as a number PHP's float cast reads, or as an
+     * infinity, such as 'inf' or '-inf', which phpredis reads as infinity, as
+     * C's atof() does, and the cast as 0.
+     *
+     * @param  string  $score
+     * @return float
+     */
+    private static function score(string $score): float
+    {
+        return match ($score) {
+            'inf', '+inf' => INF,
+            '-inf'        => -INF,
+            default       => (float) $score,
+        };
+    }
+
+    /**
+     * Scan a set, sorted set or hash for one page of members, from a cursor.
+     *
+     * The scan goes through command(), so its key is prefixed, it is refused
+     * inside a batch, and GLIDE writes the next cursor back through the
+     * reference. GLIDE answers a missing key with an empty page and a failed
+     * scan with false, which throws.
+     *
+     * @param  string  $method
+     * @param  string  $key
+     * @param  mixed  $cursor
+     * @param  array<array-key, mixed>  $options
+     * @return array{0: string, 1: array<array-key, mixed>}
+     *
+     * @throws \UnexpectedValueException
+     */
+    private function scanMembers(string $method, string $key, mixed $cursor, array $options): array
+    {
+        $cursor  = Cast::toNonEmptyString($cursor)                   ?? '0';
+        $pattern = Cast::toNonEmptyString($options['match'] ?? null) ?? '*';
+        $count   = Cast::toNonNegativeInt($options['count'] ?? null) ?? 10;
+
+        $members = $this->command($method, [$key, &$cursor, $pattern, $count]);
+
+        if (!is_array($members)) {
+            throw new \UnexpectedValueException(sprintf('Expected array response from %s on [%s], received [%s].', $method, $key, get_debug_type($members)));
+        }
+
+        return [$cursor, $members];
     }
 
     /**
@@ -848,6 +1109,8 @@ final class ValkeyGlideConnection extends Connection
      */
     private function beginBatch(bool $atomic): BatchState
     {
+        $this->unwatchLeftOverKeys();
+
         $batch       = new BatchState($this, $atomic);
         $this->batch = $batch;
 
@@ -1048,7 +1311,10 @@ final class ValkeyGlideConnection extends Connection
      * so that every path that ends the transaction without EXEC also clears
      * them, as GLIDE's discard() does not. They are tracked once GLIDE has
      * watched them, before any listener hears of it, and not at all when GLIDE
-     * refuses them.
+     * refuses them. Keys left over from a transaction that has ended are
+     * unwatched first; if that fails, they stay tracked beside the new keys, as
+     * the caller's own, since the server may still hold them, and the next
+     * transaction is treated as guarded by them all.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
@@ -1059,6 +1325,7 @@ final class ValkeyGlideConnection extends Connection
     private function watchKeys(string $method, array $parameters): mixed
     {
         $this->assertNoActiveBatch($method, 'call watch() before starting the transaction');
+        $this->unwatchLeftOverKeys();
 
         $parameters = $this->prefixer->apply($method, $this->batchCommands->spreadKeyList($parameters));
 
@@ -1067,7 +1334,8 @@ final class ValkeyGlideConnection extends Connection
                 return;
             }
 
-            $this->watchedKeys = array_merge($this->watchedKeys ?? [], $this->prefixer->keys($method, $parameters) ?? []);
+            $this->watchedKeys   = array_merge($this->watchedKeys ?? [], $this->prefixer->keys($method, $parameters) ?? []);
+            $this->watchLeftOver = false;
         });
     }
 
@@ -1075,9 +1343,11 @@ final class ValkeyGlideConnection extends Connection
      * Stop watching every watched key.
      *
      * The keys are forgotten once GLIDE reports the UNWATCH done, before any
-     * listener hears of it. An UNWATCH that GLIDE fails, which 1.1.2 reports as
-     * false, or that throws, keeps them, as the server may still hold the
-     * WATCH, just as a WATCH that GLIDE refuses is not tracked.
+     * listener hears of it. The caller has released them, so an UNWATCH that
+     * GLIDE fails, which 1.1.2 reports as false, or that throws, leaves them
+     * over, as the server may still hold the WATCH: the failure still reaches
+     * the caller, and the UNWATCH is sent again before the next command. Keys
+     * already left over go with the same UNWATCH.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
@@ -1089,13 +1359,60 @@ final class ValkeyGlideConnection extends Connection
     {
         $this->assertNoActiveBatch($method, 'call unwatch() outside the transaction');
 
+        $this->watchLeftOver = $this->watchedKeys !== null;
+
         return $this->executeCommandWithRetry($method, $parameters, function (mixed $result): void {
             if ($result !== true) {
                 return;
             }
 
-            $this->watchedKeys = null;
+            $this->forgetWatchedKeys();
         });
+    }
+
+    /**
+     * Send UNWATCH again for keys left over from an UNWATCH that failed.
+     *
+     * The caller's unwatch() released them, or the transaction they were
+     * watched for has ended, so the WATCH the server may still hold guards
+     * nothing, but it would abort the next transaction, which the driver would
+     * treat as watched. It is sent before each command, outside any batch, so
+     * it is never buffered, until GLIDE reports it done; one that fails again,
+     * returning false or throwing, keeps the keys for the next command, and the
+     * command runs regardless. Keys the caller watches again are no longer left
+     * over, so it never clears a WATCH that a transaction still to run relies
+     * on.
+     *
+     * @return void
+     */
+    private function unwatchLeftOverKeys(): void
+    {
+        if (!$this->watchLeftOver) {
+            return;
+        }
+
+        try {
+            $unwatched = $this->dispatchToClient('unwatch', []) === true;
+        } catch (\Throwable) {
+            $unwatched = false;
+        }
+
+        if (!$unwatched) {
+            return;
+        }
+
+        $this->forgetWatchedKeys();
+    }
+
+    /**
+     * Forget the watched keys, and that they were left over.
+     *
+     * @return void
+     */
+    private function forgetWatchedKeys(): void
+    {
+        $this->watchedKeys   = null;
+        $this->watchLeftOver = false;
     }
 
     /**
@@ -1284,7 +1601,7 @@ final class ValkeyGlideConnection extends Connection
      * exception of its callback, a failed exec() or a refused command, is the
      * one the caller sees. The batch has closed before any cleanup is sent, so
      * a cleanup that throws cannot leave it open; keys whose UNWATCH failed
-     * stay tracked, as they do when it fails outside a failure.
+     * stay tracked as left over, as they do when it fails outside a failure.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @return void
@@ -1524,10 +1841,11 @@ final class ValkeyGlideConnection extends Connection
      * GLIDE's discard() is client-side only and leaves WATCH in place on the
      * server, so a transaction that ends without a committed EXEC unwatches. On
      * a cluster, EXEC only clears the watches on its own node, so every watched
-     * cluster transaction unwatches. The watched keys stay tracked when that
-     * UNWATCH fails and no EXEC committed, as the server may still hold the
-     * WATCH and abort the next transaction. A batch that ends while a callback
-     * owns it stays the active batch until the callback returns.
+     * cluster transaction unwatches. When that UNWATCH fails, the server may
+     * still hold the WATCH and abort the next transaction, so the keys stay
+     * tracked, as left over, and the UNWATCH is sent again before the next
+     * command. A batch that ends while a callback owns it stays the active
+     * batch until the callback returns.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  bool  $committed
@@ -1550,16 +1868,60 @@ final class ValkeyGlideConnection extends Connection
             return;
         }
 
-        // A committed standalone EXEC has already cleared the WATCH, so the
-        // short-circuit sends UNWATCH only in the other cases.
-        $unwatched = (!$committed || $this->glideClient instanceof \ValkeyGlideCluster)
-            && $this->dispatchToClient('unwatch', []) === true;
+        // The transaction the keys were watched for has ended, so a WATCH that
+        // outlives its UNWATCH guards nothing.
+        $this->watchLeftOver = true;
 
-        if (!$committed && !$unwatched) {
+        if (!$committed) {
+            $this->unwatchEndedTransaction();
+
             return;
         }
 
-        $this->watchedKeys = null;
+        $this->endCommittedWatch();
+    }
+
+    /**
+     * Send UNWATCH for a transaction that ended without a committed EXEC,
+     * forgetting the keys once GLIDE reports it done.
+     *
+     * An UNWATCH that throws reaches the caller, unless a failure that ended
+     * the batch is being thrown.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    private function unwatchEndedTransaction(): void
+    {
+        if ($this->dispatchToClient('unwatch', []) !== true) {
+            return;
+        }
+
+        $this->forgetWatchedKeys();
+    }
+
+    /**
+     * Clear the WATCH of a transaction whose EXEC committed.
+     *
+     * A committed standalone EXEC has cleared the WATCH. On a cluster, EXEC
+     * only clears the watches on its own node, so UNWATCH is sent as it is for
+     * keys left over: one that fails, returning false or throwing, does not
+     * reach the caller, as the transaction has committed and a caller told
+     * otherwise could apply it again, and the keys stay over for the next
+     * command.
+     *
+     * @return void
+     */
+    private function endCommittedWatch(): void
+    {
+        if ($this->glideClient instanceof \ValkeyGlideCluster) {
+            $this->unwatchLeftOverKeys();
+
+            return;
+        }
+
+        $this->forgetWatchedKeys();
     }
 
     /**
@@ -1607,9 +1969,9 @@ final class ValkeyGlideConnection extends Connection
      * could take it to a node the WATCH does not guard, and is refused. While
      * keys are watched, the transaction is bound to their slot from the start,
      * so a key in another slot is reported against the watched keys, which may
-     * be left over from an unwatch() that failed. The slot is only resolved
-     * here, and bound once GLIDE has buffered the command, so a command GLIDE
-     * refuses binds the transaction to nothing.
+     * be left over from an UNWATCH that keeps failing. The slot is only
+     * resolved here, and bound once GLIDE has buffered the command, so a
+     * command GLIDE refuses binds the transaction to nothing.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  string  $method
@@ -1806,30 +2168,37 @@ final class ValkeyGlideConnection extends Connection
             return $this->invokeOnAllPrimaries($method, $parameters);
         }
 
-        return $this->dispatchToClient($method, $this->routeClusterPing($normalizedMethod, $parameters));
+        return $this->dispatchToClient($method, $this->routeClusterCommand($normalizedMethod, $parameters));
     }
 
     /**
-     * Add a route to a ping on a cluster client that carries none.
+     * Add a route to a keyless cluster command that carries none.
      *
-     * `ValkeyGlideCluster::ping()` takes a route before the optional message
-     * and returns false without one, so a bare `ping()`, as health checks call
-     * it, would report a healthy cluster as down. It goes to every primary, the
-     * route GLIDE gives `PING` and the one `executeRaw()` adds. Any arguments
-     * are taken as a route, as phpredis' `RedisCluster::ping()` takes them, and
-     * passed through untouched.
+     * `ValkeyGlideCluster::ping()`, `dbSize()`, `randomKey()`, `time()` and
+     * `echo()` take a route before their other arguments and return false
+     * without one, so a bare `ping()`, as health checks call it, would report a
+     * healthy cluster as down. A call with only the arguments the command takes
+     * besides its route, such as `echo($message)`, takes the route GLIDE gives
+     * the command, as `executeRaw()` does: `PING` and `DBSIZE` go to every
+     * primary, which GLIDE answers with one reply, summing the key counts;
+     * `RANDOMKEY` goes to every primary too, and GLIDE returns a key from the
+     * first that has one; `TIME` and `ECHO` go to a random node. Any other call
+     * is taken to carry its route first, as phpredis' `RedisCluster` methods
+     * take one, and is passed through untouched.
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
      * @return array<array-key, mixed>
      */
-    private function routeClusterPing(string $method, array $parameters): array
+    private function routeClusterCommand(string $method, array $parameters): array
     {
-        if ($method !== 'PING' || $parameters !== [] || !$this->glideClient instanceof \ValkeyGlideCluster) {
+        $arity = self::CLUSTER_ROUTED_COMMANDS[$method] ?? null;
+
+        if ($arity === null || count($parameters) !== $arity || !array_is_list($parameters) || !$this->glideClient instanceof \ValkeyGlideCluster) {
             return $parameters;
         }
 
-        return [$this->router->route(['PING'])];
+        return [$this->router->route([$method]), ...$parameters];
     }
 
     /**
@@ -1957,7 +2326,8 @@ final class ValkeyGlideConnection extends Connection
      * the client, and with it the server connection that holds the WATCH, so
      * the next transaction would commit unguarded. The error is rethrown
      * instead, as phpredis surfaces a dropped connection, and the caller starts
-     * the WATCH again.
+     * the WATCH again. Keys left over from a transaction that has ended guard
+     * nothing, so they do not hold the retry back.
      *
      * @param  int  $attempt
      * @param  string  $method
@@ -1966,7 +2336,7 @@ final class ValkeyGlideConnection extends Connection
      */
     private function shouldRetryAttempt(int $attempt, string $method, \Throwable $exception): bool
     {
-        if ($attempt > 0 || $this->watchedKeys !== null) {
+        if ($attempt > 0 || ($this->watchedKeys !== null && !$this->watchLeftOver)) {
             return false;
         }
 
@@ -2042,7 +2412,8 @@ final class ValkeyGlideConnection extends Connection
      *
      * The replaced client is closed only once its successor exists, so a failed
      * reconnect leaves the connection holding a client rather than a closed
-     * one.
+     * one. The successor holds no WATCH, so keys left over from an ended
+     * transaction, the only ones a retry runs with, are forgotten.
      *
      * @return bool
      *
@@ -2059,6 +2430,7 @@ final class ValkeyGlideConnection extends Connection
 
         if ($previousClient !== $this->glideClient) {
             $this->closeReplacedClient($previousClient);
+            $this->forgetWatchedKeys();
         }
 
         return true;

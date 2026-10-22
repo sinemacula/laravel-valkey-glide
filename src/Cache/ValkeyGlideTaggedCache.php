@@ -16,8 +16,9 @@ use SineMacula\Valkey\Connections\ValkeyGlideConnection;
  * Laravel's `RedisTaggedCache::flush()` reads the connection prefix from the
  * phpredis or Predis client, and fails for any other connection, then deletes
  * the entries with a Lua script that cannot run across the hash slots of a
- * cluster. Over a GLIDE connection the flush is left to the tag set instead;
- * over any other connection Laravel's own flush runs.
+ * cluster. Over a GLIDE connection the flush is left to the tag set instead,
+ * which runs a script of its own on a standalone server and none on a
+ * cluster; over any other connection Laravel's own flush runs.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -54,7 +55,8 @@ final class ValkeyGlideTaggedCache extends RedisTaggedCache
      * Over a GLIDE connection this runs TaggedCache::flush(), which dispatches
      * CacheFlushing and CacheFlushed exactly when the running Laravel version
      * does and resets the tag set in between; ValkeyGlideTagSet::reset() then
-     * deletes the tags' entries without a Lua script or a cross-slot command.
+     * deletes the tags' entries, in one script per chunk on a standalone server
+     * and without a cross-slot command on a cluster.
      * Any other connection runs Laravel's RedisTaggedCache::flush().
      *
      * @return bool

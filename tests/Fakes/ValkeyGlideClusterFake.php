@@ -147,6 +147,68 @@ final class ValkeyGlideClusterFake extends \ValkeyGlideCluster
     }
 
     /**
+     * Record a set scan and answer with the next scripted page.
+     *
+     * The cursor is recorded as received and the page's cursor is written back
+     * through the reference. An explicit null pattern throws, as with GLIDE.
+     *
+     * @param  string  $key
+     * @param  string|null  $iterator
+     * @param  string|null  $pattern
+     * @param  int  $count
+     *
+     * @param-out  string  $iterator
+     *
+     * @return array<int, mixed>|false
+     *
+     * @throws \TypeError
+     */
+    #[\Override]
+    public function sscan(string $key, ?string &$iterator, ?string $pattern = null, int $count = 0): array|false
+    {
+        if (func_num_args() >= 3 && $pattern === null) {
+            throw new \TypeError('ValkeyGlideCluster::sscan(): Argument #3 ($pattern) must be of type string, null given');
+        }
+
+        $this->recordCall('sscan', [$key, $iterator, $pattern, $count]);
+
+        [$iterator, $reply] = $this->nextScanPage('sscan');
+
+        return is_array($reply) ? array_values($reply) : false;
+    }
+
+    /**
+     * Record a hash scan and answer with the next scripted page.
+     *
+     * The cursor is recorded as received and the page's cursor is written back
+     * through the reference. An explicit null pattern throws, as with GLIDE.
+     *
+     * @param  string  $key
+     * @param  string|null  $iterator
+     * @param  string|null  $pattern
+     * @param  int  $count
+     *
+     * @param-out  string  $iterator
+     *
+     * @return array<array-key, mixed>|bool
+     *
+     * @throws \TypeError
+     */
+    #[\Override]
+    public function hscan(string $key, ?string &$iterator, ?string $pattern = null, int $count = 0): array|bool
+    {
+        if (func_num_args() >= 3 && $pattern === null) {
+            throw new \TypeError('ValkeyGlideCluster::hscan(): Argument #3 ($pattern) must be of type string, null given');
+        }
+
+        $this->recordCall('hscan', [$key, $iterator, $pattern, $count]);
+
+        [$iterator, $reply] = $this->nextScanPage('hscan');
+
+        return is_array($reply) ? $reply : false;
+    }
+
+    /**
      * Record a cluster keyspace scan and answer with the next scripted page.
      *
      * The id the cursor was built with is recorded, and the page's cursor is

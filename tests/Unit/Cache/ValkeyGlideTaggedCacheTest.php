@@ -34,27 +34,29 @@ use Tests\Fakes\ValkeyGlideFake;
 final class ValkeyGlideTaggedCacheTest extends TestCase
 {
     /**
-     * Verify a flush on a standalone server deletes the tags' entries with DEL
-     * and ZREM, without a script.
+     * Verify a flush on a standalone server deletes the tags' entries, and
+     * removes them from the tags' sorted sets, in one script.
      *
      * @return void
      */
     #[Test]
-    public function flushDeletesTheTagsEntriesWithoutAScript(): void
+    public function flushDeletesTheTagsEntriesInAScriptOnAStandaloneServer(): void
     {
         $client = new ValkeyGlideFake;
         $client->willScan('zscan', [['0', ['m' => '1']]]);
 
         self::assertTrue($this->taggedCache($client, ['t'])->flush());
         self::assertCount(1, $client->callsFor('zscan'));
-        self::assertSame([['cache:m']], $client->callsFor('del'));
-        self::assertSame([['cache:tag:t:entries', 'm']], $client->callsFor('zrem'));
-        self::assertSame([], $client->callsFor('rawcommand'));
-        self::assertSame([], $client->callsFor('eval'));
+        $calls = $client->callsFor('rawcommand');
+
+        self::assertCount(1, $calls);
+        self::assertSame(['EVAL', 2, 'cache:m', 'cache:tag:t:entries', 'm'], [$calls[0][0], ...array_slice($calls[0], 2)]);
+        self::assertSame([], $client->callsFor('del'));
+        self::assertSame([], $client->callsFor('zrem'));
     }
 
     /**
-     * Verify a flush on a cluster deletes the tags' entries the same way,
+     * Verify a flush on a cluster deletes the tags' entries with DEL and ZREM,
      * without a script.
      *
      * @return void
@@ -137,7 +139,7 @@ final class ValkeyGlideTaggedCacheTest extends TestCase
     {
         $client = new ValkeyGlideFake;
         $client->willScan('zscan', [['0', ['m' => '1']]]);
-        $client->willReturn('del', false);
+        $client->willReturn('rawcommand', false);
 
         $cache  = $this->taggedCache($client, ['t']);
         $events = $this->recordFlushEvents($cache);
@@ -146,7 +148,7 @@ final class ValkeyGlideTaggedCacheTest extends TestCase
             $cache->flush();
             self::fail('A failed flush must throw.');
         } catch (\UnexpectedValueException $exception) {
-            self::assertSame('Valkey GLIDE failed to run DEL on [cache:m].', $exception->getMessage());
+            self::assertSame('Valkey GLIDE failed to run EVAL on [cache:m] and 1 more.', $exception->getMessage());
         }
 
         self::assertNotContains(CacheFlushed::class, array_map(get_class(...), $events->getArrayCopy()));
@@ -187,7 +189,7 @@ final class ValkeyGlideTaggedCacheTest extends TestCase
         self::assertCount(1, $calls);
         self::assertSame('cache:tag:t:entries', $calls[0][0]);
         self::assertSame(['NX'], $calls[0][1]);
-        self::assertSame(-1, $calls[0][2]);
+        self::assertSame('-1', $calls[0][2]);
     }
 
     /**

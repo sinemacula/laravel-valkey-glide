@@ -18,10 +18,9 @@ use SineMacula\Valkey\Support\Cast;
  * `zscan()`, records increments with a string `NX` option and prunes through
  * `pipeline()` with a callback, whose replies it ignores; GLIDE takes the scan
  * cursor by reference and ignores a string option. Over a GLIDE connection each
- * of those paths is sent in the shape GLIDE takes, one command at a time
- * without opening a batch, and outside a batch a `false` reply, which is how
- * GLIDE reports every failure, throws. Over any other connection Laravel's own
- * code runs.
+ * of those paths is sent in the shape GLIDE takes, without opening a batch, and
+ * outside a batch a `false` reply, which is how GLIDE reports every failure,
+ * throws. Over any other connection Laravel's own code runs.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -31,8 +30,20 @@ final class ValkeyGlideTagSet extends RedisTagSet
     /** @var int The COUNT hint of each ZSCAN, as Laravel's. */
     private const int SCAN_COUNT = 1000;
 
-    /** @var int The number of entries deleted by each DEL of a flush, as Laravel's. */
+    /** @var int The number of entries each step of a flush deletes, as Laravel's. */
     private const int FLUSH_CHUNK_SIZE = 1000;
+
+    /** @var string The script that deletes a chunk of entries and removes them from each tag's sorted set. */
+    private const string FLUSH_SCRIPT = <<<'EOD'
+        local entries = #ARGV
+        local deleted = redis.call('DEL', unpack(KEYS, 1, entries))
+
+        for index = entries + 1, #KEYS do
+            redis.call('ZREM', KEYS[index], unpack(ARGV))
+        end
+
+        return deleted
+        EOD;
 
     /**
      * Create a new tag set for the given store and tag names.
@@ -142,12 +153,16 @@ final class ValkeyGlideTagSet extends RedisTagSet
      *
      * Once a tag set is reset its entries can no longer be reached. The tag ids
      * of a Redis tag set are fixed, so over a GLIDE connection the entries are
-     * deleted instead: each batch of entries is deleted with one DEL, which
-     * GLIDE splits across hash slots, then removed from every tag's sorted set
-     * with ZREM. Deleting first means an interrupted reset leaves only records
-     * of deleted keys, and running it again completes it. No Lua script and no
-     * cross-slot command is sent, and a sorted set left empty is removed by the
-     * server.
+     * deleted instead, a thousand at a time, and removed from every tag's
+     * sorted set. On a standalone server each chunk is deleted and removed in
+     * one script, so no write lands between the two, as with Laravel's Lua
+     * flush over phpredis and Predis. On a cluster, where the entries and tags
+     * live in different hash slots and no script can reach them all, each chunk
+     * is deleted with one DEL, which GLIDE splits across hash slots, then
+     * removed from each tag's sorted set with ZREM. Either way the entries are
+     * deleted first, so an interrupted reset leaves only records of deleted
+     * keys, and running it again completes it. A sorted set left empty is
+     * removed by the server.
      *
      * @return void
      *
@@ -171,11 +186,57 @@ final class ValkeyGlideTagSet extends RedisTagSet
             $members = array_values($chunk->all());
             $keys    = array_map(static fn (string $member): string => $prefix . $member, $members);
 
-            $this->run($connection, 'del', $keys, $keys[0], count($keys) - 1);
-
-            foreach ($setKeys as $setKey) {
-                $this->run($connection, 'zrem', [$setKey, ...$members], $setKey);
+            if ($connection->isCluster()) {
+                $this->deleteAcrossSlots($connection, $keys, $members, $setKeys);
+            } else {
+                $this->deleteInScript($connection, $keys, $members, $setKeys);
             }
+        }
+    }
+
+    /**
+     * Delete a chunk of entries and remove them from each tag's sorted set in
+     * one script, which the server runs without interleaving another command.
+     *
+     * The script's keys are the entries, then the tags' sorted sets, so it
+     * names every key it touches, and its arguments are the entries' members,
+     * so no prefix is stripped from a key with a Lua pattern. It returns the
+     * number of entries deleted, never nil, as GLIDE's raw command reports a
+     * nil reply as `false`, the reply of a failure.
+     *
+     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
+     * @param  list<string>  $keys
+     * @param  list<string>  $members
+     * @param  array<array-key, string>  $setKeys
+     * @return void
+     *
+     * @throws \UnexpectedValueException
+     */
+    private function deleteInScript(ValkeyGlideConnection $connection, array $keys, array $members, array $setKeys): void
+    {
+        $scriptKeys = [...$keys, ...array_values($setKeys)];
+
+        $this->run($connection, 'eval', [self::FLUSH_SCRIPT, count($scriptKeys), ...$scriptKeys, ...$members], $keys[0], count($scriptKeys) - 1);
+    }
+
+    /**
+     * Delete a chunk of entries with one DEL, then remove them from each tag's
+     * sorted set with its own ZREM, so no command spans hash slots.
+     *
+     * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
+     * @param  list<string>  $keys
+     * @param  list<string>  $members
+     * @param  array<array-key, string>  $setKeys
+     * @return void
+     *
+     * @throws \UnexpectedValueException
+     */
+    private function deleteAcrossSlots(ValkeyGlideConnection $connection, array $keys, array $members, array $setKeys): void
+    {
+        $this->run($connection, 'del', $keys, $keys[0], count($keys) - 1);
+
+        foreach ($setKeys as $setKey) {
+            $this->run($connection, 'zrem', [$setKey, ...$members], $setKey);
         }
     }
 
