@@ -842,6 +842,12 @@ The default suite is deterministic and requires no local Redis server:
 composer test
 ```
 
+CI runs this suite on the newest Laravel 12 and 13 releases and on the lowest ones `composer.json` allows, 12.45.0 and
+13.0.0. Packagist security advisories cover those lowest releases, so Composer blocks installing them by default. Only
+the job that tests them stops those advisories blocking `laravel/framework`, to prove the package still works there;
+every other job keeps the blocking. Nothing here changes how an application's own Composer treats those releases, and
+applications should run a patched one.
+
 The external suite exercises the real `ext-valkey_glide` extension against a live Valkey/Redis server. It is excluded
 from the default run and must be invoked explicitly:
 
