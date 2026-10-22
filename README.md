@@ -109,7 +109,10 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 
 - Idempotent commands can retry once on recognized transient connection errors
 - The retry runs on a fresh client; the replaced client is closed, and any error from closing it is ignored
-- Nothing is retried while keys are watched, as the fresh client would not hold the `WATCH` (see WATCH)
+- Nothing is retried while keys are watched for a transaction still to run, as the fresh client would not hold the
+  `WATCH` (see WATCH)
+- Before each command, a `WATCH` left over from an `UNWATCH` that failed, sent by `unwatch()` or when a transaction
+  ended, is unwatched again (see WATCH)
 - Non-idempotent commands are not retried
 - Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`); a cluster `scan()` reports the id its
   `ClusterScanCursor` scans from in place of the cursor, so listeners can turn the parameters into strings
@@ -412,20 +415,31 @@ write idempotent, for example by recording a unique operation id in the same tra
   flatten it, and it would commit over a change to a watched key, so it throws a `LogicException` before anything
   changes. Under phpredis the nested transaction would stay atomic and abort.
 - A `WATCH` that GLIDE refuses, returning `false`, is not tracked. An `UNWATCH` that fails, returning `false` or
-  throwing, whether called on the connection or sent when a transaction ends without committing, leaves the keys
-  tracked, as the server may still hold the `WATCH`; a transaction it then aborts returns `false`.
+  throwing, leaves the keys tracked, as the server may still hold the `WATCH`; a transaction it then aborts returns
+  `false`. That covers an `unwatch()` called on the connection, whose failure the caller still gets, and the `UNWATCH`
+  sent when a transaction ends, committed on a cluster or not committed.
+- Either way the `WATCH` is released, so the keys left tracked guard nothing, and the driver sends `UNWATCH` again
+  before the next command on the connection, a `watch()`, `pipeline()`, `transaction()` or subscription included,
+  once per command and never inside a batch, until it succeeds; the command runs either way. Until then the next
+  transaction is still treated as watched, as the server may abort it, but the leftover keys do not turn the retry
+  off, and a retry's fresh client drops them. A `watch()` whose `UNWATCH` first succeeds tracks only its own keys; if
+  that `UNWATCH` fails but the `WATCH` succeeds, the leftover keys stay watched beside the new ones, as the caller's
+  own, until the transaction ends.
+- The `UNWATCH` a cluster sends after a committed transaction never reaches the caller when it fails, returning `false`
+  or throwing: the transaction has committed, so its results are returned and its `CommandExecuted` event dispatched,
+  rather than leading the caller to retry it and apply it twice.
 
 ### Cluster Batches
 
 - A pipeline may span hash slots and nodes; GLIDE splits it per node and keeps the results in call order.
 - A transaction runs on one node, so every key it touches, and every watched key, must hash to one slot. The driver
   checks this with the cluster's CRC16 key slot as each command is added, and on the first key in another slot it
-  discards the transaction and throws a `LogicException` naming the command, the key and both slots, before anything
-  is sent. While keys are watched, the transaction is bound to the watched keys' slot from the start, and the message
-  names them; keys still watched after a failed `unwatch()` keep that slot, so call `unwatch()` again. Give the keys a
+  discards the transaction and throws a `LogicException` naming the command, the key and both slots, before anything is
+  sent. While keys are watched, the transaction is bound to the watched keys' slot from the start, and the message names
+  them; keys left over by a failed `UNWATCH` keep that slot until the driver sends one that succeeds. Give the keys a
   common hash tag (`{user:1}:name`, `{user:1}:email`). A command GLIDE refuses to buffer binds the transaction to no
-  slot. Commands whose key positions the driver does not know, such as `SINTERSTORE` or `FCALL`, are left to the
-  server, which fails a transaction whose keys cross slots.
+  slot. Commands whose key positions the driver does not know, such as `SINTERSTORE` or `FCALL`, are left to the server,
+  which fails a transaction whose keys cross slots.
 - A cluster transaction that watched keys refuses, with a `LogicException` before anything is sent, every command whose
   keys the driver does not know or that has none. GLIDE sends a cluster transaction by its commands' own keys, or to
   any node when they have none, so such a command could take it to a node where the `WATCH` does not apply, and it

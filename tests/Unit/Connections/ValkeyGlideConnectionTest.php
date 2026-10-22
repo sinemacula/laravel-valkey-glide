@@ -4129,7 +4129,8 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify unwatch() forgets the watched keys.
+     * Verify unwatch() forgets the watched keys, leaving nothing over to
+     * unwatch before the next command.
      *
      * @return void
      *
@@ -4149,13 +4150,18 @@ final class ValkeyGlideConnectionTest extends TestCase
 
         $this->expectException(ConnectionException::class);
 
-        $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1'));
+        try {
+            $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1'));
+        } finally {
+            self::assertSame(['watch', 'unwatch', 'multi', 'set', 'exec', 'discard'], $client->callOrder());
+        }
     }
 
     /**
      * Verify a discarded watched transaction whose unwatch() fails keeps the
-     * keys tracked, as the server still holds the WATCH, so a later transaction
-     * it aborts returns false.
+     * keys tracked while the UNWATCH sent again before the next transaction
+     * fails too, as the server still holds the WATCH, so a later transaction it
+     * aborts returns false.
      *
      * @return void
      *
@@ -4184,20 +4190,71 @@ final class ValkeyGlideConnectionTest extends TestCase
         $client->willReturn('exec', false);
 
         self::assertFalse($connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('b', '1')));
-        self::assertCount(2, $client->callsFor('unwatch'));
+        self::assertCount(3, $client->callsFor('unwatch'));
     }
 
     /**
-     * Verify a committed watched cluster transaction forgets its keys even when
-     * the unwatch() after it fails, as EXEC cleared the WATCH on the node that
-     * holds them.
+     * Verify the UNWATCH a discarded watched transaction failed to send is sent
+     * again before each later command, a refused watch() and a subscription
+     * included, and that a retry's fresh client, which holds no WATCH, drops
+     * it.
      *
      * @return void
      *
      * @throws \Throwable
      */
     #[Test]
-    public function failedUnwatchAfterACommittedClusterTransactionForgetsTheKeys(): void
+    public function failedUnwatchOfADiscardedWatchedTransactionIsSentAgainBeforeEachCommand(): void
+    {
+        $firstClient  = new ValkeyGlideFake;
+        $secondClient = new ValkeyGlideFake;
+        $secondClient->willReturn('get', 'value');
+
+        $connection = new ValkeyGlideConnection(
+            $firstClient,
+            static fn (): \ValkeyGlide => $secondClient,
+            [
+                'retry_delay_ms'  => 0,
+                'retry_jitter_ms' => 0,
+            ],
+        );
+
+        $connection->command('watch', ['a']);
+        $firstClient->willReturn('unwatch', false);
+
+        try {
+            $connection->transaction(static function (): void {
+                throw new \DomainException('callback failed');
+            });
+            self::fail('Expected the callback exception to be rethrown.');
+        } catch (\DomainException) {
+            // The failed callback discards the transaction; its UNWATCH fails.
+        }
+
+        $firstClient->willReturn('watch', false);
+        $firstClient->willThrow('get', new \RuntimeException(self::TRANSIENT_RESET_MESSAGE));
+
+        self::assertFalse($connection->command('watch', ['b']));
+
+        $connection->subscribe(['channel'], static function (): void {});
+
+        self::assertSame('value', $connection->command('get', ['k']));
+        self::assertSame('value', $connection->command('get', ['k']));
+        self::assertSame(['unwatch', 'unwatch', 'watch', 'unwatch', 'subscribe', 'unwatch', 'get', 'close'], array_slice($firstClient->callOrder(), -8));
+        self::assertSame(['get', 'get'], $secondClient->callOrder());
+    }
+
+    /**
+     * Verify a committed watched cluster transaction whose unwatch() fails
+     * returns its results and leaves its keys over, to be unwatched before the
+     * next command, after which a transaction runs unwatched.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function failedUnwatchAfterACommittedClusterTransactionLeavesTheKeysOver(): void
     {
         $client = new ValkeyGlideClusterFake;
         $client->willReturn('unwatch', false);
@@ -4209,6 +4266,11 @@ final class ValkeyGlideConnectionTest extends TestCase
         self::assertSame([true], $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('{a}y', '1')));
         self::assertCount(1, $client->callsFor('unwatch'));
 
+        $client->willReturn('unwatch', true);
+
+        self::assertTrue($connection->command('set', ['{b}k', '1']));
+        self::assertSame(['exec', 'unwatch', 'unwatch', 'set'], array_slice($client->callOrder(), -4));
+
         $client->willReturn('exec', false);
 
         $this->expectException(ConnectionException::class);
@@ -4218,39 +4280,55 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify an unwatch() that GLIDE fails keeps the keys tracked, as the
-     * server may still hold the WATCH, as a refused watch() is not tracked.
+     * Verify an unwatch() that GLIDE fails reports the failure and leaves the
+     * keys over, as the server may still hold the WATCH: a transaction they
+     * abort returns false until the UNWATCH sent again before a command
+     * succeeds, after which a transaction runs unwatched.
      *
      * @return void
      *
      * @throws \Throwable
      */
     #[Test]
-    public function failedUnwatchKeepsTheWatchedKeys(): void
+    public function failedUnwatchLeavesTheWatchedKeysOver(): void
     {
         $client     = new ValkeyGlideFake;
         $connection = new ValkeyGlideConnection($client);
 
         $connection->command('watch', ['a']);
         $client->willReturn('unwatch', false);
-
-        self::assertFalse($connection->command('unwatch'));
-
         $client->willReturn('exec', false);
 
+        $client->willReturn('get', 'value');
+
+        self::assertFalse($connection->command('unwatch'));
+        self::assertSame('value', $connection->command('get', ['a']));
+        self::assertSame(['watch', 'unwatch', 'unwatch', 'get'], $client->callOrder());
         self::assertFalse($connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1')));
+
+        $client->willReturn('unwatch', true);
+
+        self::assertSame('value', $connection->command('get', ['a']));
+        self::assertSame(['unwatch', 'get'], array_slice($client->callOrder(), -2));
+
+        $this->expectException(ConnectionException::class);
+        $this->expectExceptionMessage('The transaction failed and its outcome is unknown; it may have been committed.');
+
+        $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1'));
     }
 
     /**
-     * Verify an unwatch() that throws keeps the keys tracked, so a transaction
-     * still cannot join a pipeline that would flatten it.
+     * Verify an unwatch() that throws reports the exception and leaves the keys
+     * over: the UNWATCH is sent again before the next command, and while it
+     * keeps throwing a transaction still cannot join a pipeline that would
+     * flatten it.
      *
      * @return void
      *
      * @throws \Throwable
      */
     #[Test]
-    public function throwingUnwatchKeepsTheWatchedKeys(): void
+    public function throwingUnwatchLeavesTheWatchedKeysOver(): void
     {
         $client     = new ValkeyGlideFake;
         $connection = new ValkeyGlideConnection($client);
@@ -4265,10 +4343,73 @@ final class ValkeyGlideConnectionTest extends TestCase
             self::assertSame('unwatch failed', $exception->getMessage());
         }
 
-        $this->expectException(\LogicException::class);
-        $this->expectExceptionMessage('A transaction cannot join a pipeline while keys are watched');
+        try {
+            $connection->pipeline(static fn (): mixed => $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1')));
+            self::fail('Expected the transaction to be refused.');
+        } catch (\LogicException $exception) {
+            self::assertStringStartsWith('A transaction cannot join a pipeline while keys are watched', $exception->getMessage());
+        }
 
-        $connection->pipeline(static fn (): mixed => $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1')));
+        self::assertSame(['watch', 'unwatch', 'unwatch'], array_slice($client->callOrder(), 0, 3));
+    }
+
+    /**
+     * Verify a watch() made while keys left over by a failed unwatch() cannot
+     * be unwatched makes every tracked key the caller's own, so no UNWATCH is
+     * sent before the next command to clear the live WATCH.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function watchWhileTheLeftoverCannotBeUnwatchedMakesTheKeysLive(): void
+    {
+        $client     = new ValkeyGlideFake;
+        $connection = new ValkeyGlideConnection($client);
+
+        $connection->command('watch', ['a']);
+        $client->willReturn('unwatch', false);
+        $client->willReturn('get', 'value');
+
+        self::assertFalse($connection->command('unwatch'));
+        self::assertTrue($connection->command('watch', ['b']));
+        self::assertSame('value', $connection->command('get', ['b']));
+        self::assertSame(['watch', 'unwatch', 'unwatch', 'watch', 'get'], $client->callOrder());
+    }
+
+    /**
+     * Verify a committed watched cluster transaction whose unwatch() throws
+     * returns its results and reports the transaction executed, as EXEC has
+     * committed and a caller told otherwise would apply it again; the keys are
+     * left over, to be unwatched before the next command.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function throwingUnwatchAfterACommittedClusterTransactionReturnsItsResults(): void
+    {
+        $client     = new ValkeyGlideClusterFake;
+        $dispatcher = new Dispatcher;
+        $events     = [];
+
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$events): void {
+            $events[] = $event->command;
+        });
+
+        $connection = new ValkeyGlideConnection($client);
+        $connection->setEventDispatcher($dispatcher);
+
+        $connection->command('watch', ['{a}x']);
+        $client->willThrow('unwatch', new \RuntimeException('unwatch failed'));
+
+        self::assertSame([true], $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('{a}y', '1')));
+        self::assertSame(['watch', 'transaction'], $events);
+
+        self::assertTrue($connection->command('set', ['{b}k', '1']));
+        self::assertSame(['exec', 'unwatch', 'unwatch', 'set'], array_slice($client->callOrder(), -4));
     }
 
     /**
@@ -6940,7 +7081,7 @@ final class ValkeyGlideConnectionTest extends TestCase
     /**
      * Verify a cluster transaction refused for a key outside the slot of the
      * watched keys says so, as keys left watched by a failed unwatch() hold
-     * that slot until unwatch() succeeds.
+     * that slot until an UNWATCH succeeds.
      *
      * @return void
      *
@@ -6966,14 +7107,14 @@ final class ValkeyGlideConnectionTest extends TestCase
             // The callback discards the transaction; its UNWATCH fails.
         }
 
-        $client->willReturn('unwatch', true);
-
         try {
             $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('{b}x', '1'));
             self::fail('Expected the transaction to be refused.');
         } catch (\LogicException $exception) {
             self::assertSame(sprintf(self::WATCHED_CROSS_SLOT_MESSAGE, 'SET', '{b}x', 3300, 15495, '{a}k'), $exception->getMessage());
         }
+
+        $client->willReturn('unwatch', true);
 
         self::assertSame([true], $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('{b}x', '1')));
     }
