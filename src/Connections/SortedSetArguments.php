@@ -236,10 +236,9 @@ final readonly class SortedSetArguments
     /**
      * Convert a score or weight to the string phpredis sends for it.
      *
-     * A float is written with 17 significant digits and a `.` whatever the
-     * locale, as phpredis writes it, so the server reads back the same float,
-     * and an infinity as `+inf` or `-inf`. Any other value is converted as a
-     * member is.
+     * A float is written as FloatArguments::double() writes it, with 17
+     * significant digits, so the server reads back the same float. Any other
+     * value is converted as a member is.
      *
      * @param  string  $command
      * @param  mixed  $score
@@ -249,15 +248,7 @@ final readonly class SortedSetArguments
      */
     private function toScore(string $command, mixed $score): string
     {
-        if (!is_float($score)) {
-            return $this->toMember($command, $score);
-        }
-
-        return match ($score) {
-            INF     => '+inf',
-            -INF    => '-inf',
-            default => sprintf('%.17h', $score),
-        };
+        return is_float($score) ? FloatArguments::double($score) : $this->toMember($command, $score);
     }
 
     /**
