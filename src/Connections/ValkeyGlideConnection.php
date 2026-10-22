@@ -185,6 +185,9 @@ final class ValkeyGlideConnection extends Connection
     /** @var string Message for a connection method refused while a batch is active. */
     private const string ACTIVE_BATCH_MESSAGE = '[%s()] cannot be called while a pipeline or transaction is active; %s.';
 
+    /** @var string Message for a disconnected connection that has no connector to reconnect it. */
+    private const string DISCONNECTED_MESSAGE = 'The connection was closed by disconnect() and has no connector to reconnect it.';
+
     /** @var array<int, string> Error fragments treated as transient transport faults. */
     private const array TRANSIENT_ERROR_FRAGMENTS = [
         'connection reset by peer',
@@ -210,6 +213,9 @@ final class ValkeyGlideConnection extends Connection
 
     /** @var array<string, mixed> Connection-level configuration. */
     protected array $config;
+
+    /** @var bool Whether disconnect() closed the client, which is then replaced before it is used again. */
+    private bool $disconnected = false;
 
     /** @var \SineMacula\Valkey\Connections\KeyPrefixer Key prefixer instance for command parameter normalization. */
     private readonly KeyPrefixer $prefixer;
@@ -721,6 +727,7 @@ final class ValkeyGlideConnection extends Connection
         $normalizedMethod = $this->normalizeSubscriptionMethod($method);
 
         $this->assertNoActiveBatch($normalizedMethod, 'subscribe outside the batch');
+        $this->reconnectAfterDisconnect();
         $this->unwatchLeftOverKeys();
 
         $this->invokeSubscription($normalizedMethod, $this->normalizeSubscriptionChannels($channels), $callback);
@@ -781,7 +788,9 @@ final class ValkeyGlideConnection extends Connection
      *
      * An active pipeline or transaction ends, as GLIDE drops what it buffered
      * when it closes, and the keys the connection watched are forgotten, as the
-     * server drops the WATCH with the connection.
+     * server drops the WATCH with the connection. The next command, batch or
+     * subscription reconnects through the connector, as phpredis reconnects a
+     * closed client.
      *
      * @return void
      *
@@ -796,6 +805,8 @@ final class ValkeyGlideConnection extends Connection
         $this->forgetWatchedKeys();
 
         $this->glideClient->close();
+
+        $this->disconnected = true;
     }
 
     /**
@@ -903,6 +914,9 @@ final class ValkeyGlideConnection extends Connection
         if ($cursor !== '0' && !isset($this->clusterScanCursors[$cursor])) {
             throw new \InvalidArgumentException(sprintf('Cannot resume a cluster scan from cursor [%s]: only a cursor this connection returned can be resumed, once.', $cursor));
         }
+
+        // A reconnect that fails sends no scan, so it must not use the id up.
+        $this->reconnectAfterDisconnect();
 
         unset($this->clusterScanCursors[$cursor]);
 
@@ -1109,6 +1123,7 @@ final class ValkeyGlideConnection extends Connection
      */
     private function beginBatch(bool $atomic): BatchState
     {
+        $this->reconnectAfterDisconnect();
         $this->unwatchLeftOverKeys();
 
         $batch       = new BatchState($this, $atomic);
@@ -1535,9 +1550,10 @@ final class ValkeyGlideConnection extends Connection
      * is sent at once rather than joining the pipeline, where it would start
      * GLIDE's batch again under the command and be heard of only as another
      * send. A batch a listener leaves open is ended, as the pipeline cannot
-     * take it back. Anything that throws along the way, the command, the send,
-     * or a listener of either, ends the pipeline, whether or not a callback
-     * owns it.
+     * take it back, and a client a listener disconnects is replaced before the
+     * pipeline resumes. Anything that throws along the way, the command, the
+     * send, a listener of either, or the reconnect, ends the pipeline, whether
+     * or not a callback owns it.
      *
      * @param  \SineMacula\Valkey\Connections\BatchState  $batch
      * @param  string  $method
@@ -1561,6 +1577,7 @@ final class ValkeyGlideConnection extends Connection
             });
 
             $this->assertNoBatchLeftByListener($method);
+            $this->reconnectAfterDisconnect();
         } catch (\Throwable $exception) {
             if ($this->batch !== null) {
                 $this->endBatchAfterFailure($this->batch);
@@ -2117,6 +2134,8 @@ final class ValkeyGlideConnection extends Connection
      */
     private function executeCommandWithRetry(string $method, array $parameters, ?\Closure $onResult = null): mixed
     {
+        $this->reconnectAfterDisconnect();
+
         $attempt = 0;
 
         while (true) {
@@ -2434,6 +2453,35 @@ final class ValkeyGlideConnection extends Connection
         }
 
         return true;
+    }
+
+    /**
+     * Replace the client that disconnect() closed before it is used again.
+     *
+     * GLIDE answers every call on a closed client with false, not an error, so
+     * nothing would reach the server and no retry would run. The client is
+     * recreated through the connector instead, and any command may follow, as
+     * nothing was sent on the closed one. A reconnect that fails leaves the
+     * connection disconnected, so the next call tries again.
+     *
+     * @return void
+     *
+     * @throws \SineMacula\Valkey\Exceptions\ConnectionException
+     *
+     * @imperative
+     */
+    private function reconnectAfterDisconnect(): void
+    {
+        if (!$this->disconnected) {
+            return;
+        }
+
+        if ($this->connector === null) {
+            throw new ConnectionException(self::DISCONNECTED_MESSAGE);
+        }
+
+        $this->glideClient  = ($this->connector)();
+        $this->disconnected = false;
     }
 
     /**
