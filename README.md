@@ -33,7 +33,9 @@ application business code.
   `WATCH`, `TOUCH`, `SINTER` and `MGET`, and the key-value map of `MSET` and `MSETNX`
 - `pipeline()` and `transaction()`, plus phpredis-style `multi()` / `exec()` / `discard()` on the connection
 - Laravel compatibility fallback for phpredis-style `SET` and `EVAL` command argument shapes
-- Phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, as Laravel's locks and Horizon call them
+- Phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, as Laravel's locks and Horizon call them, and
+  phpredis-compatible `hsetnx()` and options-array `zscan()`, `hscan()` and `sscan()`
+- Laravel's `zadd()`, `zinterstore()` and `zunionstore()` argument forms, and exact `zincrby()` increments
 - Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
   standalone and cluster connections
 - External test lane for extension and real Redis connectivity validation
@@ -109,7 +111,10 @@ Command execution goes through `ValkeyGlideConnection::command()`.
 
 - Idempotent commands can retry once on recognized transient connection errors
 - The retry runs on a fresh client; the replaced client is closed, and any error from closing it is ignored
-- Nothing is retried while keys are watched, as the fresh client would not hold the `WATCH` (see WATCH)
+- Nothing is retried while keys are watched for a transaction still to run, as the fresh client would not hold the
+  `WATCH` (see WATCH)
+- Before each command, a `WATCH` left over from an `UNWATCH` that failed, sent by `unwatch()` or when a transaction
+  ended, is unwatched again (see WATCH)
 - Non-idempotent commands are not retried
 - Laravel command events are dispatched (`CommandExecuted`, `CommandFailed`); a cluster `scan()` reports the id its
   `ClusterScanCursor` scans from in place of the cursor, so listeners can turn the parameters into strings
@@ -118,13 +123,46 @@ Command execution goes through `ValkeyGlideConnection::command()`.
   string flag such as `set($key, $value, 'NX')`, which GLIDE's own `set()` refuses
 - `setnx()` returns `1` or `0`, as phpredis does through Laravel, so Laravel's lock without an expiry and Horizon's lock,
   which compare it with `1`, can be taken; inside a pipeline or transaction, call it on the batch
+- `hsetnx()` returns `1` or `0` too, where GLIDE returns `true` or `false`; inside a pipeline or transaction, call it on
+  the batch, where its result is GLIDE's `true` or `false`, as phpredis' pipelines return it
 - `zrevrange()`, which GLIDE lacks, reads the range with `ZRANGE ... REV`; pass `true` or `['withscores' => true]` as its
   fourth argument for the scores
+- The scores and members of `zadd()`, and the weights of `zunionstore()`, `zinterstore()`, `zunion()` and `zinter()`
+  (and of `zdiffstore()`, which GLIDE takes a weights list for, though the server refuses it), whether passed by
+  position or as `weights:`, are sent to GLIDE as strings, inside a pipeline or transaction too. `ext-valkey_glide`
+  1.1.2 tracks every integer or float score or weight in a buffer of 20 entries, so one call with more than 20 overflows
+  it ([valkey-glide-php#379](https://github.com/valkey-io/valkey-glide-php/issues/379)), and it frees its buffers twice
+  when a `zadd()` member is not a string, such as the integer `123`
+  ([valkey-glide-php#380](https://github.com/valkey-io/valkey-glide-php/issues/380)); either corrupts the heap and can
+  abort the PHP worker. It also writes floats with six significant digits, so `1234567.5` was stored as `1234570`.
+  Integers are sent as their digits, floats as phpredis sends them, with 17 significant digits so they read back
+  exactly, infinities as `+inf` and `-inf`, and strings as they are; members are converted as phpredis converts them, so
+  `zadd($key, 1, 123)` stores the member `'123'` where GLIDE returned `false`. A score, member or weight with no string
+  form, such as an array, throws an `InvalidArgumentException` before anything is sent, inside a batch or outside one.
+  `CommandExecuted` carries the strings sent
+- `zincrby()` adds its increment exactly. GLIDE's `zIncrBy()` takes the increment as a float and writes it with six
+  significant digits, so `1.23456789` was added as `1.23457`. A `zincrby()` with a numeric increment is sent as the
+  `ZADD ... INCR` it is equivalent to, with the increment read as a float and sent as phpredis sends it, inside a
+  pipeline or transaction too, and returns the new score as a float, as phpredis does. `CommandExecuted` names the
+  `zAdd` sent. A `zincrby()` with an increment that is not numeric, or with named arguments, is left to GLIDE
+- `zadd()` takes Laravel's forms, as Laravel's phpredis connection does: a trailing array of scores keyed by member, as
+  in `zadd($key, ['a' => 1, 'b' => 2])`, and option strings among the first three arguments after the key, as in
+  `zadd($key, 'NX', 1, 'a')`, which Laravel's tagged cache sends; GLIDE took neither. As there, a member among those
+  three named after an option, such as `'ch'`, is read as the option. GLIDE's options array, as in
+  `zadd($key, ['NX'], 1, 'a')`, is taken as it is
+- `zinterstore()` and `zunionstore()` take Laravel's options array in place of the weights, as Laravel's phpredis
+  connection does, as in `zunionstore($destination, $keys, ['weights' => [2, 1], 'aggregate' => 'max'])`, with `SUM`
+  when it names no aggregate; GLIDE sent the array as the weights, which the server refused. An empty array is read as
+  no weights, where GLIDE sent an empty `WEIGHTS`. GLIDE's own weights, keyed by integers in any order, as from
+  `array_filter()`, and aggregate string are taken too. As with a phpredis pipeline, the `zadd()`, `zinterstore()` and
+  `zunionstore()` of a pipeline or transaction take the client's own forms
 - `scan($cursor, ['match' => ..., 'count' => ...])` takes Laravel's options array and returns `[$cursor, $keys]`, as
   Laravel's phpredis connection does: start from `'0'` and stop once the cursor is `'0'` again. The `match` pattern is
   not prefixed, and `count` defaults to 10. A scan that fails throws an `UnexpectedValueException` rather than
   returning an empty last page. On a cluster, GLIDE's own `ClusterScanCursor` is still passed to it unchanged (see
   Cluster Connections)
+- `zscan($key, $cursor, $options)`, `hscan(...)` and `sscan(...)` take the same options array and return
+  `[$cursor, $members]`, with the same string cursor, defaults and failure (see Cache Tags)
 - `disconnect()` delegates to GLIDE `close()`; an open pipeline or transaction ends without sending what it buffered, as
   GLIDE drops it on close, and any `WATCH` is forgotten
 
@@ -152,9 +190,11 @@ success. The retry above applies only to errors the extension throws. `getLastEr
 > and write different keys than before (delete or rename the unprefixed keys if they matter), code that types the
 > result as the GLIDE client or calls client methods such as `getOption()` on it no longer works, and one `pipeline` or
 > `transaction` event replaces the per-command events (see Pipelines and Transactions).
-
-GLIDE 1.1.2's `hsetnx()` returns `true` or `false` where Laravel's phpredis connection returns `1` or `0`, so code that
-checks it for `1` never succeeds; `setnx()` is converted (see What Is Implemented).
+>
+> In 1.2.x and earlier, `hsetnx()` on the connection returned GLIDE's `true` or `false`; it now returns `1` or `0`, so
+> code that compares it with `true` must compare it with `1`. Called on the connection while a pipeline or transaction
+> is open, it now throws a `LogicException` rather than joining the batch; call it on the batch instead. `zscan()`,
+> `hscan()` and `sscan()` with Laravel's options array threw an `ErrorException`, as GLIDE takes the cursor by reference.
 
 ## Prefix Compatibility
 
@@ -301,7 +341,8 @@ cannot buffer itself:
   the connection. The connection's own typed `get()` and `mget()` are refused too while a batch is open, as their
   value is not known until the batch runs; call them on the batch instead.
 - **Arguments GLIDE rejects**: GLIDE checks some arguments itself and buffers nothing when it rejects them, for example
-  `zadd($key, 'NX', 1, $member)` with a string option, where it expects `zadd($key, ['NX'], 1, $member)`. The driver
+  the batch's `zadd($key, 'NX', 1, $member)` with a string option, where it expects `zadd($key, ['NX'], 1, $member)`
+  (the connection's own `zadd()` converts it; see Runtime Behavior). The driver
   throws an `InvalidArgumentException` naming the command rather than return a result list with a slot missing. GLIDE
   reports `zrem()` and `zmscore()` given a key but no member, as from `zrem($key, ...$ids)` with no ids, and `zinter()`
   given an empty key list, as buffered without buffering them, so the driver refuses them the same way before they are
@@ -412,20 +453,31 @@ write idempotent, for example by recording a unique operation id in the same tra
   flatten it, and it would commit over a change to a watched key, so it throws a `LogicException` before anything
   changes. Under phpredis the nested transaction would stay atomic and abort.
 - A `WATCH` that GLIDE refuses, returning `false`, is not tracked. An `UNWATCH` that fails, returning `false` or
-  throwing, whether called on the connection or sent when a transaction ends without committing, leaves the keys
-  tracked, as the server may still hold the `WATCH`; a transaction it then aborts returns `false`.
+  throwing, leaves the keys tracked, as the server may still hold the `WATCH`; a transaction it then aborts returns
+  `false`. That covers an `unwatch()` called on the connection, whose failure the caller still gets, and the `UNWATCH`
+  sent when a transaction ends, committed on a cluster or not committed.
+- Either way the `WATCH` is released, so the keys left tracked guard nothing, and the driver sends `UNWATCH` again
+  before the next command on the connection, a `watch()`, `pipeline()`, `transaction()` or subscription included,
+  once per command and never inside a batch, until it succeeds; the command runs either way. Until then the next
+  transaction is still treated as watched, as the server may abort it, but the leftover keys do not turn the retry
+  off, and a retry's fresh client drops them. A `watch()` whose `UNWATCH` first succeeds tracks only its own keys; if
+  that `UNWATCH` fails but the `WATCH` succeeds, the leftover keys stay watched beside the new ones, as the caller's
+  own, until the transaction ends.
+- The `UNWATCH` a cluster sends after a committed transaction never reaches the caller when it fails, returning `false`
+  or throwing: the transaction has committed, so its results are returned and its `CommandExecuted` event dispatched,
+  rather than leading the caller to retry it and apply it twice.
 
 ### Cluster Batches
 
 - A pipeline may span hash slots and nodes; GLIDE splits it per node and keeps the results in call order.
 - A transaction runs on one node, so every key it touches, and every watched key, must hash to one slot. The driver
   checks this with the cluster's CRC16 key slot as each command is added, and on the first key in another slot it
-  discards the transaction and throws a `LogicException` naming the command, the key and both slots, before anything
-  is sent. While keys are watched, the transaction is bound to the watched keys' slot from the start, and the message
-  names them; keys still watched after a failed `unwatch()` keep that slot, so call `unwatch()` again. Give the keys a
+  discards the transaction and throws a `LogicException` naming the command, the key and both slots, before anything is
+  sent. While keys are watched, the transaction is bound to the watched keys' slot from the start, and the message names
+  them; keys left over by a failed `UNWATCH` keep that slot until the driver sends one that succeeds. Give the keys a
   common hash tag (`{user:1}:name`, `{user:1}:email`). A command GLIDE refuses to buffer binds the transaction to no
-  slot. Commands whose key positions the driver does not know, such as `SINTERSTORE` or `FCALL`, are left to the
-  server, which fails a transaction whose keys cross slots.
+  slot. Commands whose key positions the driver does not know, such as `SINTERSTORE` or `FCALL`, are left to the server,
+  which fails a transaction whose keys cross slots.
 - A cluster transaction that watched keys refuses, with a `LogicException` before anything is sent, every command whose
   keys the driver does not know or that has none. GLIDE sends a cluster transaction by its commands' own keys, or to
   any node when they have none, so such a command could take it to a node where the `WATCH` does not apply, and it
@@ -631,9 +683,14 @@ cannot name a slot, and on any other node they would read or change that node's 
 `Cache::flush()` and `cache:clear` do) run on every primary, so the whole keyspace is cleared. Calls that pass an
 explicit GLIDE route are sent unchanged.
 
-`ValkeyGlideCluster::ping()` takes a route before its optional message and returns `false` without one, so a bare
-`ping()` (as health checks call it) runs on every primary instead and returns `true` once each one answers. A `ping()`
-with arguments takes the first as its route, as phpredis' `RedisCluster::ping()` does, and is sent unchanged.
+`ValkeyGlideCluster::ping()`, `dbSize()`, `randomKey()`, `time()` and `echo()` take a route before their other
+arguments and return `false` without one, so a call without one takes the route GLIDE gives the command: a bare
+`ping()` (as health checks call it) runs on every primary and returns `true` once each one answers, `dbSize()` counts
+the keys on every primary and returns their sum, `randomKey()` returns a key from one of the primaries, and `time()`
+and `echo($message)` run on a random node. A call with more arguments takes the first as its route, as phpredis'
+`RedisCluster` methods do, and is sent unchanged. Each node reports only itself to `INFO`, so a bare `info()` throws an
+`InvalidArgumentException` before anything is sent; pass a route, as in `info('randomNode')` or
+`info('randomNode', 'memory')`.
 
 A GLIDE cluster connection's `isCluster()` returns `true`. From Laravel 13.5, the Redis queue and `Redis::funnel()`
 check it and wrap a queue or limiter name that has no hash tag in one (`queues:{default}`), so the keys each of their
@@ -734,8 +791,36 @@ as `WRONGTYPE` on a tag's key.
 
 The connection prefixes the keys these paths use: `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, `ZREVRANGEBYSCORE` and
 `ZREVRANK`, and the key (only) of `ZSCAN`, `SSCAN` and `HSCAN`. Earlier releases sent those seven commands unprefixed,
-so on a prefixed connection they missed the keys the other commands wrote. A member scan writes its cursor back by
-reference, so call it through `command()` with a reference in the argument list:
+so on a prefixed connection they missed the keys the other commands wrote.
+
+The member scans take Laravel's options array, as Laravel's phpredis connection does, and return the next cursor and
+the page, so a loop written for Laravel's connections runs unchanged:
+
+```php
+$cursor = '0';
+
+do {
+    [$cursor, $members] = Redis::connection()->zscan('leaderboard', $cursor, ['match' => 'user:*', 'count' => 100]);
+
+    // ...
+} while ($cursor !== '0');
+```
+
+- Start from `'0'` (or `null`) and stop once the cursor is `'0'` again. The cursor is a string, where phpredis gives
+  an integer, and `match` (default `*`) and `count` (default 10) are sent as given: the key is prefixed, the pattern,
+  which matches members, is not.
+- `zscan()` maps each member to its score as a float, as phpredis does, where GLIDE gives a string (`INF` or `-INF`
+  for an infinite score); `hscan()` maps each field to its value; `sscan()` lists the members. A page can be empty
+  before the scan is complete, so keep going until the cursor is `'0'`.
+- A missing key returns `['0', []]`. A scan that fails, such as one of a key of another type, throws an
+  `UnexpectedValueException` rather than returning an empty page, as the keyspace `scan()` does.
+- On a cluster each member scan runs on a node that holds its key, so its cursor is a plain string; it needs no
+  `ClusterScanCursor`.
+- Inside a pipeline or transaction they throw a `LogicException` before anything is sent, as `ZSCAN`, `HSCAN` and
+  `SSCAN` do (see Commands GLIDE Cannot Buffer).
+
+GLIDE's own form, with the cursor written back by reference, still works through `command()`, and returns each score
+as GLIDE gives it, a string:
 
 ```php
 $cursor = '0';
@@ -746,9 +831,6 @@ do {
     // ...
 } while ($cursor !== '0');
 ```
-
-Unlike the keyspace `scan()` (see Runtime Behavior), the phpredis-style `zscan($key, $cursor, $options)` shape is not
-supported.
 
 - The `SCAN` and `ZSCAN` calls dispatch `CommandExecuted` like any command. On a cluster the event carries the id the
   `ClusterScanCursor` scans from, not the cursor itself.
@@ -823,6 +905,12 @@ The default suite is deterministic and requires no local Redis server:
 composer test
 ```
 
+CI runs this suite on the newest Laravel 12 and 13 releases and on the lowest ones `composer.json` allows, 12.45.0 and
+13.0.0. Packagist security advisories cover those lowest releases, so Composer blocks installing them by default. Only
+the job that tests them stops those advisories blocking `laravel/framework`, to prove the package still works there;
+every other job keeps the blocking. Nothing here changes how an application's own Composer treats those releases, and
+applications should run a patched one.
+
 The external suite exercises the real `ext-valkey_glide` extension against a live Valkey/Redis server. It is excluded
 from the default run and must be invoked explicitly:
 
@@ -840,7 +928,10 @@ External integration coverage includes:
   racing a second process that rewrites the flushed keys
 - Laravel queue push/pop behavior and physical queue key writes
 - Laravel session roundtrip behavior and physical session key writes
-- phpredis-compatible `setnx()`, `zrevrange()` and options-array `scan()`, on a standalone server and a cluster
+- phpredis-compatible `setnx()`, `hsetnx()`, `zrevrange()` and options-array `scan()`, `zscan()`, `hscan()` and
+  `sscan()`, including Laravel's own `RedisTagSet::entries()`, on a standalone server and a cluster
+- sorted-set scores, members and weights sent as strings, exact `zincrby()` increments, and Laravel's `zadd()`,
+  `zinterstore()` and `zunionstore()` argument forms, on a standalone server and a cluster
 - pipelines and transactions on a standalone server and a cluster: result order, physical prefixed keys, empty and
   nested batches with and without callbacks, `EVAL` in a batch, `WATCH`, cross-slot transactions, closed clients,
   throwing event listeners and a 5,000-command pipeline

@@ -109,3 +109,52 @@ jobs:
 
             -   name: Benchmark smoke
                 run: composer bench:smoke
+
+    # ==========================================================================
+    # JOB: LARAVEL FLOOR TESTS
+    # ==========================================================================
+    # Runs the suite on the lowest releases composer.json allows (illuminate/*
+    # ^12.45 || ^13.0). Packagist security advisories cover every
+    # laravel/framework release before 12.69.0, and 13.x before 13.30.0, so
+    # Composer blocks installing these by default. This job alone stops those
+    # advisories blocking laravel/framework, only to prove compatibility. Every
+    # other job keeps blocking them, and nothing here changes how an
+    # application's own Composer treats them.
+    laravel-floor:
+        name: Test / Laravel ${{ matrix.laravel }} floor (framework advisories ignored)
+        runs-on: ubuntu-latest
+
+        strategy:
+            fail-fast: false
+            matrix:
+                laravel: [ 12.45.0, 13.0.0 ]
+
+        steps:
+            -   name: Checkout
+                uses: actions/checkout@v7
+                with:
+                    persist-credentials: false
+
+            -   name: Setup PHP
+                uses: sinemacula/.github/.github/actions/setup-php@v1.13.0
+                with:
+                    php-version: 8.3
+
+            # Ignores advisories on laravel/framework for blocking only, so the
+            # update still reports them; other packages' advisories and malware
+            # stay blocked. It edits this runner's checkout of composer.json only.
+            -   name: Stop advisories blocking laravel/framework (floor test only)
+                run: >-
+                    composer config --json policy.advisories.ignore
+                    '{"laravel/framework": {"on-audit": false, "reason": "Floor compatibility test only"}}'
+
+            -   name: Pin Laravel version
+                env:
+                    LARAVEL_VERSION: ${{ matrix.laravel }}
+                run: composer update --with="laravel/framework:${LARAVEL_VERSION}" --prefer-dist --no-interaction --no-progress
+
+            -   name: PHPUnit
+                run: composer test
+
+            -   name: Benchmark smoke
+                run: composer bench:smoke

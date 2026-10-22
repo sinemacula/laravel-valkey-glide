@@ -189,7 +189,7 @@ final class ValkeyGlideTaggedCacheTest extends TestCase
         self::assertCount(1, $calls);
         self::assertSame('cache:tag:t:entries', $calls[0][0]);
         self::assertSame(['NX'], $calls[0][1]);
-        self::assertSame(-1, $calls[0][2]);
+        self::assertSame('-1', $calls[0][2]);
     }
 
     /**
