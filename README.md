@@ -69,6 +69,10 @@ Example single-node Redis connection:
 'redis' => [
     'client' => env('REDIS_CLIENT', 'valkey-glide'),
 
+    'options' => [
+        'prefix' => env('REDIS_PREFIX', ''),
+    ],
+
     'default' => [
         'host' => env('REDIS_HOST', '127.0.0.1'),
         'port' => (int) env('REDIS_PORT', 6379),
@@ -76,11 +80,43 @@ Example single-node Redis connection:
         'password' => env('REDIS_PASSWORD'),
         'database' => (int) env('REDIS_DB', 0),
         'name' => env('REDIS_CLIENT_NAME'),
-        'prefix' => env('REDIS_PREFIX', ''),
         'tls' => env('REDIS_TLS', false),
     ],
 ],
 ```
+
+### Key Prefix Precedence
+
+A key prefix can be set in the shared `database.redis.options`, in a connection's own `options`, or on the connection
+itself. The connector resolves it as Laravel's phpredis connector does, on every supported Laravel release:
+
+- A standalone connection's own `prefix` takes precedence over its `options` and the shared `options`. Its `options`
+  take precedence over the shared `options`. A `prefix` that is set counts even when it is an empty string, so
+  `'prefix' => ''` on the connection leaves it unprefixed whatever the shared `options` say; a `null` prefix counts as
+  unset.
+- Only `prefix` is lifted this way. For every other key, such as `database` or `timeout`, the connection's `options`
+  take precedence over the shared `options`, which take precedence over the connection's own keys.
+- Horizon's `Horizon::use()` copies the app connection it is given and sets Horizon's prefix in the copy's `options`,
+  so if that connection sets its own `prefix`, Horizon's connection uses that prefix, as it does on phpredis. To keep
+  Horizon under `horizon:` (or `horizon.prefix`), set the app prefix in the shared or the connection's `options`
+  instead.
+- A cluster does not lift a node's `prefix`: as on phpredis, a prefix in the options takes precedence over one on the
+  first node. Unlike phpredis, which ignores the nodes' own keys, the first node's `prefix` and nested `options` still
+  apply (see Cluster Connections).
+
+> [!NOTE]
+> In 1.2.x and earlier, a `prefix` set on a standalone connection itself was overridden by a prefix in its own
+> `options` or, failing that, in the shared `options` (Laravel's default config sets one there), and Horizon's
+> standalone connection used `horizon:` (or `horizon.prefix`) even when the connection it was copied from set its own
+> `prefix`. Such a connection now uses its own prefix, an empty one included. Where that differs from the prefix it
+> used before, it reads and writes different keys after the upgrade: its cache entries, sessions, locks and queued
+> jobs, and Horizon's data, are left under the old prefix. A connection without its own `prefix`, with a `null` one, or
+> with no prefix in either `options` keeps its keys. Before upgrading, check each standalone connection that sets its
+> own `prefix`, and each one Horizon uses. To stay on the keys it used, remove that `prefix`, or set it to the prefix
+> the connection used (its `options` prefix, else the shared one); for Horizon, move the app prefix into the shared or
+> the connection's `options`. To move to the connection's own prefix instead, drain its queues and Horizon first, then
+> migrate the keys you need to the new prefix (`RENAME`, or `COPY` then `DEL`) and expect a cold cache. Cluster
+> connections are not affected.
 
 ## Supported Config Mapping
 
@@ -638,7 +674,11 @@ Configure a cluster the standard Laravel way:
 
 Connection keys such as `prefix` can be set on the first node, in the shared `clusters.options`, or in an `options`
 entry beside the cluster's nodes, which takes precedence over both, as it does for phpredis; on Laravel 13, Horizon sets
-its cluster prefix that way.
+its cluster prefix that way. In full, from highest to lowest: the `options` entry beside the nodes, the first node's own
+`options`, `clusters.options`, the shared `database.redis.options`, then the first node's own keys. Unlike a standalone
+connection, a `prefix` on the first node does not take precedence over the options, as phpredis applies the options'
+prefix to a cluster. phpredis ignores the nodes' own keys altogether; this driver keeps applying the first node's keys
+and nested `options` as above, so a `prefix` there applies when no options set one.
 
 > [!NOTE]
 > In 1.2.x and earlier, an `options` entry listed after a cluster's nodes, as Horizon writes it, was ignored. It is now
@@ -967,6 +1007,9 @@ External integration coverage includes:
   transaction on a standalone server, key by key across slots on a cluster), tagged writes and a refused tag flush
   inside a pipeline, and Laravel Horizon's own Redis repositories under the `horizon:` prefix (the Horizon cluster
   cases run on Laravel 13 only, as Horizon supports clusters only there)
+- the key prefix a Laravel connection resolves to when the shared options, a connection's own options and the
+  connection itself each set one, including an empty prefix and Horizon's connection, read back as physical keys on a
+  standalone server and a cluster
 
 The external suite reads connection details from optional environment variables:
 

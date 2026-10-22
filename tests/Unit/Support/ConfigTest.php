@@ -79,6 +79,73 @@ final class ConfigTest extends TestCase
     }
 
     /**
+     * Verify a connection's own prefix overrides the prefix in the shared
+     * options and in its own nested options, as Laravel's phpredis connector
+     * applies it, while every other key keeps the nested-over-shared-over-base
+     * order.
+     *
+     * @return void
+     */
+    #[Test]
+    public function mergeGivesTheConnectionPrefixPrecedenceOverSharedAndNestedOptions(): void
+    {
+        $merged = Config::merge([
+            'host'     => 'base-host',
+            'database' => 1,
+            'prefix'   => 'own:',
+            'options'  => ['prefix' => 'nested:', 'database' => 3],
+        ], [
+            'host'     => 'option-host',
+            'database' => 2,
+            'prefix'   => 'shared:',
+        ]);
+
+        self::assertSame(['host' => 'option-host', 'database' => 3, 'prefix' => 'own:'], $merged);
+    }
+
+    /**
+     * Verify a connection's own prefix overrides the shared prefix when its
+     * nested options are not an array.
+     *
+     * @return void
+     */
+    #[Test]
+    public function mergeGivesTheConnectionPrefixPrecedenceWhenNestedOptionsAreNotAnArray(): void
+    {
+        $merged = Config::merge(['prefix' => 'own:', 'options' => 'invalid-options'], ['prefix' => 'shared:']);
+
+        self::assertSame(['prefix' => 'own:'], $merged);
+    }
+
+    /**
+     * Verify an empty connection prefix still overrides the shared prefix, as
+     * phpredis treats any prefix that is set, so the connection is unprefixed.
+     *
+     * @return void
+     */
+    #[Test]
+    public function mergeGivesAnEmptyConnectionPrefixPrecedenceOverTheSharedPrefix(): void
+    {
+        $merged = Config::merge(['prefix' => ''], ['prefix' => 'shared:']);
+
+        self::assertSame(['prefix' => ''], $merged);
+    }
+
+    /**
+     * Verify a null connection prefix counts as unset, so the shared and nested
+     * prefixes keep their usual order.
+     *
+     * @return void
+     */
+    #[Test]
+    public function mergeLetsTheSharedAndNestedPrefixesOverrideANullConnectionPrefix(): void
+    {
+        self::assertSame(['prefix' => 'shared:'], Config::merge(['prefix' => null], ['prefix' => 'shared:']));
+        self::assertSame(['prefix' => 'nested:'], Config::merge(['prefix' => null, 'options' => ['prefix' => 'nested:']], ['prefix' => 'shared:']));
+        self::assertSame(['prefix' => null], Config::merge(['prefix' => null]));
+    }
+
+    /**
      * Verify single-endpoint connect arguments use package defaults.
      *
      * @return void
