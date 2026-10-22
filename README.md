@@ -40,6 +40,8 @@ application business code.
 - Laravel Horizon 5.46.0 or later on a cluster before Laravel 13.5
 - Cache store for the `redis` driver that keeps `putMany()` safe on cluster connections and runs cache tags on
   standalone and cluster connections
+- Queue connector for the `redis` driver whose `Queue::bulk()` pushes atomically on GLIDE connections and whose keys
+  share a slot on a cluster before Laravel 13.5 (see Redis Queue)
 - Laravel Pulse's `redis` ingest driver on standalone and cluster connections (see Laravel Pulse)
 - External test lane for extension and real Redis connectivity validation
 
@@ -309,9 +311,9 @@ Prefixing is handled in the connection wrapper for supported command families:
 ## Pipelines and Transactions
 
 `pipeline()` and `transaction()` follow phpredis' semantics, with the differences listed below, so the pipelines and
-transactions of Horizon's repositories, `Queue::bulk()` and `Bus::batch()`, `Cache::putMany()`, and Laravel's own
-`RedisTagSet::flushStaleEntries()` run on this driver (see the Horizon gaps below). The `redis` cache store's tags do
-not open a batch themselves (see Cache Tags):
+transactions of Horizon's repositories, `Cache::putMany()`, and Laravel's own `RedisTagSet::flushStaleEntries()` run on
+this driver (see the Horizon gaps below). The `redis` cache store's tags do not open a batch themselves (see Cache
+Tags), and the `redis` queue pushes a bulk with one script (see Redis Queue):
 
 ```php
 $results = Redis::pipeline(function ($pipe) {
@@ -343,8 +345,8 @@ $results = Redis::pipeline()->set('a', 1)->get('a')->exec(); // without a callba
   as that exception, a failed `exec()` or a refused command, is what the caller gets, even if the discard, or the
   `UNWATCH` that follows it, fails.
 - The callback owns the batch while it runs: `exec()` or `discard()` called inside it throws a `LogicException`, except
-  an `exec()` that closes a `multi()` or `transaction()` opened inside a pipeline, which returns the batch (see Nested
-  Batches). Return from the callback to send the batch, or throw from it to discard it.
+  on a `multi()` or `transaction()` opened inside a pipeline (see Nested Batches). Return from the callback to send the
+  batch, or throw from it to discard it.
 - A batch that an error ends inside its callback, such as a refused command in a transaction or a nested callback that
   threw, stays ended even if the callback catches the error: every later call on the batch, or on the connection, throws
   a `LogicException` rather than run outside the batch, and once the callback returns, the call throws a
@@ -360,9 +362,9 @@ $results = Redis::pipeline()->set('a', 1)->get('a')->exec(); // without a callba
   directly bypasses the batch handling, so it checks this first.
 - While a batch is open, every command called on the same connection is added to it and returns the batch, not only
   those called on the batch itself, as with phpredis. That includes any other code that uses the same connection name
-  during `Queue::bulk()`, such as a cache store on that connection: its writes are added to the batch, while its reads,
-  which go through the connection's typed `get()` and `mget()`, throw a `LogicException` (see Refused below). Give
-  unrelated work its own connection name, and always `exec()` or `discard()` a batch started without a callback.
+  inside a `pipeline()` callback, such as a cache store on that connection: its writes are added to the batch, while its
+  reads, which go through the connection's typed `get()` and `mget()`, throw a `LogicException` (see Refused below).
+  Give unrelated work its own connection name, and always `exec()` or `discard()` a batch started without a callback.
 - Event listeners never run while a batch is open on the connection, so they use it as they would outside a batch:
   what a listener runs on the same connection is sent at once, never added to the batch, and its typed `get()` and
   `mget()` work. A listener that writes on every command it hears of, skipping its own command, therefore stops, as it
@@ -404,9 +406,10 @@ cannot buffer itself:
     listeners of that send, or of the command, run on the same connection is sent at once and takes no place in the
     list (see the event listeners above).
   - In a transaction it would run outside the `MULTI` block, so the transaction is discarded and a `LogicException` is
-    thrown. Use `pipeline()` for them.
+    thrown, unless the transaction is nested in a pipeline (see Nested Batches). Use `pipeline()` for them.
   - An `incrbyfloat()` or `hincrbyfloat()` whose increment GLIDE would write with six significant digits, such as
-    `1.23456789`, is sent through `rawcommand`, so it runs in call order in a pipeline and is refused in a transaction.
+    `1.23456789`, is sent through `rawcommand`, so it runs in call order in a pipeline and is refused in a transaction,
+    as above.
   - Unlike phpredis, where `getOption()` and the other methods of the client itself return their value at once in any
     mode, they take a place in a pipeline's results and end a transaction too; call them outside the batch.
 - **Rewritten so they buffer**: a key list such as `del(['a', 'b'])` or `unlink([...])`, which GLIDE runs immediately,
@@ -443,45 +446,23 @@ cannot buffer itself:
 
 ### Nested Batches
 
-`pipeline()` or `transaction()` called with a callback while a batch is open joins it: the callback runs against the
-same batch, the batch is returned, and the results come from the outermost call. Only part of that matches phpredis,
-and only for a transaction nested in a pipeline: its inner `exec()` returns the batch, as phpredis returns the client in
-pipeline mode. Its results are flattened into the pipeline's list, where phpredis returns them as one nested array, so
-code that reads the list by position after a nested transaction finds different positions. Under phpredis a pipeline
-nested in a pipeline, or a transaction nested in a transaction, is sent by the inner call, which returns the results,
-and the outer `exec()` then returns `false`, while a pipeline nested in a transaction is a fatal error. On this driver a
-pipeline nested in a transaction stays part of the transaction. An exception thrown by a nested callback discards
-everything the batch still buffers, the outer commands included, and is rethrown; in a pipeline, commands already sent
-ahead of an immediate command such as `EVAL` stay applied. An outer callback that catches it cannot carry on with the
-batch (see above). `pipeline()` and `transaction()` called on the batch itself behave the same way.
-
-Without a callback, nesting follows phpredis:
-
-- `transaction()` or `multi()` inside a pipeline opens a block that its own `exec()` closes; that `exec()` returns the
-  batch, and the outermost `exec()` sends everything. The block's results are flattened into the list, as above.
-- Any other nested `pipeline()`, `transaction()` or `multi()` changes nothing and returns the same batch, so the next
-  `exec()` sends the batch.
-- `discard()` outside a callback drops the whole batch, a `transaction()` or `multi()` still open inside the pipeline
-  included, as phpredis drops the whole pipeline.
+A transaction nested in a pipeline, with a callback or opened by `transaction()` or `multi()` and closed by its own
+`exec()`, stays atomic. GLIDE holds one batch at a time, so what the pipeline buffered is sent as the transaction opens,
+as before an `EVAL`, and the transaction runs as its own `MULTI`/`EXEC` when it closes. Its results take one place in
+the pipeline's results, as phpredis returns them; `[]` there means a `WATCH` aborted it. Its `exec()` returns the
+pipeline, and `discard()`, or a failure inside it, ends the transaction alone; the pipeline ends too only when the
+exception leaves the pipeline's callback. A pipeline callback that returns with a `multi()` still open throws a
+`LogicException`. A command GLIDE cannot buffer, such as `EVAL`, still runs at once in call order, splitting the
+transaction where it runs, unless keys are watched, when it is refused. Any other nested `pipeline()`, `transaction()`
+or `multi()` joins the open batch, and the next `exec()` sends it.
 
 ```php
-$pipe = Redis::pipeline();
-$pipe->set('a', 1);
-
-Redis::transaction()->incr('a')->exec(); // returns the batch; nothing is sent yet
-
-$pipe->get('a')->exec(); // [true, 2, '2'], where phpredis returns [true, [2], '2']
+$results = Redis::pipeline(function ($pipe) {
+    $pipe->set('a', 1);
+    $pipe->transaction(fn ($tx) => $tx->incr('a')->get('a'));
+    $pipe->get('a');
+}); // [true, [2, '2'], '2']
 ```
-
-> [!WARNING]
-> A transaction nested in a pipeline is flattened into the pipeline and is not atomic, because GLIDE cannot nest a
-> `MULTI` block inside a pipeline, and its results are flattened into the pipeline's list. Under phpredis the inner
-> transaction stays atomic and its results come back as one nested array. Laravel's `Queue::bulk()`, and so
-> `Bus::batch()`, nests a transaction in a pipeline and pushes each job with `EVAL`, which GLIDE cannot buffer either:
-> on this driver the jobs are pushed one at a time, in order, and not atomically. With `ext-valkey_glide` 1.1.2 a push
-> that fails returns `false` rather than throwing, and Laravel does not check it, so that job is silently skipped while
-> the rest are still pushed. A flattened transaction could not be guarded by `WATCH` either, so while keys are watched
-> a transaction that would join a pipeline throws a `LogicException` instead.
 
 ### Failures
 
@@ -536,9 +517,7 @@ write idempotent, for example by recording a unique operation id in the same tra
 - GLIDE's `discard()` leaves a `WATCH` in place on the server, where it would abort a later transaction, so a
   transaction that ends without being sent (discarded, its callback threw, or it was empty) calls `unwatch()`.
 - An empty watched transaction returns `[]` without checking the watched keys, as GLIDE cannot send an empty batch.
-- Pipelines leave a `WATCH` alone, but a transaction cannot join a pipeline while keys are watched: the pipeline would
-  flatten it, and it would commit over a change to a watched key, so it throws a `LogicException` before anything
-  changes. Under phpredis the nested transaction would stay atomic and abort.
+- Pipelines leave a `WATCH` alone; it guards the next transaction, including one nested in a pipeline.
 - A `WATCH` that GLIDE refuses, returning `false` or, from 1.2, throwing the error it records, is not tracked. An
   `UNWATCH` that fails, returning `false` or throwing, leaves the keys tracked, as the server may still hold the
   `WATCH`; a transaction it then aborts returns `false`. That covers an `unwatch()` called on the connection, whose
@@ -787,33 +766,9 @@ and `echo($message)` run on a random node. A call with more arguments takes the 
 
 A GLIDE cluster connection's `isCluster()` returns `true`. From Laravel 13.5, the Redis queue and `Redis::funnel()`
 check it and wrap a queue or limiter name that has no hash tag in one (`queues:{default}`), so the keys each of their
-scripts touches share a slot. On Laravel 12 and 13.0 to 13.4 the package's `redis` queue connector, Horizon's queue
-included, does the same on a GLIDE cluster connection, unless the queue's name or the connection's prefix already has a
-hash tag. A funnel's name is not wrapped there, so on a GLIDE cluster give it a hash tag yourself
-(`Redis::funnel('{reports}')`), or a funnel with a limit above one fails with `CROSSSLOT`.
-
-On those versions a delayed job on such a queue used to be stored under `queues:<name>:delayed`, where no worker ran
-it; workers now read `queues:{<name>}:delayed`. Once no process of your previous release is running, move those jobs
-once, from `php artisan tinker` for example, for each queue whose name and prefix had no hash tag:
-
-```php
-use Illuminate\Support\Facades\Redis;
-
-$redis = Redis::connection(config('queue.connections.redis.connection'));
-
-foreach (['default'] as $name) { // your queues whose names had no hash tag
-    $from = 'queues:'.$name.':delayed';
-    $to = 'queues:{'.$name.'}:delayed';
-
-    foreach ($redis->zrange($from, 0, -1, ['withscores' => true]) as $payload => $availableAt) {
-        if ($redis->zadd($to, $availableAt, $payload) === false) {
-            throw new RuntimeException('Could not add a job to '.$to.'; it is still in '.$from.'.');
-        }
-
-        $redis->zrem($from, $payload);
-    }
-}
-```
+scripts touches share a slot; before 13.5 the package's queue does the same (see Redis Queue). A funnel's name is not
+wrapped before 13.5, so on a GLIDE cluster give it a hash tag yourself (`Redis::funnel('{reports}')`), or a funnel with
+a limit above one fails with `CROSSSLOT`.
 
 ### Cache Store
 
@@ -869,6 +824,48 @@ runs on the cluster on every supported Laravel version. Cluster support requires
 > In 1.2.x and earlier, before Laravel 13.5, Horizon kept its data on the cluster's first node under `horizon.prefix`.
 > It now keeps it on the cluster under that prefix in a hash tag (`{<app name>_horizon:}`), so its dashboard starts
 > empty; delete the old keys on the first node.
+
+## Redis Queue
+
+The service provider registers the `redis` queue driver with a queue of its own, or Horizon's when Horizon is
+registered, that behaves as Laravel's except in two ways. No configuration change is needed.
+
+Laravel's `Queue::bulk()`, and so `Bus::batch()`, pushes each job with its own `EVAL`, which `ext-valkey_glide` 1.1.2
+runs at once even inside a transaction. On a GLIDE connection, on every Laravel version, the queue pushes every job of
+a bulk with one script instead:
+
+- The server runs the script as one atomic step, delayed jobs included, with Laravel's queueing events for each job.
+- A push that fails throws a `ConnectionException` rather than skip jobs silently.
+- A job that waits for a database transaction (`afterCommit`) is pushed on its own once the transaction commits.
+- Under Horizon, the queue fires `JobPending` and `JobPushed` as Horizon's own push does.
+- A bulk inside an open pipeline or transaction throws a `LogicException`, and a bulk on any other connection is
+  Laravel's.
+
+On Laravel 12 and 13.0 to 13.4, on a GLIDE cluster connection, the queue also wraps its name in a hash tag
+(`queues:{default}`), as Laravel does from 13.5, so the keys each of its scripts touches share a slot. A queue whose
+name or connection prefix already has a hash tag is left as it is. On those versions a delayed job on a queue without
+one used to be stored under `queues:<name>:delayed`, where no worker ran it; workers now read
+`queues:{<name>}:delayed`. Once no process of your previous release is running, move those jobs once, from
+`php artisan tinker` for example:
+
+```php
+use Illuminate\Support\Facades\Redis;
+
+$redis = Redis::connection(config('queue.connections.redis.connection'));
+
+foreach (['default'] as $name) { // your queues whose names had no hash tag
+    $from = 'queues:'.$name.':delayed';
+    $to = 'queues:{'.$name.'}:delayed';
+
+    foreach ($redis->zrange($from, 0, -1, ['withscores' => true]) as $payload => $availableAt) {
+        if ($redis->zadd($to, $availableAt, $payload) === false) {
+            throw new RuntimeException('Could not add a job to '.$to.'; it is still in '.$from.'.');
+        }
+
+        $redis->zrem($from, $payload);
+    }
+}
+```
 
 ## Cache Tags
 
@@ -1081,10 +1078,10 @@ External integration coverage includes:
 - pipelines and transactions on a standalone server and a cluster: result order, physical prefixed keys, empty and
   nested batches with and without callbacks, `EVAL` in a batch, `WATCH`, cross-slot transactions, closed clients,
   throwing event listeners and a 5,000-command pipeline
-- Laravel's `Queue::bulk()`, the pipelined stale-entry flush of Laravel's own `RedisTagSet`, `Cache::putMany()` (a
-  transaction on a standalone server, key by key across slots on a cluster), tagged writes and a refused tag flush
-  inside a pipeline, and Laravel Horizon's own Redis repositories under the `horizon:` prefix (the Horizon cluster
-  cases run on every supported Laravel version)
+- Laravel's and Horizon's `Queue::bulk()`, the pipelined stale-entry flush of Laravel's own `RedisTagSet`,
+  `Cache::putMany()` (a transaction on a standalone server, key by key across slots on a cluster), tagged writes and a
+  refused tag flush inside a pipeline, and Laravel Horizon's own Redis repositories under the `horizon:` prefix (the
+  Horizon cluster cases run on every supported Laravel version)
 - Laravel Pulse's `redis` ingest on a standalone server and a cluster, over connections with the shared prefix and with
   one of their own
 - the key prefix a Laravel connection resolves to when the shared options, a connection's own options and the

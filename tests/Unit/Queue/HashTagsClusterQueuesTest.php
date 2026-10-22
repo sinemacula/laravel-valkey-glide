@@ -6,6 +6,8 @@ namespace Tests\Unit\Queue;
 
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Queue\Jobs\RedisJob;
+use Illuminate\Queue\RedisQueue;
+use Illuminate\Redis\Connections\Connection;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\CoversTrait;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -16,6 +18,7 @@ use SineMacula\Valkey\Queue\ValkeyGlideHorizonQueue;
 use SineMacula\Valkey\Queue\ValkeyGlideQueue;
 use Tests\Fakes\LaravelConnectionFake;
 use Tests\Fakes\RedisFactoryFake;
+use Tests\Fakes\RedisQueueBefore135Fake;
 use Tests\Fakes\ValkeyGlideClusterFake;
 use Tests\Fakes\ValkeyGlideFake;
 use Tests\TestCase;
@@ -50,8 +53,9 @@ final class HashTagsClusterQueuesTest extends TestCase
     }
 
     /**
-     * Verify a queue on a GLIDE cluster is hash-tagged, unless its keys already
-     * carry a hash tag from the name or the connection's prefix.
+     * Verify a queue on a GLIDE cluster is hash-tagged before Laravel 13.5,
+     * unless its keys already carry a hash tag from the name or the
+     * connection's prefix.
      *
      * @param  string  $prefix
      * @param  string|null  $queue
@@ -62,10 +66,7 @@ final class HashTagsClusterQueuesTest extends TestCase
     #[Test]
     public function queueOnAGlideClusterIsHashTagged(string $prefix, ?string $queue, string $expected): void
     {
-        $redis = $this->redis(new ValkeyGlideClusterFake, $prefix);
-
-        self::assertSame($expected, (new ValkeyGlideQueue($redis))->getQueue($queue));
-        self::assertSame($expected, (new ValkeyGlideHorizonQueue($redis))->getQueue($queue));
+        self::assertSame($expected, $this->queueBefore135(new ValkeyGlideConnection(new ValkeyGlideClusterFake, config: ['prefix' => $prefix]))->getQueue($queue));
     }
 
     /**
@@ -77,8 +78,46 @@ final class HashTagsClusterQueuesTest extends TestCase
     #[Test]
     public function queueOffAGlideClusterIsLeftAsItIs(): void
     {
-        self::assertSame('queues:emails', (new ValkeyGlideQueue($this->redis(new ValkeyGlideFake)))->getQueue('emails'));
-        self::assertSame('queues:emails', (new ValkeyGlideQueue(new RedisFactoryFake(new LaravelConnectionFake)))->getQueue('emails'));
+        self::assertSame('queues:emails', $this->queueBefore135(new ValkeyGlideConnection(new ValkeyGlideFake))->getQueue('emails'));
+        self::assertSame('queues:emails', $this->queueBefore135(new LaravelConnectionFake)->getQueue('emails'));
+    }
+
+    /**
+     * Verify Laravel's and Horizon's queues are hash-tagged on a GLIDE cluster
+     * before Laravel 13.5.
+     *
+     * @return void
+     */
+    #[Test]
+    public function queuesAreHashTaggedBeforeLaravel135(): void
+    {
+        if ((new \ReflectionClass(RedisQueue::class))->hasMethod('getQueueRedisKey')) {
+            self::markTestSkipped('Laravel hash-tags cluster queue keys itself from 13.5.');
+        }
+
+        $redis = $this->redis(new ValkeyGlideClusterFake);
+
+        self::assertSame('queues:{emails}', (new ValkeyGlideQueue($redis))->getQueue('emails'));
+        self::assertSame('queues:{emails}', (new ValkeyGlideHorizonQueue($redis))->getQueue('emails'));
+    }
+
+    /**
+     * Verify Laravel's and Horizon's queues are left to Laravel on a GLIDE
+     * cluster from 13.5, whose `getQueueRedisKey()` hash-tags the keys itself.
+     *
+     * @return void
+     */
+    #[Test]
+    public function queuesAreLeftToLaravelFrom135(): void
+    {
+        if (!(new \ReflectionClass(RedisQueue::class))->hasMethod('getQueueRedisKey')) {
+            self::markTestSkipped('The queue hash-tags cluster queue keys itself before Laravel 13.5.');
+        }
+
+        $redis = $this->redis(new ValkeyGlideClusterFake);
+
+        self::assertSame('queues:emails', (new ValkeyGlideQueue($redis))->getQueue('emails'));
+        self::assertSame('queues:emails', (new ValkeyGlideHorizonQueue($redis))->getQueue('emails'));
     }
 
     /**
@@ -123,16 +162,28 @@ final class HashTagsClusterQueuesTest extends TestCase
     }
 
     /**
-     * Build a Redis factory over a GLIDE connection to the given client, with
-     * the given key prefix.
+     * Build a Redis factory over a GLIDE connection to the given client.
      *
      * @param  \ValkeyGlide|\ValkeyGlideCluster  $client
-     * @param  string  $prefix
      * @return \Tests\Fakes\RedisFactoryFake
      */
-    private function redis(\ValkeyGlide|\ValkeyGlideCluster $client, string $prefix = ''): RedisFactoryFake
+    private function redis(\ValkeyGlide|\ValkeyGlideCluster $client): RedisFactoryFake
     {
-        return new RedisFactoryFake(new ValkeyGlideConnection($client, config: ['prefix' => $prefix]));
+        return new RedisFactoryFake(new ValkeyGlideConnection($client));
+    }
+
+    /**
+     * Build a queue over the given connection that hash-tags its keys as the
+     * trait does over Laravel's Redis queue before 13.5.
+     *
+     * @param  \Illuminate\Redis\Connections\Connection  $connection
+     * @return \Tests\Fakes\RedisQueueBefore135Fake
+     */
+    private function queueBefore135(Connection $connection): RedisQueueBefore135Fake
+    {
+        return new class ($connection) extends RedisQueueBefore135Fake {
+            use HashTagsClusterQueues;
+        };
     }
 
     /**

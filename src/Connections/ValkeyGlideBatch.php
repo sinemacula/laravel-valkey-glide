@@ -215,7 +215,8 @@ final readonly class ValkeyGlideBatch
      * it.
      *
      * As with `transaction()` on the connection inside a batch, a transaction
-     * in a pipeline joins the pipeline and is not atomic.
+     * in a pipeline runs on its own, and its results take one place in the
+     * pipeline's results.
      *
      * @param  (callable(\SineMacula\Valkey\Connections\ValkeyGlideBatch): mixed)|null  $callback
      * @return self
@@ -256,8 +257,8 @@ final readonly class ValkeyGlideBatch
      *
      * Inside a callback the batch runs when the callback returns, so this is
      * refused, unless it closes a `multi()` or `transaction()` opened inside a
-     * pipeline, in which case the batch is returned, as phpredis does in
-     * pipeline mode.
+     * pipeline, which runs that transaction and returns the pipeline, as
+     * phpredis does in pipeline mode.
      *
      * @return false|list<mixed>|self
      *
@@ -273,9 +274,9 @@ final readonly class ValkeyGlideBatch
     /**
      * Discard every command the batch still holds.
      *
-     * A `multi()` or `transaction()` still open inside a pipeline is dropped
-     * with it, as phpredis drops the whole pipeline. Inside a callback, throw
-     * from the callback to discard the batch instead.
+     * A `multi()` or `transaction()` still open inside a pipeline is dropped on
+     * its own, and the pipeline goes on. Inside a callback, throw from the
+     * callback to discard the batch instead.
      *
      * @return bool
      *

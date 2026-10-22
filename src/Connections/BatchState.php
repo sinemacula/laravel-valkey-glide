@@ -9,8 +9,8 @@ namespace SineMacula\Valkey\Connections;
  *
  * The connection counts what it buffers itself rather than reading GLIDE's
  * returns, so it knows whether a native batch is open, how many commands it
- * holds, and which results earlier flushes produced. It also tracks how the
- * batch is nested, so that only its owner executes it.
+ * holds, and which results earlier flushes produced. It also tracks which
+ * callbacks own the batch, so that only its owner executes it.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
  * @copyright   2026 Sine Macula Limited.
@@ -22,14 +22,14 @@ final class BatchState
     /** @var bool Whether the batch runs as an atomic MULTI/EXEC transaction. */
     public readonly bool $atomic;
 
+    /** @var \SineMacula\Valkey\Connections\BatchState|null The pipeline a transaction nested in it hands back to once it ends. */
+    public readonly ?BatchState $pipeline;
+
     /** @var \SineMacula\Valkey\Connections\ValkeyGlideBatch The batch object handed to callers. */
     public readonly ValkeyGlideBatch $proxy;
 
     /** @var int Number of callbacks currently running against the batch. */
     private int $callbacks = 0;
-
-    /** @var bool Whether a multi() opened inside the pipeline awaits the exec() that closes it. */
-    private bool $nestedMulti = false;
 
     /** @var list<string> Methods buffered in the open native batch, in order. */
     private array $queued = [];
@@ -51,12 +51,14 @@ final class BatchState
      *
      * @param  \SineMacula\Valkey\Connections\ValkeyGlideConnection  $connection
      * @param  bool  $atomic
+     * @param  \SineMacula\Valkey\Connections\BatchState|null  $pipeline
      * @return void
      */
-    public function __construct(ValkeyGlideConnection $connection, bool $atomic)
+    public function __construct(ValkeyGlideConnection $connection, bool $atomic, ?self $pipeline = null)
     {
-        $this->atomic = $atomic;
-        $this->proxy  = new ValkeyGlideBatch($connection, $this);
+        $this->atomic   = $atomic;
+        $this->pipeline = $pipeline;
+        $this->proxy    = new ValkeyGlideBatch($connection, $this);
     }
 
     /**
@@ -107,37 +109,6 @@ final class BatchState
     public function isInCallback(): bool
     {
         return $this->callbacks > 0;
-    }
-
-    /**
-     * Record a multi() opened inside the pipeline, as phpredis does in pipeline
-     * mode.
-     *
-     * @return void
-     */
-    public function openNestedMulti(): void
-    {
-        $this->nestedMulti = true;
-    }
-
-    /**
-     * Record the exec() that closes the multi() opened inside the pipeline.
-     *
-     * @return void
-     */
-    public function closeNestedMulti(): void
-    {
-        $this->nestedMulti = false;
-    }
-
-    /**
-     * Determine whether a multi() opened inside the pipeline awaits its exec().
-     *
-     * @return bool
-     */
-    public function hasNestedMulti(): bool
-    {
-        return $this->nestedMulti;
     }
 
     /**

@@ -133,6 +133,35 @@ final class FloatPrecisionValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify a raw increment in a transaction nested in a pipeline runs in call
+     * order, as a script does there, splitting the transaction where it runs.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function inexactIncrementInANestedTransactionRunsInCallOrder(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', 1.23456789);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        $results = $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($connection): void {
+            $connection->transaction(static function (ValkeyGlideBatch $tx): void {
+                $tx->set('a', '1');
+                $tx->incrbyfloat('k', 1.23456789);
+                $tx->set('b', '1');
+            });
+        });
+
+        self::assertSame([[true, 1.23456789, true]], $results);
+        self::assertSame(['multi', 'set', 'exec', 'rawcommand', 'multi', 'set', 'exec'], $client->callOrder());
+        self::assertSame([['INCRBYFLOAT', 'k', '1.2345678899999999']], $client->callsFor('rawcommand'));
+    }
+
+    /**
      * Verify an increment GLIDE would not write as the same float is refused in
      * a transaction, which is discarded, as the raw command would run outside
      * the MULTI block.

@@ -78,10 +78,6 @@ final class ValkeyGlideConnectionTest extends TestCase
     private const string UNGUARDED_WATCH_MESSAGE = 'A cluster transaction that watches keys cannot carry [%s], as its keys are unknown or absent,'
         . ' so GLIDE could send the transaction to a node where the WATCH does not guard it.';
 
-    /** @var string Message for a transaction joining a pipeline while keys are watched. */
-    private const string WATCHED_TRANSACTION_IN_PIPELINE_MESSAGE = 'A transaction cannot join a pipeline while keys are watched, as the pipeline flattens it'
-        . ' and the WATCH could not guard it; run the transaction outside the pipeline.';
-
     /** @var string Message for a batch whose exec() results do not match what it buffered. */
     private const string MISALIGNED_BATCH_MESSAGE = 'The %s was sent and has most likely been applied, but its results do not match its commands,'
         . ' so they could not be returned in call order.';
@@ -3709,7 +3705,8 @@ final class ValkeyGlideConnectionTest extends TestCase
 
     /**
      * Verify commands called on the connection inside a callback join the
-     * batch, as Laravel's RedisQueue::bulk() issues them.
+     * batch, as Laravel's RedisQueue::bulk() issues them, and a script in a
+     * transaction nested in a pipeline runs in call order.
      *
      * @return void
      *
@@ -3733,41 +3730,11 @@ final class ValkeyGlideConnectionTest extends TestCase
             });
         });
 
-        self::assertSame([1, 1, 1], $results);
+        self::assertSame([[1, 1, 1]], $results);
         self::assertContainsOnlyInstancesOf(ValkeyGlideBatch::class, $returned);
-        self::assertSame(['rawcommand', 'pipeline', 'zadd', 'exec', 'rawcommand'], $client->callOrder());
+        self::assertSame(['rawcommand', 'multi', 'zadd', 'exec', 'rawcommand'], $client->callOrder());
         self::assertSame([['app:queue:delayed', '10', 'job-2']], $client->callsFor('zadd'));
         self::assertFalse($client->isBatching());
-    }
-
-    /**
-     * Verify a transaction nested in a pipeline joins the pipeline and returns
-     * the batch.
-     *
-     * @return void
-     *
-     * @throws \Throwable
-     */
-    #[Test]
-    public function transactionNestedInAPipelineJoinsThePipeline(): void
-    {
-        $client     = new ValkeyGlideFake;
-        $connection = new ValkeyGlideConnection($client);
-        $nested     = [];
-
-        $results = $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($connection, &$nested): void {
-            $pipe->set('a', '1');
-            $nested[] = $connection->transaction(static function (ValkeyGlideBatch $tx) use ($pipe): void {
-                self::assertSame($pipe, $tx);
-                $tx->set('b', '2');
-            });
-            $nested[] = $connection->pipeline();
-            $pipe->set('c', '3');
-        });
-
-        self::assertSame([true, true, true], $results);
-        self::assertSame(['pipeline', 'set', 'set', 'set', 'exec'], $client->callOrder());
-        self::assertContainsOnlyInstancesOf(ValkeyGlideBatch::class, $nested);
     }
 
     /**
@@ -3847,7 +3814,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         try {
             $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($connection): void {
                 $pipe->set('a', '1');
-                $connection->transaction(static function (): void {
+                $connection->pipeline(static function (): void {
                     throw new \DomainException('nested failure');
                 });
             });
@@ -3997,8 +3964,8 @@ final class ValkeyGlideConnectionTest extends TestCase
             $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($connection, $failure, &$refusals): void {
                 $pipe->incr('n');
 
-                self::assertSame($failure, self::exceptionOf(static fn (): mixed => $connection->transaction(static function (ValkeyGlideBatch $tx) use ($failure): never {
-                    $tx->incr('n');
+                self::assertSame($failure, self::exceptionOf(static fn (): mixed => $connection->pipeline(static function (ValkeyGlideBatch $nested) use ($failure): never {
+                    $nested->incr('n');
 
                     throw $failure;
                 })));
@@ -4110,8 +4077,8 @@ final class ValkeyGlideConnectionTest extends TestCase
         $pipe->set('a', '1');
 
         try {
-            $pipe->transaction(static function (ValkeyGlideBatch $tx) use ($failure): never {
-                $tx->set('b', '2');
+            $pipe->pipeline(static function (ValkeyGlideBatch $nested) use ($failure): never {
+                $nested->set('b', '2');
 
                 throw $failure;
             });
@@ -5138,9 +5105,7 @@ final class ValkeyGlideConnectionTest extends TestCase
 
     /**
      * Verify an unwatch() that throws reports the exception and leaves the keys
-     * over: the UNWATCH is sent again before the next command, and while it
-     * keeps throwing a transaction still cannot join a pipeline that would
-     * flatten it.
+     * over, so the UNWATCH is sent again before the next command.
      *
      * @return void
      *
@@ -5162,14 +5127,9 @@ final class ValkeyGlideConnectionTest extends TestCase
             self::assertSame('unwatch failed', $exception->getMessage());
         }
 
-        try {
-            $connection->pipeline(static fn (): mixed => $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1')));
-            self::fail('Expected the transaction to be refused.');
-        } catch (\LogicException $exception) {
-            self::assertStringStartsWith('A transaction cannot join a pipeline while keys are watched', $exception->getMessage());
-        }
+        $connection->command('get', ['a']);
 
-        self::assertSame(['watch', 'unwatch', 'unwatch'], array_slice($client->callOrder(), 0, 3));
+        self::assertSame(['watch', 'unwatch', 'unwatch', 'get'], $client->callOrder());
     }
 
     /**
@@ -5408,32 +5368,6 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a bare discard() while a multi() opened in a pipeline is still
-     * open drops the whole pipeline, as phpredis does.
-     *
-     * @return void
-     *
-     * @throws \Throwable
-     */
-    #[Test]
-    public function bareDiscardInsideAJoinedMultiDropsTheWholeBatch(): void
-    {
-        $client     = new ValkeyGlideFake;
-        $connection = new ValkeyGlideConnection($client);
-
-        $connection->command('pipeline');
-        $connection->command('set', ['a', '1']);
-        $connection->command('multi');
-        $connection->command('set', ['b', '2']);
-
-        self::assertTrue($connection->command('discard'));
-        self::assertFalse($connection->exec());
-        self::assertSame([], $client->callsFor('exec'));
-        self::assertSame(['pipeline', 'set', 'set', 'discard'], $client->callOrder());
-        self::assertFalse($client->isBatching());
-    }
-
-    /**
      * Verify RedisStore::putMany()'s bare multi(), commands and exec() on the
      * connection run as a transaction.
      *
@@ -5505,34 +5439,6 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Verify a bare multi() inside a batch joins it until its exec(), which
-     * returns the batch, as phpredis does in pipeline mode.
-     *
-     * @return void
-     *
-     * @throws \Throwable
-     */
-    #[Test]
-    public function bareMultiInsideABatchJoinsItUntilItsExec(): void
-    {
-        $client     = new ValkeyGlideFake;
-        $connection = new ValkeyGlideConnection($client);
-        $returned   = [];
-
-        $results = $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($connection, &$returned): void {
-            $returned[] = $connection->command('multi');
-            $connection->command('setex', ['a', 60, '1']);
-            $returned[] = $connection->command('exec');
-            $returned[] = $pipe->multi();
-            $pipe->set('b', '2');
-        });
-
-        self::assertSame([null, true], $results);
-        self::assertContainsOnlyInstancesOf(ValkeyGlideBatch::class, $returned);
-        self::assertSame(['pipeline', 'setex', 'set', 'exec'], $client->callOrder());
-    }
-
-    /**
      * Verify exec() inside a callback is refused, as the callback's caller runs
      * the batch.
      *
@@ -5557,33 +5463,19 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
-     * Provide discard() calls that a callback owning the batch refuses.
+     * Verify discard() inside a callback is refused.
      *
-     * @return iterable<string, array{\Closure(\SineMacula\Valkey\Connections\ValkeyGlideConnection): mixed}>
-     */
-    public static function nestedDiscards(): iterable
-    {
-        yield 'inside a callback' => [static fn (ValkeyGlideConnection $connection): mixed => $connection->pipeline(static fn (ValkeyGlideBatch $pipe): bool => $pipe->discard())];
-        yield 'inside a joined multi in a callback' => [
-            static fn (ValkeyGlideConnection $connection): mixed => $connection->pipeline(static fn (ValkeyGlideBatch $pipe): bool => $pipe->multi()->discard()),
-        ];
-    }
-
-    /**
-     * Verify discard() inside a callback, even within a joined multi(), is
-     * refused.
-     *
-     * @param  \Closure(\SineMacula\Valkey\Connections\ValkeyGlideConnection): mixed  $call
      * @return void
+     *
+     * @throws \Throwable
      */
-    #[DataProvider('nestedDiscards')]
     #[Test]
-    public function discardInsideACallbackIsRefused(\Closure $call): void
+    public function discardInsideACallbackIsRefused(): void
     {
         $this->expectException(\LogicException::class);
         $this->expectExceptionMessage('discard() cannot be called inside a pipeline or transaction callback; throw from the callback to discard the batch.');
 
-        $call(new ValkeyGlideConnection(new ValkeyGlideFake));
+        (new ValkeyGlideConnection(new ValkeyGlideFake))->pipeline(static fn (ValkeyGlideBatch $pipe): bool => $pipe->discard());
     }
 
     /**
@@ -6001,7 +5893,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         $batch      = $connection->pipeline();
 
         self::assertInstanceOf(ValkeyGlideBatch::class, $batch);
-        self::assertSame($batch, $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1')));
+        self::assertSame($batch, $connection->pipeline(static fn (ValkeyGlideBatch $nested): ValkeyGlideBatch => $nested->set('a', '1')));
 
         $batch->incr('b');
 
@@ -6049,7 +5941,7 @@ final class ValkeyGlideConnectionTest extends TestCase
         $batch->set('a', '1');
 
         try {
-            $connection->transaction($callback);
+            $connection->pipeline($callback);
             self::fail('Expected the nested callback to fail.');
         } catch (\Throwable $thrown) {
             self::assertInstanceOf($exception, $thrown);
@@ -6063,70 +5955,6 @@ final class ValkeyGlideConnectionTest extends TestCase
         $this->expectExceptionMessage('This pipeline or transaction has already been executed or discarded.');
 
         $batch->exec();
-    }
-
-    /**
-     * Verify a transaction opened without a callback inside a pipeline joins
-     * it, so its exec() returns the batch and the outer exec() sends it all.
-     *
-     * @return void
-     *
-     * @throws \Throwable
-     */
-    #[Test]
-    public function fluentTransactionNestedInAPipelineJoinsIt(): void
-    {
-        $client = new ValkeyGlideFake;
-        $client->willReturn('incr', 2);
-        $client->willReturn('get', '2');
-
-        $connection = new ValkeyGlideConnection($client);
-        $outer      = $connection->pipeline();
-
-        self::assertInstanceOf(ValkeyGlideBatch::class, $outer);
-
-        $outer->set('a', '1');
-
-        $inner = $connection->transaction();
-
-        self::assertSame($outer, $inner);
-        self::assertInstanceOf(ValkeyGlideBatch::class, $inner);
-        self::assertSame($outer, $inner->incr('a')->exec());
-        self::assertSame([true, 2, '2'], $outer->get('a')->exec());
-        self::assertSame(['pipeline', 'set', 'incr', 'get', 'exec'], $client->callOrder());
-    }
-
-    /**
-     * Verify a transaction opened without a callback inside a pipeline's
-     * callback joins it, so its exec() returns the batch rather than being
-     * refused.
-     *
-     * @return void
-     *
-     * @throws \Throwable
-     */
-    #[Test]
-    public function fluentTransactionInsideAPipelineCallbackJoinsIt(): void
-    {
-        $client = new ValkeyGlideFake;
-        $client->willReturn('incr', 2);
-
-        $connection = new ValkeyGlideConnection($client);
-        $returned   = [];
-
-        $results = $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($connection, &$returned): void {
-            $pipe->set('a', '1');
-
-            $transaction = $connection->transaction();
-
-            self::assertInstanceOf(ValkeyGlideBatch::class, $transaction);
-
-            $returned[] = $transaction->incr('a')->exec();
-        });
-
-        self::assertSame([true, 2], $results);
-        self::assertContainsOnlyInstancesOf(ValkeyGlideBatch::class, $returned);
-        self::assertSame(['pipeline', 'set', 'incr', 'exec'], $client->callOrder());
     }
 
     /**
@@ -6512,29 +6340,6 @@ final class ValkeyGlideConnectionTest extends TestCase
         self::assertSame(['old', 'old', 'old', 'old'], $results);
         self::assertSame([['app:a', '1', ['NX']], ['app:b', '2', ['GET']], ['app:c', '3', ['KEEPTTL']], ['app:d', '4', 60]], $client->callsFor('set'));
         self::assertSame([], $client->callsFor('rawcommand'));
-    }
-
-    /**
-     * Verify the exec() that closes a joined multi() leaves the outer batch to
-     * be executed by the next exec().
-     *
-     * @return void
-     *
-     * @throws \Throwable
-     */
-    #[Test]
-    public function execClosingAJoinedMultiLeavesTheOuterBatch(): void
-    {
-        $client     = new ValkeyGlideFake;
-        $connection = new ValkeyGlideConnection($client);
-
-        $connection->command('pipeline');
-        $connection->command('multi');
-        $connection->command('set', ['a', '1']);
-
-        self::assertInstanceOf(ValkeyGlideBatch::class, $connection->exec());
-        self::assertSame([true], $connection->exec());
-        self::assertFalse($client->isBatching());
     }
 
     /**
@@ -6976,56 +6781,6 @@ final class ValkeyGlideConnectionTest extends TestCase
         $connection->command('watch', ['a']);
 
         self::assertSame([true], $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->__call('jsonSet', ['doc', '$', '1'])));
-    }
-
-    /**
-     * Provide the ways a transaction can join an active pipeline.
-     *
-     * @return iterable<string, array{\Closure(\SineMacula\Valkey\Connections\ValkeyGlideConnection): mixed}>
-     */
-    public static function transactionsJoiningAPipeline(): iterable
-    {
-        yield 'callback' => [
-            static fn (ValkeyGlideConnection $connection): mixed => $connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('c', '3')),
-        ];
-        yield 'fluent' => [static fn (ValkeyGlideConnection $connection): mixed => $connection->transaction()];
-        yield 'bare multi' => [static fn (ValkeyGlideConnection $connection): mixed => $connection->command('multi')];
-        yield 'batch transaction' => [static fn (ValkeyGlideConnection $connection): mixed => self::activeBatch($connection)->transaction()];
-    }
-
-    /**
-     * Verify a transaction cannot join a pipeline while keys are watched, as
-     * the pipeline would flatten it and the WATCH could not guard it.
-     *
-     * @param  \Closure(\SineMacula\Valkey\Connections\ValkeyGlideConnection): mixed  $join
-     * @return void
-     *
-     * @throws \Throwable
-     */
-    #[DataProvider('transactionsJoiningAPipeline')]
-    #[Test]
-    public function watchedTransactionCannotJoinAPipeline(\Closure $join): void
-    {
-        $client     = new ValkeyGlideFake;
-        $connection = new ValkeyGlideConnection($client);
-
-        $connection->command('watch', ['a']);
-
-        $batch = self::activeBatch($connection)->set('b', '2');
-
-        try {
-            $join($connection);
-            self::fail('Expected the watched transaction to be refused.');
-        } catch (\LogicException $exception) {
-            self::assertSame(self::WATCHED_TRANSACTION_IN_PIPELINE_MESSAGE, $exception->getMessage());
-        }
-
-        self::assertSame([true], $batch->exec());
-        self::assertSame([], $client->callsFor('unwatch'));
-
-        $client->willReturn('exec', false);
-
-        self::assertFalse($connection->transaction(static fn (ValkeyGlideBatch $tx): ValkeyGlideBatch => $tx->set('a', '1')));
     }
 
     /**

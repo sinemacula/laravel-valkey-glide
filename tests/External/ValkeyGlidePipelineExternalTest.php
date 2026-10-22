@@ -309,8 +309,8 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
     }
 
     /**
-     * Verify a transaction nested in a pipeline joins it, and its commands'
-     * results take their place in the pipeline's results.
+     * Verify a transaction nested in a pipeline runs as its own transaction,
+     * and its results take one place in the pipeline's results.
      *
      * @param  string  $topology
      * @return void
@@ -319,7 +319,7 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
      */
     #[DataProvider('topologies')]
     #[Test]
-    public function transactionNestedInPipelineJoinsThePipeline(string $topology): void
+    public function transactionNestedInPipelineRunsOnItsOwn(string $topology): void
     {
         $connection = $this->connect($topology, ['a', 'n']);
 
@@ -335,7 +335,7 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
             $pipe->get('a');
         });
 
-        self::assertSame([true, 1, 2, '1'], $results);
+        self::assertSame([true, [1, 2], '1'], $results);
     }
 
     /**
@@ -362,7 +362,7 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
             $connection->command('eval', [$push, 1, 'q', 'job-3']);
         }));
 
-        self::assertSame([1, 1, 2], $results);
+        self::assertSame([[1, 1, 2]], $results);
         $physical = $this->physical($topology);
 
         self::assertSame(['job-1', 'job-3'], $physical->command('lrange', [$prefix . 'q', 0, -1]));
@@ -684,8 +684,8 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
 
     /**
      * Verify fluent nested batches follow phpredis: a transaction opened in a
-     * pipeline joins it until its own exec(), and a nested pipeline changes
-     * nothing.
+     * pipeline runs at its own exec(), which returns the pipeline, and a nested
+     * pipeline changes nothing.
      *
      * @param  string  $topology
      * @return void
@@ -705,10 +705,9 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
 
         $inner = $connection->transaction();
 
-        self::assertSame($outer, $inner);
         self::assertInstanceOf(ValkeyGlideBatch::class, $inner);
         self::assertSame($outer, $inner->incr('a')->exec());
-        self::assertSame([true, 2, '2'], $outer->get('a')->exec());
+        self::assertSame([true, [2], '2'], $outer->get('a')->exec());
 
         $pipeline = $connection->pipeline();
 
@@ -1165,8 +1164,9 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
     }
 
     /**
-     * Verify a transaction cannot join a pipeline while keys are watched, as
-     * the pipeline would flatten it and commit over a change to a watched key.
+     * Verify a watched transaction nested in a pipeline is guarded by the
+     * WATCH: a change to a watched key aborts it, its place in the results is
+     * an empty list, and the pipeline around it still applies.
      *
      * @param  string  $topology
      * @return void
@@ -1175,28 +1175,24 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
      */
     #[DataProvider('topologies')]
     #[Test]
-    public function watchedTransactionCannotJoinAPipeline(string $topology): void
+    public function watchedTransactionNestedInAPipelineIsGuarded(string $topology): void
     {
-        $connection = $this->connect($topology, ['w', 'z', 'p']);
+        $connection = $this->connect($topology, ['{w}w', '{w}z', 'p']);
         $other      = $this->connect($topology, [], $this->prefixOf($connection));
 
-        $connection->command('watch', ['w']);
-        $other->command('set', ['w', 'changed']);
+        $connection->command('watch', ['{w}w']);
+        $other->command('set', ['{w}w', 'changed']);
 
-        try {
-            $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($connection): void {
-                $pipe->set('p', 'never');
-                $connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->set('z', 'written'));
-            });
-            self::fail('Expected the watched transaction to be refused.');
-        } catch (\LogicException $exception) {
-            self::assertStringContainsString('cannot join a pipeline while keys are watched', $exception->getMessage());
-        }
+        $results = $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($connection): void {
+            $pipe->set('p', 'applied');
+            $connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->set('{w}z', 'written'));
+            $pipe->get('p');
+        });
 
-        self::assertFalse($connection->client()->get($this->prefixOf($connection) . 'z'));
-        self::assertFalse($connection->client()->get($this->prefixOf($connection) . 'p'));
-        self::assertFalse($connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->set('z', 'aborted')));
-        self::assertFalse($connection->client()->get($this->prefixOf($connection) . 'z'));
+        self::assertSame([true, [], 'applied'], $results);
+        self::assertNull($other->get('{w}z'));
+        self::assertSame([true], $connection->transaction(static fn (ValkeyGlideBatch $tx) => $tx->set('{w}z', 'unwatched')));
+        self::assertSame('unwatched', $other->get('{w}z'));
     }
 
     /**
@@ -1332,7 +1328,7 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
 
     /**
      * Verify pipeline(), transaction() and executeRaw() called on the batch
-     * join it, so their commands and results are not lost.
+     * keep their commands and results in the pipeline.
      *
      * @param  string  $topology
      * @return void
@@ -1354,7 +1350,7 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
             $pipe->get('c');
         });
 
-        self::assertSame([true, true, true, '2', '3'], $results);
+        self::assertSame([true, true, [true], '2', '3'], $results);
     }
 
     /**
@@ -1799,8 +1795,8 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
                 $pipe->incr('n');
 
                 try {
-                    $connection->transaction(static function (ValkeyGlideBatch $tx): never {
-                        $tx->incr('n');
+                    $connection->pipeline(static function (ValkeyGlideBatch $nested): never {
+                        $nested->incr('n');
 
                         throw new \DomainException('nested failure');
                     });
@@ -2001,8 +1997,8 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
     }
 
     /**
-     * Verify discard() drops the whole batch while a transaction opened in a
-     * pipeline is still open, as phpredis drops the whole pipeline.
+     * Verify discard() of a transaction opened in a pipeline drops that
+     * transaction alone, and the pipeline goes on.
      *
      * @param  string  $topology
      * @return void
@@ -2011,18 +2007,17 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
      */
     #[DataProvider('topologies')]
     #[Test]
-    public function discardDropsAPipelineWithAnOpenTransaction(string $topology): void
+    public function discardOfANestedTransactionKeepsThePipeline(string $topology): void
     {
         $connection = $this->connect($topology, ['a', 'b']);
+        $pipe       = $connection->pipeline();
 
-        $connection->pipeline()->set('a', '1');
+        $pipe->set('a', '1');
         $connection->transaction()->set('b', '2');
 
         self::assertTrue($connection->discard());
-        self::assertFalse($connection->exec());
-        self::assertNull($connection->get('a'));
+        self::assertSame([true, '1'], $pipe->get('a')->exec());
         self::assertNull($connection->get('b'));
-        self::assertSame([true], $connection->pipeline(static fn (ValkeyGlideBatch $pipe) => $pipe->set('a', '3')));
     }
 
     /**
@@ -2092,14 +2087,13 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
             'v-' . $first[0],
             true,
             ...array_fill(0, count($second), true),
-            1,
-            2,
+            [1, 2],
             'v-' . $second[count($second) - 1],
             ...$values,
             $values,
             count($keys) + 1,
         ], $results);
-        self::assertSame(['pipeline', 'eval', 'ping', 'pipeline', 'eval', 'pipeline'], $executed->getArrayCopy());
+        self::assertSame(['pipeline', 'eval', 'ping', 'pipeline', 'transaction', 'eval', 'pipeline'], $executed->getArrayCopy());
     }
 
     /**

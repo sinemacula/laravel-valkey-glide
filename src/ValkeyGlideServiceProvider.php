@@ -10,7 +10,6 @@ use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Contracts\Redis\Factory as RedisFactory;
 use Illuminate\Queue\QueueManager;
-use Illuminate\Queue\RedisQueue;
 use Illuminate\Redis\RedisManager;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Horizon\HorizonServiceProvider;
@@ -27,10 +26,11 @@ use SineMacula\Valkey\Support\HorizonClusterConnection;
  *
  * Registers the "valkey-glide" Redis client driver with Laravel's RedisManager,
  * a "redis" cache driver whose store stays safe on GLIDE cluster connections;
- * before Laravel 13.5, a "redis" queue connector whose queue hash-tags its keys
- * on GLIDE cluster connections, both otherwise behaving as Laravel's; and, when
- * Laravel Pulse is installed, a Redis ingest that runs on GLIDE connections. It
- * also gives Laravel Horizon the cluster connection that Horizon itself only
+ * a "redis" queue connector whose queue pushes a bulk of jobs atomically on
+ * GLIDE connections and, before Laravel 13.5, hash-tags its keys on GLIDE
+ * cluster connections, both otherwise behaving as Laravel's; and, when Laravel
+ * Pulse is installed, a Redis ingest that runs on GLIDE connections. It also
+ * gives Laravel Horizon the cluster connection that Horizon itself only
  * configures from Laravel 13.5.
  *
  * @author      Ben Carey <bdmc@sinemacula.co.uk>
@@ -64,25 +64,40 @@ final class ValkeyGlideServiceProvider extends ServiceProvider
 
         $this->app->extend(Ingest::class, $this->pulseIngest(...));
 
-        // Laravel hash-tags a cluster queue's keys itself from 13.5, in
-        // RedisQueue::getQueueRedisKey(); reflection reads the installed
-        // framework rather than the one static analysis sees.
-        if ((new \ReflectionClass(RedisQueue::class))->hasMethod('getQueueRedisKey')) {
-            return;
-        }
+        $this->registerQueueConnector();
+    }
 
-        // Only runs before Laravel 13.5, so only those versions' tests reach
-        // it. Horizon replaces the connector as the queue manager resolves, so
-        // this one, registered after Horizon's by package discovery, connects
-        // Horizon's queue when Horizon is loaded.
-        // @codeCoverageIgnoreStart
+    /**
+     * Bootstrap the application services.
+     *
+     * The "redis" queue connector is registered again as the application boots,
+     * after every provider has registered, so it follows the connector Horizon
+     * registers as it registers, whatever the providers' order.
+     *
+     * @return void
+     */
+    public function boot(): void
+    {
+        $this->registerQueueConnector();
+    }
+
+    /**
+     * Register the "redis" queue connector as the queue manager resolves, or at
+     * once if it has resolved, so it connects every queue resolved after.
+     *
+     * Horizon's queue is connected when Horizon is registered, as Horizon
+     * replaces Laravel's connector with its own.
+     *
+     * @return void
+     */
+    private function registerQueueConnector(): void
+    {
         $this->callAfterResolving(QueueManager::class, function (QueueManager $queue): void {
             $queue->addConnector('redis', fn (): ValkeyGlideQueueConnector => new ValkeyGlideQueueConnector(
                 $this->app->make('redis'),
                 horizon: $this->app->getProviders(HorizonServiceProvider::class) !== [],
             ));
         });
-        // @codeCoverageIgnoreEnd
     }
 
     /**

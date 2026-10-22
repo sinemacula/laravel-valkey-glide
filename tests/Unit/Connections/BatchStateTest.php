@@ -39,7 +39,7 @@ final class BatchStateTest extends TestCase
         self::assertInstanceOf(ValkeyGlideBatch::class, $state->proxy);
         self::assertFalse($state->isClosed());
         self::assertFalse($state->isInCallback());
-        self::assertFalse($state->hasNestedMulti());
+        self::assertNull($state->pipeline);
         self::assertFalse($state->hasQueuedCommands());
         self::assertSame([], $state->queuedCommands());
         self::assertFalse($state->hasOpenNativeBatch());
@@ -84,24 +84,19 @@ final class BatchStateTest extends TestCase
     }
 
     /**
-     * Verify a multi() opened inside the pipeline is tracked until its exec()
-     * closes it, however often it is opened.
+     * Verify a transaction nested in a pipeline keeps the pipeline it hands
+     * back to, with its own batch object.
      *
      * @return void
      */
     #[Test]
-    public function nestedMultiIsTrackedUntilItIsClosed(): void
+    public function nestedTransactionKeepsItsPipeline(): void
     {
-        $state = $this->newState(false);
+        $pipeline    = $this->newState(false);
+        $transaction = new BatchState(new ValkeyGlideConnection(new ValkeyGlideFake), true, $pipeline);
 
-        $state->openNestedMulti();
-        $state->openNestedMulti();
-
-        self::assertTrue($state->hasNestedMulti());
-
-        $state->closeNestedMulti();
-
-        self::assertFalse($state->hasNestedMulti());
+        self::assertSame($pipeline, $transaction->pipeline);
+        self::assertNotSame($pipeline->proxy, $transaction->proxy);
     }
 
     /**
