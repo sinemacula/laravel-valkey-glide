@@ -138,7 +138,7 @@ The connector normalizes Laravel config into GLIDE connect arguments:
 - `client_az` -> `client_az` (availability zone for AZ-affinity routing)
 - `context` -> `context` (TLS stream context; array or resource)
 - `timeout` (seconds) -> `request_timeout` (milliseconds)
-- `connection_timeout` (seconds) -> `advanced_config.connection_timeout` (milliseconds)
+- `connection_timeout` (seconds) -> `advanced_config.connection_timeout` (milliseconds; 2 seconds when not set)
 - `reconnect_strategy` -> `reconnect_strategy` (backoff for GLIDE's own reconnects; see Reconnect Strategy)
 - `lazy_connect` -> `lazy_connect` (defer connecting until the first command)
 - `periodic_checks` -> `periodic_checks` (cluster connections only; see Periodic Topology Checks)
@@ -224,6 +224,10 @@ lock acquisition reports failure. Laravel's `putMany()` on a standalone connecti
 transaction that fails as a whole throws a `ConnectionException` (see Failures under Pipelines and Transactions), but
 `putMany()` does not check the result of each write in it, so a write that fails inside the transaction still reports
 success. The retry above applies only to errors the extension throws.
+
+Because the extension prints every failed command to stderr, Infection stops its initial test run at the first such
+line, so a test that makes the server refuse a command (an ACL `NOPERM`, for example) fails mutation testing. Fake
+those failures in tests instead.
 
 From 1.2 (in its release candidates), GLIDE records the error of a command that fails and returns `false`, which its
 `getLastError()` reports; a `false` reply, such as a `SETNX` that sets nothing or a `SISMEMBER` that finds nothing,
@@ -593,6 +597,10 @@ Configure timeouts in seconds (matching the phpredis convention); they are conve
 
 - `timeout` (seconds) -> `request_timeout`
 - `connection_timeout` (seconds) -> `advanced_config.connection_timeout`
+
+When `connection_timeout` is not set, or is not a positive number, the driver sends 2 seconds, glide-core's own default,
+instead of the PHP extension's 250ms. 250ms is too short for a cold start that resolves IAM credentials and opens TLS,
+as on a new container connecting to a managed service, where connecting then fails with a `ConnectionException`.
 
 Pass a custom TLS stream context (for custom CA certificates or verification settings) via the per-connection `context`
 key. Both a config-array and a pre-built `stream_context_create()` resource are accepted:

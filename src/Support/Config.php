@@ -15,6 +15,9 @@ use SineMacula\Valkey\Enums\ReadFrom;
  */
 final class Config
 {
+    /** @var int The connection timeout, in milliseconds, when the config sets none: glide-core's own default. */
+    private const int DEFAULT_CONNECTION_TIMEOUT = 2000;
+
     /**
      * Merge Laravel connection config with options and nested option overrides.
      *
@@ -293,20 +296,16 @@ final class Config
      * Build the advanced_config array from a connection_timeout value in
      * seconds.
      *
-     * Returns null when the value is absent or not a positive numeric.
+     * When the value is absent or not a positive numeric, glide-core's own two
+     * second default is used rather than the PHP extension's 250ms, which is
+     * too short for a connection that resolves IAM credentials and opens TLS.
      *
      * @param  mixed  $value
-     * @return array<string, int>|null
+     * @return array<string, int>
      */
-    private static function advancedConfig(mixed $value): ?array
+    private static function advancedConfig(mixed $value): array
     {
-        $milliseconds = self::secondsToMilliseconds($value);
-
-        if ($milliseconds === null) {
-            return null;
-        }
-
-        return ['connection_timeout' => $milliseconds];
+        return ['connection_timeout' => self::secondsToMilliseconds($value) ?? self::DEFAULT_CONNECTION_TIMEOUT];
     }
 
     /**
