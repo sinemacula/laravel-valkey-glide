@@ -67,7 +67,7 @@ jobs:
 
             -   name: Publish code coverage
                 if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && matrix.php == '8.3' }}
-                uses: qltysh/qlty-action/coverage@c9b09987143d1e4ac955f4803c7bea742102feb5 # v2
+                uses: qltysh/qlty-action/coverage@ebcd284bf32e36a030afe15f1e136c7be08b9506 # v2
                 with:
                     oidc: true
                     files: clover.xml
@@ -174,7 +174,7 @@ jobs:
             VALKEY_GLIDE_VERSION: 1.1.2
             VALKEY_GLIDE_SHA256: 7b12bdb6eb2e6c3351548f9b63af1e223eca2ee5db150740e4efc82881e7c7e6
             # Matches the service image, which cannot read the env context.
-            VALKEY_IMAGE: valkey/valkey:8.1
+            VALKEY_IMAGE: valkey/valkey:9.2@sha256:247b5e730bdc9dc29fddb8274d1731b203a1a1a46af63eae3a9d55b4bf74853f
             VALKEY_GLIDE_TEST_HOST: 127.0.0.1
             VALKEY_GLIDE_TEST_PORT: 6379
             VALKEY_GLIDE_TEST_CLUSTER_HOST: 127.0.0.1
