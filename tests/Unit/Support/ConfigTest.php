@@ -27,6 +27,9 @@ final class ConfigTest extends TestCase
     /** @var int Default Redis port used in expected normalized addresses. */
     private const int DEFAULT_PORT = 6379;
 
+    /** @var array{connection_timeout: int} The advanced_config sent when the config sets no connection_timeout. */
+    private const array DEFAULT_ADVANCED_CONFIG = ['connection_timeout' => 2000];
+
     /**
      * Verify nested options override top-level options and base config values.
      *
@@ -160,6 +163,7 @@ final class ConfigTest extends TestCase
                 'addresses' => [
                     ['host' => self::LOOPBACK_HOST, 'port' => self::DEFAULT_PORT],
                 ],
+                'advanced_config' => self::DEFAULT_ADVANCED_CONFIG,
             ],
             $arguments,
         );
@@ -187,6 +191,7 @@ final class ConfigTest extends TestCase
                     ['host' => 'cache-a', 'port' => 6380],
                     ['host' => self::LOOPBACK_HOST, 'port' => self::DEFAULT_PORT],
                 ],
+                'advanced_config' => self::DEFAULT_ADVANCED_CONFIG,
             ],
             $arguments,
         );
@@ -210,6 +215,7 @@ final class ConfigTest extends TestCase
                 'addresses' => [
                     ['host' => '1234', 'port' => 6380],
                 ],
+                'advanced_config' => self::DEFAULT_ADVANCED_CONFIG,
             ],
             $arguments,
         );
@@ -667,6 +673,7 @@ final class ConfigTest extends TestCase
                 'addresses' => [
                     ['host' => '1', 'port' => 6402],
                 ],
+                'advanced_config' => self::DEFAULT_ADVANCED_CONFIG,
             ],
             $arguments,
         );
@@ -690,6 +697,7 @@ final class ConfigTest extends TestCase
                 'addresses' => [
                     ['host' => 'cache-xml', 'port' => 6403],
                 ],
+                'advanced_config' => self::DEFAULT_ADVANCED_CONFIG,
             ],
             $arguments,
         );
@@ -804,6 +812,7 @@ final class ConfigTest extends TestCase
                 'addresses' => [
                     ['host' => self::LOOPBACK_HOST, 'port' => 6404],
                 ],
+                'advanced_config' => self::DEFAULT_ADVANCED_CONFIG,
             ],
             $arguments,
         );
@@ -1052,31 +1061,31 @@ final class ConfigTest extends TestCase
     }
 
     /**
-     * Verify an absent connection_timeout key is omitted from connect
-     * arguments.
+     * Verify an absent connection_timeout uses glide-core's two second default
+     * rather than the PHP extension's 250ms.
      *
      * @return void
      */
     #[Test]
-    public function connectArgumentsOmitsAbsentConnectionTimeout(): void
+    public function connectArgumentsDefaultAnAbsentConnectionTimeout(): void
     {
         $arguments = Config::connectArguments([]);
 
-        self::assertArrayNotHasKey('advanced_config', $arguments);
+        self::assertSame(self::DEFAULT_ADVANCED_CONFIG, $arguments['advanced_config'] ?? null);
     }
 
     /**
-     * Verify a non-numeric connection_timeout value is omitted from connect
-     * arguments.
+     * Verify a non-numeric connection_timeout uses the default, as an absent
+     * one does.
      *
      * @return void
      */
     #[Test]
-    public function connectArgumentsOmitsNonNumericConnectionTimeout(): void
+    public function connectArgumentsDefaultANonNumericConnectionTimeout(): void
     {
         $arguments = Config::connectArguments(['connection_timeout' => 'slow']);
 
-        self::assertArrayNotHasKey('advanced_config', $arguments);
+        self::assertSame(self::DEFAULT_ADVANCED_CONFIG, $arguments['advanced_config'] ?? null);
     }
 
     /**
@@ -1170,6 +1179,7 @@ final class ConfigTest extends TestCase
                 'addresses'       => [['host' => 'node-a', 'port' => 6380]],
                 'use_tls'         => true,
                 'read_from'       => 1,
+                'advanced_config' => self::DEFAULT_ADVANCED_CONFIG,
                 'periodic_checks' => 1,
             ],
             $arguments,
