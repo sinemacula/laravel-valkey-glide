@@ -42,7 +42,10 @@ final class ValkeyGlideStore extends RedisStore
      * Off a cluster the items are written in one transaction, which throws a
      * `\SineMacula\Valkey\Exceptions\ConnectionException` when GLIDE fails it
      * as a whole, and a `\LogicException` when a transaction callback already
-     * owns the connection's batch, as its `exec()` is then refused.
+     * owns the connection's batch, as its `exec()` is then refused. On a
+     * cluster a write GLIDE fails throws a
+     * `\SineMacula\Valkey\Exceptions\CommandException`, and the items after it
+     * are not written.
      *
      * @param  array<array-key, mixed>  $values
      * @param  int  $seconds
@@ -50,8 +53,9 @@ final class ValkeyGlideStore extends RedisStore
      *
      * @throws \SineMacula\Valkey\Exceptions\ConnectionException
      * @throws \LogicException
+     * @throws \SineMacula\Valkey\Exceptions\CommandException
      *
-     * @phpstan-ignore throws.unusedType, throws.unusedType
+     * @phpstan-ignore throws.unusedType, throws.unusedType, throws.unusedType
      */
     #[\Override]
     public function putMany(array $values, mixed $seconds)

@@ -71,6 +71,57 @@ final class ValkeyGlideConnection extends Connection
         'ZSCORE',
     ];
 
+    /** @var array<int, string> Commands GLIDE answers with false only when they fail, as their replies are never false. */
+    private const array NEVER_FALSE_COMMANDS = [
+        'APPEND',
+        'DBSIZE',
+        'DECR',
+        'DECRBY',
+        'DEL',
+        'EXISTS',
+        'HDEL',
+        'HGETALL',
+        'HINCRBY',
+        'HINCRBYFLOAT',
+        'HKEYS',
+        'HLEN',
+        'HMSET',
+        'HSET',
+        'HVALS',
+        'INCR',
+        'INCRBY',
+        'INCRBYFLOAT',
+        'KEYS',
+        'LLEN',
+        'LPUSH',
+        'LRANGE',
+        'LREM',
+        'LTRIM',
+        'MGET',
+        'MSET',
+        'PING',
+        'PSETEX',
+        'PTTL',
+        'PUBLISH',
+        'RPUSH',
+        'SADD',
+        'SCARD',
+        'SETEX',
+        'SMEMBERS',
+        'SREM',
+        'STRLEN',
+        'TTL',
+        'TYPE',
+        'UNLINK',
+        'ZCARD',
+        'ZCOUNT',
+        'ZRANGE',
+        'ZRANGEBYSCORE',
+        'ZREM',
+        'ZREMRANGEBYRANK',
+        'ZREMRANGEBYSCORE',
+    ];
+
     /** @var array<int, string> Keyless commands a cluster client must run on every primary. */
     private const array ALL_PRIMARIES_COMMANDS = [
         'FLUSHALL',
@@ -188,6 +239,10 @@ final class ValkeyGlideConnection extends Connection
 
     /** @var string Message for a disconnected connection that has no connector to reconnect it. */
     private const string DISCONNECTED_MESSAGE = 'The connection was closed by disconnect() and has no connector to reconnect it.';
+
+    /** @var string Message for a command whose false reply can only mean it failed, when GLIDE recorded no error. */
+    private const string UNRECORDED_FAILURE_MESSAGE = '[%s] failed: GLIDE answered false, which it gives this command only when it fails, such as when the server'
+        . ' cannot be reached, and recorded no error.';
 
     /** @var array<int, string> Error fragments treated as transient transport faults. */
     private const array TRANSIENT_ERROR_FRAGMENTS = [
@@ -2386,10 +2441,14 @@ final class ValkeyGlideConnection extends Connection
      * cleared before the command, so one left by an earlier call is not taken
      * for its own, and a false reply with an error recorded is thrown, so the
      * retry and the CommandFailed event handle it as any other failure. GLIDE
-     * 1.1.2 records no errors, so its false reply is returned as it is. A
-     * client-local method, getLastError() itself among them, reaches no server
-     * and records nothing, so it runs as it is, leaving the error in place. The
-     * command is sent by the given invoker, if any, instead of invokeCommand().
+     * 1.1.2 records no errors, and raw commands record none on 1.2, so a false
+     * reply with no error recorded is thrown only from a command whose reply is
+     * never false, such as EXISTS or INCRBY, where it can only mean the command
+     * failed; from any other command, such as a GET that finds nothing, it is
+     * returned as it is. A client-local method, getLastError() itself among
+     * them, reaches no server and records nothing, so it runs as it is, leaving
+     * the error in place. The command is sent by the given invoker, if any,
+     * instead of invokeCommand().
      *
      * @param  string  $method
      * @param  array<array-key, mixed>  $parameters
@@ -2408,13 +2467,29 @@ final class ValkeyGlideConnection extends Connection
         $this->clearLastError();
 
         $result = $invoke !== null ? $invoke() : $this->invokeCommand($method, $parameters);
-        $error  = $result === false ? $this->lastError() : null;
+        $error  = $result === false ? ($this->lastError() ?? $this->unrecordedFailure($method)) : null;
 
         if ($error !== null) {
             throw $error;
         }
 
         return $result;
+    }
+
+    /**
+     * Return the error for a false reply GLIDE recorded no error for, when the
+     * command's reply is never false.
+     *
+     * @param  string  $method
+     * @return \SineMacula\Valkey\Exceptions\CommandException|null
+     */
+    private function unrecordedFailure(string $method): ?CommandException
+    {
+        $command = strtoupper($method);
+
+        return in_array($command, self::NEVER_FALSE_COMMANDS, true)
+            ? new CommandException(sprintf(self::UNRECORDED_FAILURE_MESSAGE, $command))
+            : null;
     }
 
     /**
@@ -2479,7 +2554,36 @@ final class ValkeyGlideConnection extends Connection
             return $this->invokeOnAllPrimaries($method, $parameters);
         }
 
-        return $this->dispatchToClient($method, $this->routeClusterCommand($normalizedMethod, $parameters));
+        return $normalizedMethod === 'DBSIZE'
+            ? $this->invokeDbSize($parameters)
+            : $this->dispatchToClient($method, $this->routeClusterCommand($normalizedMethod, $parameters));
+    }
+
+    /**
+     * Count the keys with a raw DBSIZE, on the route a cluster call carries or
+     * the one GLIDE gives it.
+     *
+     * GLIDE's dbSize() aborts the process when the command fails, as it frees a
+     * buffer on the stack (valkey-glide-php#384), so it is sent through
+     * rawcommand, which takes the same routes and returns false instead.
+     *
+     * @param  array<array-key, mixed>  $parameters
+     * @return mixed
+     *
+     * @throws \Throwable
+     *
+     * @phpstan-ignore throws.unusedType
+     */
+    private function invokeDbSize(array $parameters): mixed
+    {
+        if (!$this->glideClient instanceof \ValkeyGlideCluster) {
+            return $this->glideClient->rawcommand('DBSIZE', ...$parameters);
+        }
+
+        $arguments = $this->routeClusterCommand('DBSIZE', $parameters);
+        $route     = array_shift($arguments);
+
+        return $this->glideClient->rawcommand($route, 'DBSIZE', ...$arguments);
     }
 
     /**

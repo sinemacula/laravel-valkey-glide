@@ -1075,19 +1075,159 @@ final class ValkeyGlideConnectionTest extends TestCase
 
     /**
      * Verify a client without the last-error API, as with GLIDE 1.1.2, still
-     * returns a failed command's false.
+     * returns the false of a command whose reply can be false, such as a GET
+     * that finds nothing or an EXPIRE of a key that does not exist.
      *
      * @return void
      *
      * @throws \Throwable
      */
     #[Test]
-    public function clientWithoutTheLastErrorApiReturnsFalse(): void
+    public function clientWithoutTheLastErrorApiReturnsFalseFromACommandThatCanReplyFalse(): void
     {
         $client = new ValkeyGlideFake;
-        $client->willReturn('incr', false);
+        $client->willReturn('get', false);
+        $client->willReturn('expire', false);
 
-        self::assertFalse((new ValkeyGlideConnection($client))->command('incr', ['counter']));
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertNull($connection->get('cache-key'));
+        self::assertFalse($connection->command('expire', ['cache-key', 60]));
+    }
+
+    /**
+     * Provide commands whose reply is never false, with the arguments to call
+     * each one with.
+     *
+     * @return iterable<string, array{string, array<int, mixed>}>
+     */
+    public static function neverFalseCommands(): iterable
+    {
+        yield 'incr' => ['incr', ['counter']];
+        yield 'incrby, in phpredis case' => ['incrBy', ['counter', 2]];
+        yield 'exists' => ['exists', [['cache-key']]];
+        yield 'ttl' => ['ttl', ['cache-key']];
+        yield 'del' => ['del', ['cache-key']];
+        yield 'hgetall' => ['hgetall', ['hash']];
+        yield 'setex' => ['setex', ['cache-key', 60, 'value']];
+        yield 'keys, through rawcommand' => ['keys', ['cache:*']];
+        yield 'dbsize, through rawcommand' => ['dbsize', []];
+    }
+
+    /**
+     * Verify a client without the last-error API throws for a false reply from
+     * a command whose reply is never false, as GLIDE 1.1.2 answers a failed
+     * command, a timeout or an unreachable server among them, with false.
+     *
+     * @param  string  $method
+     * @param  array<int, mixed>  $parameters
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('neverFalseCommands')]
+    #[Test]
+    public function clientWithoutTheLastErrorApiThrowsForAFalseReplyFromACommandThatNeverRepliesFalse(string $method, array $parameters): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn($method, false);
+        $client->willReturn('rawcommand', false);
+
+        $this->expectException(CommandException::class);
+        $this->expectExceptionMessage(sprintf(
+            '[%s] failed: GLIDE answered false, which it gives this command only when it fails, such as when the server cannot be reached, and recorded no error.',
+            strtoupper($method),
+        ));
+
+        (new ValkeyGlideConnection($client))->command($method, $parameters);
+    }
+
+    /**
+     * Verify an MGET that fails without an error recorded throws a command
+     * exception, as an MGET's reply is never false.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function mgetThatFailsWithoutARecordedErrorThrowsACommandException(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('mget', false);
+
+        $this->expectException(CommandException::class);
+        $this->expectExceptionMessage('[MGET] failed');
+
+        (new ValkeyGlideConnection($client))->mget(['first', 'second']);
+    }
+
+    /**
+     * Verify a command that fails without an error recorded dispatches a
+     * command failed event carrying the exception, and is not retried, even
+     * when it is idempotent.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function commandThatFailsWithoutARecordedErrorDispatchesCommandFailedAndIsNotRetried(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('exists', false);
+
+        $dispatcher = new Dispatcher;
+        $failed     = [];
+        $executed   = [];
+
+        $dispatcher->listen(CommandFailed::class, static function (CommandFailed $event) use (&$failed): void {
+            $failed[] = $event;
+        });
+        $dispatcher->listen(CommandExecuted::class, static function (CommandExecuted $event) use (&$executed): void {
+            $executed[] = $event;
+        });
+
+        $reconnects = 0;
+        $connection = new ValkeyGlideConnection($client, static function () use (&$reconnects): ValkeyGlideFake {
+            $reconnects++;
+
+            return new ValkeyGlideFake;
+        }, ['retry_delay_ms' => 0, 'retry_jitter_ms' => 0]);
+        $connection->setEventDispatcher($dispatcher);
+
+        try {
+            $connection->command('exists', [['cache-key']]);
+            self::fail('Expected the failed command to throw.');
+        } catch (CommandException $exception) {
+            self::assertCount(1, $failed);
+            self::assertSame('exists', $failed[0]->command);
+            self::assertSame($exception, $failed[0]->exception);
+            self::assertSame([], $executed);
+            self::assertSame(0, $reconnects);
+            self::assertCount(1, $client->callsFor('exists'));
+        }
+    }
+
+    /**
+     * Verify a raw command whose reply is never false throws for a false reply
+     * on a client with the last-error API, as GLIDE records no error for raw
+     * commands.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function rawCommandThatNeverRepliesFalseThrowsWhenNoErrorIsRecorded(): void
+    {
+        $client = new ValkeyGlideLastErrorFake;
+        $client->willReturn('rawcommand', false);
+
+        $this->expectException(CommandException::class);
+        $this->expectExceptionMessage('[KEYS] failed');
+
+        (new ValkeyGlideConnection($client))->command('keys', ['cache:*']);
     }
 
     /**
@@ -1642,7 +1782,6 @@ final class ValkeyGlideConnectionTest extends TestCase
      */
     public static function clusterCommandsWithoutRoute(): iterable
     {
-        yield 'dbsize sums every primary' => ['dbsize', [], 42, ['allPrimaries']];
         yield 'randomkey asks every primary' => ['randomkey', [], 'user:1', ['allPrimaries']];
         yield 'time asks a random node' => ['time', [], ['1700000000', '123'], ['randomNode']];
         yield 'echo asks a random node' => ['echo', ['hello'], 'hello', ['randomNode', 'hello']];
@@ -1711,9 +1850,6 @@ final class ValkeyGlideConnectionTest extends TestCase
      */
     public static function clusterCommandsWithExplicitRoute(): iterable
     {
-        yield 'dbsize on a random node' => ['dbsize', ['randomNode']];
-        yield 'dbsize on a node by address' => ['dbsize', [['type' => 'routeByAddress', 'host' => '10.0.0.1', 'port' => 6379]]];
-        yield 'dbsize on the primary of a key' => ['dbsize', ['user:1']];
         yield 'randomkey on a random node' => ['randomkey', ['randomNode']];
         yield 'time on every node' => ['time', ['allNodes']];
         yield 'echo on a node by address' => ['echo', [['type' => 'routeByAddress', 'host' => '10.0.0.1', 'port' => 6379], 'hello']];
@@ -1766,13 +1902,72 @@ final class ValkeyGlideConnectionTest extends TestCase
     }
 
     /**
+     * Verify a standalone DBSIZE is sent through rawcommand, as GLIDE's
+     * dbSize() aborts the process when the command fails.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function standaloneDbsizeRunsThroughRawcommand(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', 42);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(42, $connection->command('dbsize'));
+        self::assertSame([['DBSIZE']], $client->callsFor('rawcommand'));
+        self::assertSame([], $client->callsFor('dbsize'));
+    }
+
+    /**
+     * Provide the routes of cluster DBSIZE calls, as the caller gives them and
+     * as rawcommand takes them.
+     *
+     * @return iterable<string, array{array<int, mixed>, mixed}>
+     */
+    public static function clusterDbsizeRoutes(): iterable
+    {
+        yield 'without a route, every primary' => [[], 'allPrimaries'];
+        yield 'on a random node' => [['randomNode'], 'randomNode'];
+        yield 'on a node by address' => [[['type' => 'routeByAddress', 'host' => '10.0.0.1', 'port' => 6379]], ['type' => 'routeByAddress', 'host' => '10.0.0.1', 'port' => 6379]];
+        yield 'on the primary of a key' => [['user:1'], 'user:1'];
+    }
+
+    /**
+     * Verify a cluster DBSIZE is sent through rawcommand on the route the call
+     * carries, or on every primary without one, as GLIDE's dbSize() aborts the
+     * process when the command fails.
+     *
+     * @param  array<int, mixed>  $parameters
+     * @param  mixed  $route
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('clusterDbsizeRoutes')]
+    #[Test]
+    public function clusterDbsizeRunsThroughRawcommandOnItsRoute(array $parameters, mixed $route): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', 42);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        self::assertSame(42, $connection->command('dbsize', $parameters));
+        self::assertSame([[$route, 'DBSIZE']], $client->callsFor('rawcommand'));
+        self::assertSame([], $client->callsFor('dbsize'));
+    }
+
+    /**
      * Provide standalone keyless commands, which take no route.
      *
      * @return iterable<string, array{string, array<int, mixed>}>
      */
     public static function standaloneKeylessCommands(): iterable
     {
-        yield 'dbsize' => ['dbsize', []];
         yield 'randomkey' => ['randomkey', []];
         yield 'time' => ['time', []];
         yield 'echo' => ['echo', ['hello']];
@@ -1848,14 +2043,43 @@ final class ValkeyGlideConnectionTest extends TestCase
     public function clusterPipelineRunsKeylessCommandWithoutRouteOnGlideDefaultRoute(): void
     {
         $client = new ValkeyGlideClusterFake;
-        $client->willReturn('dbsize', 42);
+        $client->willReturn('rawcommand', 42);
 
         $connection = new ValkeyGlideConnection($client);
 
         $results = $connection->pipeline(static fn (ValkeyGlideBatch $pipe): ValkeyGlideBatch => $pipe->set('a', '1')->dbsize()->set('b', '2'));
 
         self::assertSame([true, 42, true], $results);
-        self::assertSame([['allPrimaries']], $client->callsFor('dbsize'));
+        self::assertSame([['allPrimaries', 'DBSIZE']], $client->callsFor('rawcommand'));
+        self::assertSame([], $client->callsFor('dbsize'));
+    }
+
+    /**
+     * Verify a cluster pipeline throws when a command it runs on its own fails
+     * without an error recorded, as it would outside a batch, after sending
+     * what it buffered before the command and nothing after it.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function clusterPipelineThrowsWhenACommandItRunsOnItsOwnFails(): void
+    {
+        $client = new ValkeyGlideClusterFake;
+        $client->willReturn('rawcommand', false);
+
+        $connection = new ValkeyGlideConnection($client);
+
+        try {
+            $connection->pipeline(static fn (ValkeyGlideBatch $pipe): ValkeyGlideBatch => $pipe->set('a', '1')->dbsize()->set('b', '2'));
+            self::fail('Expected the failed DBSIZE to throw.');
+        } catch (CommandException $exception) {
+            self::assertStringStartsWith('[DBSIZE] failed', $exception->getMessage());
+        }
+
+        self::assertSame([['a', '1', null]], $client->callsFor('set'));
+        self::assertFalse($connection->hasOpenBatch());
     }
 
     /**
