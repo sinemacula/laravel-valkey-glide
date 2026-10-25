@@ -14,6 +14,7 @@ use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Cache\ValkeyGlideStore;
 use SineMacula\Valkey\Cache\ValkeyGlideTagSet;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use SineMacula\Valkey\Exceptions\CommandException;
 use Tests\Fakes\LaravelConnectionFake;
 use Tests\Fakes\RedisFactoryFake;
 use Tests\Fakes\ValkeyGlideClusterFake;
@@ -32,6 +33,10 @@ final class ValkeyGlideTagSetTest extends TestCase
 {
     /** @var int The timestamp of the frozen test time, 2026-01-01 00:00:00 UTC. */
     private const int NOW = 1767225600;
+
+    /** @var string The connection's message for a command whose false reply can only mean it failed. */
+    private const string UNRECORDED_FAILURE_MESSAGE = '[%s] failed: GLIDE answered false, which it gives this command only when it fails, such as when the server'
+        . ' cannot be reached, and recorded no error.';
 
     /**
      * Freeze the time the tag scores are computed from.
@@ -315,8 +320,8 @@ final class ValkeyGlideTagSetTest extends TestCase
         try {
             $this->tagSet($client, ['a', 'b'])->flushStaleEntries();
             self::fail('A failed removal must throw.');
-        } catch (\UnexpectedValueException $exception) {
-            self::assertSame('Valkey GLIDE failed to run ZREMRANGEBYSCORE on [cache:tag:a:entries].', $exception->getMessage());
+        } catch (CommandException $exception) {
+            self::assertSame(sprintf(self::UNRECORDED_FAILURE_MESSAGE, 'ZREMRANGEBYSCORE'), $exception->getMessage());
         }
 
         self::assertCount(1, $client->callsFor('zremrangebyscore'));
@@ -475,29 +480,11 @@ final class ValkeyGlideTagSetTest extends TestCase
         try {
             $this->tagSet($client, ['t'])->reset();
             self::fail('A failed delete must throw.');
-        } catch (\UnexpectedValueException $exception) {
-            self::assertSame('Valkey GLIDE failed to run DEL on [cache:m1] and 2 more.', $exception->getMessage());
+        } catch (CommandException $exception) {
+            self::assertSame(sprintf(self::UNRECORDED_FAILURE_MESSAGE, 'DEL'), $exception->getMessage());
         }
 
         self::assertSame([], $client->callsFor('zrem'));
-    }
-
-    /**
-     * Verify a failed DEL of a single entry on a cluster names only that entry.
-     *
-     * @return void
-     */
-    #[Test]
-    public function resetOnAClusterNamesTheOnlyEntryWhenItsDeleteFails(): void
-    {
-        $client = new ValkeyGlideClusterFake;
-        $client->willScan('zscan', [['0', ['m1' => '1']]]);
-        $client->willReturn('del', false);
-
-        $this->expectException(\UnexpectedValueException::class);
-        $this->expectExceptionMessage('Valkey GLIDE failed to run DEL on [cache:m1].');
-
-        $this->tagSet($client, ['t'])->reset();
     }
 
     /**
@@ -515,8 +502,8 @@ final class ValkeyGlideTagSetTest extends TestCase
         try {
             $this->tagSet($client, ['a', 'b'])->reset();
             self::fail('A failed removal must throw.');
-        } catch (\UnexpectedValueException $exception) {
-            self::assertSame('Valkey GLIDE failed to run ZREM on [cache:tag:a:entries].', $exception->getMessage());
+        } catch (CommandException $exception) {
+            self::assertSame(sprintf(self::UNRECORDED_FAILURE_MESSAGE, 'ZREM'), $exception->getMessage());
         }
 
         self::assertCount(1, $client->callsFor('zrem'));

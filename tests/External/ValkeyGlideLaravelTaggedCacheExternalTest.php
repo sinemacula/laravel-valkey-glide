@@ -637,7 +637,10 @@ final class ValkeyGlideLaravelTaggedCacheExternalTest extends TestCase
         $physical->command('set', [$setKey, 'not-a-sorted-set']);
 
         self::assertThrowsUnexpectedValue(sprintf('Expected array response from zscan on [%s], received [bool].', $tagKey), fn (): bool => $this->tagged($store, [$tag])->flush());
-        self::assertThrowsUnexpectedValue(sprintf('Valkey GLIDE failed to run ZREMRANGEBYSCORE on [%s].', $tagKey), fn (): bool => $this->tagged($store, [$tag])->flushStale());
+        self::assertThrowsUnexpectedValue(
+            '[ZREMRANGEBYSCORE] failed: GLIDE answered false, which it gives this command only when it fails, such as when the server cannot be reached, and recorded no error.',
+            fn (): bool => $this->tagged($store, [$tag])->flushStale(),
+        );
         self::assertThrowsUnexpectedValue(sprintf('Valkey GLIDE failed to run ZADD on [%s].', $tagKey), static fn (): bool => $cache->put('item', 'v', 600));
         self::assertSame('not-a-sorted-set', $physical->command('get', [$setKey]));
     }
@@ -791,9 +794,7 @@ final class ValkeyGlideLaravelTaggedCacheExternalTest extends TestCase
             $callback();
         } catch (\UnexpectedValueException $exception) {
             // From 1.2, GLIDE records the error, which is thrown instead.
-            if ($exception instanceof CommandException) {
-                self::assertStringStartsWith('WRONGTYPE', $exception->getMessage());
-
+            if ($exception instanceof CommandException && str_starts_with($exception->getMessage(), 'WRONGTYPE')) {
                 return;
             }
 

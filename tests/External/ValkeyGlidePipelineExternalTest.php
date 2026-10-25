@@ -15,6 +15,7 @@ use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ClusterRouter;
 use SineMacula\Valkey\Connections\ValkeyGlideBatch;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use SineMacula\Valkey\Exceptions\CommandException;
 use SineMacula\Valkey\Exceptions\ConnectionException;
 use Tests\External\Concerns\ConnectsToTestServers;
 
@@ -1401,7 +1402,7 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
         $connection = $this->connect($topology, ['a', 'b', 'z', 'w']);
         $members    = [];
 
-        self::assertFalse($connection->command('zrem', ['z', ...$members]));
+        self::assertRefusedOutsideABatch('ZREM', static fn (): mixed => $connection->command('zrem', ['z', ...$members]));
 
         $callback = static function (ValkeyGlideBatch $batch) use ($members): void {
             $batch->set('a', '1');
@@ -1460,8 +1461,8 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
         $connection = $this->connect($topology, ['n', 'x', 'bal']);
 
         self::assertFalse($connection->command('zinter', [[]]));
-        self::assertFalse($connection->command('del', [[]]));
-        self::assertFalse($connection->command('unlink', [[]]));
+        self::assertRefusedOutsideABatch('DEL', static fn (): mixed => $connection->command('del', [[]]));
+        self::assertRefusedOutsideABatch('UNLINK', static fn (): mixed => $connection->command('unlink', [[]]));
 
         $connection->command('set', ['bal', '100']);
 
@@ -2190,6 +2191,24 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
             foreach (['a', 'b', 'c'] as $key) {
                 self::assertSame('v', $connection->get($key), sprintf('%s: %s', $label, $key));
             }
+        }
+    }
+
+    /**
+     * Assert a call GLIDE refuses outside a batch throws, as the command's
+     * reply is never false, so GLIDE's false can only mean it was refused.
+     *
+     * @param  string  $command
+     * @param  \Closure(): mixed  $call
+     * @return void
+     */
+    private static function assertRefusedOutsideABatch(string $command, \Closure $call): void
+    {
+        try {
+            $call();
+            self::fail(sprintf('Expected the refused %s to throw.', $command));
+        } catch (CommandException $exception) {
+            self::assertStringContainsString($command, $exception->getMessage());
         }
     }
 

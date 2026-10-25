@@ -16,6 +16,7 @@ use SineMacula\Valkey\Cache\ValkeyGlideStore;
 use SineMacula\Valkey\Cache\ValkeyGlideTagSet;
 use SineMacula\Valkey\Connections\ClusterRouter;
 use SineMacula\Valkey\Connections\ValkeyGlideConnection;
+use SineMacula\Valkey\Exceptions\CommandException;
 use SineMacula\Valkey\Exceptions\ConnectionException;
 use Tests\Fakes\LaravelConnectionFake;
 use Tests\Fakes\RedisFactoryFake;
@@ -52,29 +53,52 @@ final class ValkeyGlideStoreTest extends TestCase
     }
 
     /**
-     * Verify a cluster putMany fails when any one of its writes fails.
+     * Verify a cluster putMany fails when any one of its writes reports that it
+     * was not done.
      *
      * @return void
      */
     #[Test]
     public function putManyFailsOnAClusterWhenAnyWriteFails(): void
     {
-        $client = $this->clusterClient([true, false, true]);
+        $client = $this->clusterClient([true, 0, true]);
 
         self::assertFalse($this->store($client)->putMany(['first' => 'a', 'second' => 'b', 'third' => 'c'], 60));
         self::assertCount(3, $client->calls);
     }
 
     /**
-     * Verify a cluster putMany fails when its first write fails, even though
-     * the later ones succeed.
+     * Verify a cluster putMany fails when its first write reports that it was
+     * not done, even though the later ones succeed.
      *
      * @return void
      */
     #[Test]
     public function putManyFailsOnAClusterWhenTheFirstWriteFails(): void
     {
-        self::assertFalse($this->store($this->clusterClient([false, true]))->putMany(['first' => 'a', 'second' => 'b'], 60));
+        self::assertFalse($this->store($this->clusterClient([0, true]))->putMany(['first' => 'a', 'second' => 'b'], 60));
+    }
+
+    /**
+     * Verify a cluster putMany throws at the first write GLIDE answers with
+     * false, as a SETEX gives false only when it fails, and writes nothing
+     * after it.
+     *
+     * @return void
+     */
+    #[Test]
+    public function putManyOnAClusterThrowsWhenAWriteFails(): void
+    {
+        $client = $this->clusterClient([true, false, true]);
+
+        try {
+            $this->store($client)->putMany(['first' => 'a', 'second' => 'b', 'third' => 'c'], 60);
+            self::fail('A failed write must throw.');
+        } catch (CommandException $exception) {
+            self::assertStringStartsWith('[SETEX] failed', $exception->getMessage());
+        }
+
+        self::assertCount(2, $client->calls);
     }
 
     /**
@@ -460,7 +484,7 @@ final class ValkeyGlideStoreTest extends TestCase
      * Build a cluster client answering each SETEX with the given replies, in
      * turn.
      *
-     * @param  list<bool>  $replies
+     * @param  list<bool|int>  $replies
      * @return object{calls: list<array{string, array<int|string, mixed>}>}&\ValkeyGlideCluster
      */
     private function clusterClient(array $replies): \ValkeyGlideCluster
@@ -469,7 +493,7 @@ final class ValkeyGlideStoreTest extends TestCase
             /** @var list<array{string, array<int|string, mixed>}> The commands received, in order. */
             public array $calls = [];
 
-            /** @var list<bool> The replies to give each SETEX, in turn. */
+            /** @var list<bool|int> The replies to give each SETEX, in turn. */
             public array $replies = [];
 
             /**

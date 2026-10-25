@@ -84,8 +84,9 @@ final class ValkeyGlideLastErrorExternalTest extends TestCase
     }
 
     /**
-     * Verify a command the server refuses returns false on a GLIDE that does
-     * not record errors, as 1.1.2 does not.
+     * Verify a command the server refuses throws the connection's own error on
+     * a GLIDE that does not record errors, as 1.1.2 does not, when its reply is
+     * never false, so GLIDE's false can only mean it failed.
      *
      * @param  string  $topology
      * @return void
@@ -94,22 +95,27 @@ final class ValkeyGlideLastErrorExternalTest extends TestCase
      */
     #[DataProvider('topologies')]
     #[Test]
-    public function commandTheServerRefusesReturnsFalseWhereGlideRecordsNoErrors(string $topology): void
+    public function commandTheServerRefusesThrowsWhereGlideRecordsNoErrors(string $topology): void
     {
         $connection = $this->connectTo($topology, $this->uniqueName('last-error') . ':');
 
         if (method_exists($connection->client(), 'getLastError')) {
             $connection->disconnect();
 
-            self::markTestSkipped('This GLIDE records command errors, so the failure throws.');
+            self::markTestSkipped('This GLIDE records command errors, which are thrown instead.');
         }
 
         $connection->command('set', ['string', 'value']);
 
-        self::assertFalse($connection->command('lpush', ['string', 'member']));
-
-        $connection->command('del', ['string']);
-        $connection->disconnect();
+        try {
+            $connection->command('lpush', ['string', 'member']);
+            self::fail('Expected the refused command to throw.');
+        } catch (CommandException $exception) {
+            self::assertStringStartsWith('[LPUSH] failed', $exception->getMessage());
+        } finally {
+            $connection->command('del', ['string']);
+            $connection->disconnect();
+        }
     }
 
     /**

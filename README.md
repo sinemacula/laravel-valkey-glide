@@ -218,12 +218,24 @@ Command execution goes through `ValkeyGlideConnection::command()`.
   client with `false`. A connection created without a connector throws a `ConnectionException` instead
 
 With `ext-valkey_glide` 1.1.2, most commands that fail return `false` rather than throwing, including while a node is
-unreachable and GLIDE is reconnecting (`Connection in recovery`); the extension prints the error to stderr. The driver
-cannot tell that `false` from a reply, so it passes it on: a cache `get()` reads it as a miss, and a single write or
-lock acquisition reports failure. Laravel's `putMany()` on a standalone connection queues its writes in a transaction: a
-transaction that fails as a whole throws a `ConnectionException` (see Failures under Pipelines and Transactions), but
-`putMany()` does not check the result of each write in it, so a write that fails inside the transaction still reports
-success. The retry above applies only to errors the extension throws.
+unreachable and GLIDE is reconnecting (`Connection in recovery`); the extension prints the error to stderr. When the
+command's reply is never `false`, that `false` can only mean it failed, so the driver throws a
+`SineMacula\Valkey\Exceptions\CommandException` for it, as phpredis throws when it cannot reach the server, and
+dispatches `CommandFailed`; it is not retried. These commands are `APPEND`, `DBSIZE`, `DECR`, `DECRBY`, `DEL`,
+`EXISTS`, `HDEL`, `HGETALL`, `HINCRBY`, `HINCRBYFLOAT`, `HKEYS`, `HLEN`, `HMSET`, `HSET`, `HVALS`, `INCR`, `INCRBY`,
+`INCRBYFLOAT`, `KEYS`, `LLEN`, `LPUSH`, `LRANGE`, `LREM`, `LTRIM`, `MGET`, `MSET`, `PING`, `PSETEX`, `PTTL`, `PUBLISH`,
+`RPUSH`, `SADD`, `SCARD`, `SETEX`, `SMEMBERS`, `SREM`, `STRLEN`, `TTL`, `TYPE`, `UNLINK`, `ZCARD`, `ZCOUNT`, `ZRANGE`,
+`ZRANGEBYSCORE`, `ZREM`, `ZREMRANGEBYRANK` and `ZREMRANGEBYSCORE`. So `Cache::put()`, `Cache::many()`,
+`Cache::increment()` and `Cache::forget()` throw when the server cannot be reached, and a queue worker reports the
+failed `MGET` of its paused queues and tries again.
+
+Any other command's `false` cannot be told from a reply, so the driver passes it on: a cache `get()` reads it as a
+miss, and `Cache::add()`, a lock acquisition or `SET ... NX` reports that another process holds the key. A script's
+`false` is read as its reply, so Laravel's `ThrottleRequestsWithRedis` reads an `EVAL` that failed as too many
+attempts. Laravel's `putMany()` on a standalone connection queues its writes in a transaction: a transaction that fails
+as a whole throws a `ConnectionException` (see Failures under Pipelines and Transactions), but `putMany()` does not
+check the result of each write in it, so a write that fails inside the transaction still reports success. The retry
+above applies only to errors the extension throws.
 
 Because the extension prints every failed command to stderr, Infection stops its initial test run at the first such
 line, so a test that makes the server refuse a command (an ACL `NOPERM`, for example) fails mutation testing. Fake
@@ -240,11 +252,12 @@ driver throws for a failed scan or tag write on 1.1.2, so code that catches thos
 stays on the client until the next command clears it, so `Redis::getLastError()` reads it; `getLastError()` and
 `clearLastError()` run on the client without clearing it first, or sending a leftover `UNWATCH` (see WATCH). A pipeline
 or transaction whose `exec()` fails carries the error as its `ConnectionException`'s previous exception (see Failures
-under Pipelines and Transactions). Some failures still return `false`, as GLIDE records nothing for them:
+under Pipelines and Transactions). Some failures still return `false`, as GLIDE records nothing for them, unless the
+command's reply is never `false` (see above):
 
 - `rawcommand()`, which runs `EVAL` and `EVALSHA`, `executeRaw()` and phpredis-style `SET` options such as
   `set($key, $value, 'EX', 60, 'NX')`; its `false` cannot be read as a failure, as a script that returns `false` gives
-  `false` too
+  `false` too. `KEYS` and `DBSIZE` go through `rawcommand()` as well, but their replies are never `false`, so they throw
 - a command that fails inside a pipeline or transaction, which gives `false` in its own place in the results
 
 > [!NOTE]
@@ -267,6 +280,12 @@ under Pipelines and Transactions). Some failures still return `false`, as GLIDE 
 > code that compares it with `true` must compare it with `1`. Called on the connection while a pipeline or transaction
 > is open, it now throws a `LogicException` rather than joining the batch; call it on the batch instead. `zscan()`,
 > `hscan()` and `sscan()` with Laravel's options array threw an `ErrorException`, as GLIDE takes the cursor by reference.
+>
+> In 1.2.x and earlier, with `ext-valkey_glide` 1.1.2, a command whose reply is never `false`, such as `INCRBY`,
+> `EXISTS` or `SETEX`, returned GLIDE's `false` when it failed, and a failed `mget()` threw a plain
+> `UnexpectedValueException`. They now throw a `CommandException`, which is still an `UnexpectedValueException`, so
+> `Cache::put()`, `Cache::increment()` and `Cache::forget()` throw where they returned `false` or `0`. A `dbSize()`
+> that failed aborted the process; it now throws too.
 
 ## Prefix Compatibility
 
@@ -408,7 +427,9 @@ cannot buffer itself:
   - In a pipeline, what is buffered before such a command is sent first, then the command runs on its own and its
     result takes its place in the list, so the results stay in call order; it costs extra round trips. What the event
     listeners of that send, or of the command, run on the same connection is sent at once and takes no place in the
-    list (see the event listeners above).
+    list (see the event listeners above). A failure that throws outside a batch, such as an error GLIDE records from
+    1.2 or a `false` from a command whose reply is never `false` (see Runtime Behavior), throws here too and ends the
+    pipeline; what was sent before it has been applied.
   - In a transaction it would run outside the `MULTI` block, so the transaction is discarded and a `LogicException` is
     thrown, unless the transaction is nested in a pipeline (see Nested Batches). Use `pipeline()` for them.
   - An `incrbyfloat()` or `hincrbyfloat()` whose increment GLIDE would write with six significant digits, such as
@@ -435,10 +456,12 @@ cannot buffer itself:
   throws an `InvalidArgumentException` naming the command rather than return a result list with a slot missing. GLIDE
   reports `zrem()` and `zmscore()` given a key but no member, as from `zrem($key, ...$ids)` with no ids, and `zinter()`
   given an empty key list, as buffered without buffering them, so the driver refuses them the same way before they are
-  sent; outside a batch they return `false`. An empty key list, as in `del([])` or `unlink([])`, is passed to GLIDE as
-  it is, which refuses it, so it throws the same `InvalidArgumentException`; outside a batch it returns `false`. So
-  does a native `SET` options array with an expiry GLIDE cannot read as a positive number, such as `['EX' => '60']`
-  or `['EX' => 0]`. A key list beside other keys is refused before it is sent (see Prefix Compatibility).
+  sent; outside a batch, `zrem()` throws a `CommandException`, as its reply is never `false` (see Runtime Behavior),
+  and `zmscore()` and `zinter()` return `false`. An empty key list, as in `del([])` or `unlink([])`, is passed to GLIDE
+  as it is, which refuses it, so it throws the same `InvalidArgumentException`; outside a batch it throws a
+  `CommandException`. A native `SET` options array with an expiry GLIDE cannot read as a positive number, such as
+  `['EX' => '60']` or `['EX' => 0]`, throws the same `InvalidArgumentException` in a batch and returns `false` outside
+  one. A key list beside other keys is refused before it is sent (see Prefix Compatibility).
 - **Commands GLIDE throws for**, such as `sinter('key')`, which GLIDE 1.1.2 accepts only as `sinter(['key'])`, end the
   batch, discarding everything it still buffers, whether or not a callback owns it, as GLIDE may have buffered the
   command before it threw. The error is rethrown; a batch whose error was caught cannot be used again.
@@ -485,9 +508,9 @@ applied by the server. The driver never retries a batch, and:
 - from 1.2, the error GLIDE records for a failed `exec()`, such as `timed out`, is the `ConnectionException`'s previous
   exception, a `CommandException`
 
-A command that fails on the server, such as a `WRONGTYPE` error, gives `false` in its own place in the results, in a
-pipeline and in a transaction alike, and the other commands still apply. An error the server raises while queueing a
-transaction, such as a wrong number of arguments, fails the whole transaction instead.
+A buffered command that fails on the server, such as a `WRONGTYPE` error, gives `false` in its own place in the
+results, in a pipeline and in a transaction alike, and the other commands still apply. An error the server raises while
+queueing a transaction, such as a wrong number of arguments, fails the whole transaction instead.
 
 ### WATCH
 
@@ -768,9 +791,11 @@ arguments and return `false` without one, so a call without one takes the route 
 `ping()` (as health checks call it) runs on every primary and returns `true` once each one answers, `dbSize()` counts
 the keys on every primary and returns their sum, `randomKey()` returns a key from one of the primaries, and `time()`
 and `echo($message)` run on a random node. A call with more arguments takes the first as its route, as phpredis'
-`RedisCluster` methods do, and is sent unchanged. Each node reports only itself to `INFO`, so a bare `info()` throws an
-`InvalidArgumentException` before anything is sent; pass a route, as in `info('randomNode')` or
-`info('randomNode', 'memory')`.
+`RedisCluster` methods do, and is sent unchanged. `dbSize()` is sent as a raw `DBSIZE` on that route, as it is on a
+standalone connection, because GLIDE's own `dbSize()` aborts the process when the command fails
+([valkey-io/valkey-glide-php#384](https://github.com/valkey-io/valkey-glide-php/issues/384)). Each node reports only
+itself to `INFO`, so a bare `info()` throws an `InvalidArgumentException` before anything is sent; pass a route, as in
+`info('randomNode')` or `info('randomNode', 'memory')`.
 
 A GLIDE cluster connection's `isCluster()` returns `true`. From Laravel 13.5, the Redis queue and `Redis::funnel()`
 check it and wrap a queue or limiter name that has no hash tag in one (`queues:{default}`), so the keys each of their
@@ -917,8 +942,9 @@ Laravel's own code unchanged.
 With `ext-valkey_glide` 1.1.2 a failed command returns `false` (see Runtime Behavior), so on these paths, outside a
 batch, a `false` reply throws an `UnexpectedValueException` naming the command and key, rather than reporting a partial
 flush, a lost tag record or a partial prune as success. This includes server errors that phpredis would let pass, such
-as `WRONGTYPE` on a tag's key. From 1.2 the connection throws GLIDE's recorded error instead, as a `CommandException`,
-which is an `UnexpectedValueException` too (see Runtime Behavior).
+as `WRONGTYPE` on a tag's key. A failed `DEL`, `ZREM` or `ZREMRANGEBYSCORE` throws the connection's `CommandException`
+instead, as their replies are never `false`. From 1.2 the connection throws GLIDE's recorded error, as a
+`CommandException`, which is an `UnexpectedValueException` too (see Runtime Behavior).
 
 The scans of `flush()` and `cache:prune-stale-tags` read the primary whatever the connection's `read_from`, so an entry
 tagged moments before a flush is still flushed.

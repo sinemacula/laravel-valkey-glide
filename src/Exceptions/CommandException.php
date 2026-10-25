@@ -8,7 +8,9 @@ namespace SineMacula\Valkey\Exceptions;
  * Thrown when GLIDE reports that a command failed.
  *
  * The extension answers a failed command with false and, from 1.2, records its
- * error, which this exception carries as its message, unchanged. It is an
+ * error, which this exception carries as its message, unchanged. When GLIDE
+ * records none, as before 1.2 or for a raw command, it is thrown for a false
+ * reply from a command whose reply is never false, naming the command. It is an
  * UnexpectedValueException, as the driver throws for a false reply it cannot
  * pass over, such as a failed scan or tag write, so code that catches those
  * failures catches the error GLIDE recorded for them too.
