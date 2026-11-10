@@ -8494,6 +8494,8 @@ final class ValkeyGlideConnectionTest extends TestCase
         yield 'a cursor that is not scalar' => [[['0'], []]];
 
         yield 'a page that is not a list' => [['0', 'm']];
+
+        yield 'a member that is not scalar' => [['0', ['a', '1', ['b'], '2']]];
     }
 
     /**

@@ -213,6 +213,9 @@ final class ValkeyGlideConnection extends Connection
     private const string UNROUTED_CLUSTER_INFO_MESSAGE = '[INFO] on a cluster connection needs a route, as each node reports only itself;'
         . ' pass one first, such as info(\'randomNode\') or info(\'randomNode\', \'memory\').';
 
+    /** @var string Message for a method the GLIDE client does not have. */
+    private const string UNKNOWN_CLIENT_METHOD_MESSAGE = 'The GLIDE client has no [%s] method.';
+
     /** @var string Message for a command GLIDE refused to buffer. */
     private const string BUFFER_REFUSED_MESSAGE = 'GLIDE refused to buffer [%s], most likely due to its arguments, so it was not added to the batch.';
 
@@ -1025,10 +1028,7 @@ final class ValkeyGlideConnection extends Connection
             throw new \UnexpectedValueException(sprintf('Expected array response from mget, received [%s].', get_debug_type($results)));
         }
 
-        return array_map(
-            static fn (false|string $value): ?string => $value !== false ? $value : null,
-            $results,
-        );
+        return array_map(static fn (mixed $value): ?string => is_string($value) ? $value : null, $results);
     }
 
     /**
@@ -2375,12 +2375,17 @@ final class ValkeyGlideConnection extends Connection
      * @param  array<array-key, mixed>  $parameters
      * @return mixed
      *
+     * @throws \BadMethodCallException
      * @throws \Throwable
      *
      * @phpstan-ignore throws.unusedType
      */
     private function dispatchToClient(string $method, array $parameters): mixed
     {
+        if (!is_callable([$this->glideClient, $method])) {
+            throw new \BadMethodCallException(sprintf(self::UNKNOWN_CLIENT_METHOD_MESSAGE, $method));
+        }
+
         return call_user_func_array([$this->glideClient, $method], $parameters);
     }
 
@@ -2772,9 +2777,18 @@ final class ValkeyGlideConnection extends Connection
             return false;
         }
 
-        $cursor = (string) $reply[0];
+        $cursor  = (string) $reply[0];
+        $members = [];
 
-        return array_map(strval(...), array_column(array_chunk($reply[1], 2), 0));
+        foreach (array_column(array_chunk($reply[1], 2), 0) as $member) {
+            if (!is_scalar($member)) {
+                return false;
+            }
+
+            $members[] = (string) $member;
+        }
+
+        return $members;
     }
 
     /**
@@ -2829,6 +2843,7 @@ final class ValkeyGlideConnection extends Connection
      * @param  array<array-key, mixed>  $parameters
      * @return mixed
      *
+     * @throws \BadMethodCallException
      * @throws \Throwable
      *
      * @phpstan-ignore throws.unusedType
@@ -2837,6 +2852,10 @@ final class ValkeyGlideConnection extends Connection
     {
         $flag  = $parameters[0] ?? null;
         $async = $flag === true || (is_string($flag) && strtoupper($flag) === 'ASYNC');
+
+        if (!is_callable([$this->glideClient, $method])) {
+            throw new \BadMethodCallException(sprintf(self::UNKNOWN_CLIENT_METHOD_MESSAGE, $method));
+        }
 
         return call_user_func([$this->glideClient, $method], 'allPrimaries', $async);
     }
