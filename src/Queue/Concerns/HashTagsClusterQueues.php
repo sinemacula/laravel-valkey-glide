@@ -26,15 +26,24 @@ use SineMacula\Valkey\Support\HashTag;
  */
 trait HashTagsClusterQueues
 {
+    /** @var string Message for a queue named by neither a string nor an enum. */
+    private const string INVALID_QUEUE_MESSAGE = 'A queue must be named by a string or an enum, [%s] given.';
+
     /**
      * Get the queue or return the default.
      *
      * @param  mixed  $queue
      * @return string
+     *
+     * @throws \InvalidArgumentException
      */
     #[\Override]
     public function getQueue(mixed $queue): string
     {
+        if ($queue !== null && !is_string($queue) && !$queue instanceof \UnitEnum) {
+            throw new \InvalidArgumentException(sprintf(self::INVALID_QUEUE_MESSAGE, get_debug_type($queue)));
+        }
+
         $key = parent::getQueue($queue);
 
         if (method_exists($this, 'getQueueRedisKey')) {

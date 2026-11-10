@@ -14,6 +14,7 @@ use Illuminate\Queue\LuaScripts;
 use Illuminate\Support\Carbon;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\CoversTrait;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SineMacula\Valkey\Connections\ValkeyGlideBatch;
@@ -21,8 +22,12 @@ use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use SineMacula\Valkey\Exceptions\ConnectionException;
 use SineMacula\Valkey\Queue\Concerns\PushesBulkJobsAtomically;
 use SineMacula\Valkey\Queue\ValkeyGlideQueue;
+use Tests\Fakes\Enums\NumberedQueueFake;
+use Tests\Fakes\Enums\QueueFake;
+use Tests\Fakes\Enums\UnitQueueFake;
 use Tests\Fakes\Jobs\BulkJobFake;
 use Tests\Fakes\Jobs\DelayAttributeJobFake;
+use Tests\Fakes\Jobs\DelayedJobFake;
 use Tests\Fakes\LaravelConnectionFake;
 use Tests\Fakes\RedisFactoryFake;
 use Tests\Fakes\ValkeyGlideClusterFake;
@@ -167,6 +172,108 @@ final class PushesBulkJobsAtomicallyTest extends TestCase
         }
 
         self::assertSame([], $client->callOrder());
+    }
+
+    /**
+     * Provide queues named by an enum, and the key of the queue each names, as
+     * Laravel reads an enum's value, or its case where it has no value.
+     *
+     * @return iterable<string, array{\UnitEnum, string}>
+     */
+    public static function enumQueueProvider(): iterable
+    {
+        yield 'backed enum' => [QueueFake::MAIL, 'queues:mail'];
+        yield 'integer backed enum' => [NumberedQueueFake::MAIL, 'queues:1'];
+        yield 'unit enum' => [UnitQueueFake::MAIL, 'queues:MAIL'];
+    }
+
+    /**
+     * Verify a bulk to a queue named by an enum is pushed to the queue the enum
+     * names, as Laravel's bulk takes it.
+     *
+     * @param  \UnitEnum  $queue
+     * @param  string  $key
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[DataProvider('enumQueueProvider')]
+    #[Test]
+    public function bulkTakesAQueueNamedByAnEnum(\UnitEnum $queue, string $key): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', 1);
+
+        $this->queue($client, $this->container(), '')->bulk(['job-a'], '', $queue);
+
+        self::assertSame($key, $client->callsFor('rawcommand')[0][3]);
+    }
+
+    /**
+     * Verify a bulk to a queue named by neither a string nor an enum is refused
+     * before anything is queued.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function bulkRefusesAQueueNamedByNeitherAStringNorAnEnum(): void
+    {
+        $client = new ValkeyGlideFake;
+
+        try {
+            $this->queue($client, $this->container())->bulk(['job-a'], '', 1);
+            self::fail('Expected the queue to be refused.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertSame('A bulk must be pushed to a queue named by a string or an enum, [int] given.', $exception->getMessage());
+        }
+
+        self::assertSame([], $client->callOrder());
+    }
+
+    /**
+     * Verify a job delayed by neither seconds, a date nor an interval is
+     * refused before it is queued.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function bulkRefusesAJobDelayedByNeitherSecondsADateNorAnInterval(): void
+    {
+        $client = new ValkeyGlideFake;
+
+        try {
+            $this->queue($client, $this->container())->bulk([new DelayedJobFake(1.5)]);
+            self::fail('Expected the delay to be refused.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertSame('A job pushed in bulk must be delayed by seconds, a date or an interval, [float] given.', $exception->getMessage());
+        }
+
+        self::assertSame([], $client->callOrder());
+    }
+
+    /**
+     * Verify a job delayed by a date or an interval joins the bulk as a delayed
+     * job.
+     *
+     * @return void
+     *
+     * @throws \Throwable
+     */
+    #[Test]
+    public function bulkDelaysAJobByADateOrAnInterval(): void
+    {
+        $client = new ValkeyGlideFake;
+        $client->willReturn('rawcommand', 2);
+
+        $this->queue($client, $this->container(), '')->bulk([new DelayedJobFake(Carbon::now()->addMinute()), new DelayedJobFake(new \DateInterval('PT2M'))]);
+
+        $call = $client->callsFor('rawcommand')[0];
+
+        self::assertSame([self::NOW + 60, self::NOW + 120], [$call[7], $call[9]]);
     }
 
     /**

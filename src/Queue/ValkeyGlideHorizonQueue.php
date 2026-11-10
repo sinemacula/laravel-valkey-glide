@@ -37,14 +37,14 @@ final class ValkeyGlideHorizonQueue extends RedisQueue
      *
      * @param  object|string  $job
      * @param  mixed  $data
-     * @param  mixed  $queue
-     * @param  mixed  $delay
+     * @param  string|null  $queue
+     * @param  \DateInterval|\DateTimeInterface|int|null  $delay
      * @return string
      *
      * @throws \Illuminate\Queue\InvalidPayloadException
      */
     #[\Override]
-    protected function createBulkPayload(object|string $job, mixed $data, mixed $queue, mixed $delay): string
+    protected function createBulkPayload(object|string $job, mixed $data, ?string $queue, \DateInterval|\DateTimeInterface|int|null $delay): string
     {
         if (!isset($delay)) {
             return $this->createPayload($job, $this->getQueue($queue), $data);
@@ -62,12 +62,12 @@ final class ValkeyGlideHorizonQueue extends RedisQueue
      * @param  \SineMacula\Valkey\Queue\BulkPush  $bulk
      * @param  object|string  $job
      * @param  string  $payload
-     * @param  mixed  $queue
-     * @param  mixed  $delay
+     * @param  string|null  $queue
+     * @param  \DateInterval|\DateTimeInterface|int|null  $delay
      * @return mixed
      */
     #[\Override]
-    protected function gatherBulkJob(BulkPush $bulk, object|string $job, string $payload, mixed $queue, mixed $delay): mixed
+    protected function gatherBulkJob(BulkPush $bulk, object|string $job, string $payload, ?string $queue, \DateInterval|\DateTimeInterface|int|null $delay): mixed
     {
         $prepared = isset($delay) ? new JobPayload($payload) : (new JobPayload($payload))->prepare($job);
 
@@ -94,12 +94,12 @@ final class ValkeyGlideHorizonQueue extends RedisQueue
      *
      * @param  object|string  $job
      * @param  string  $payload
-     * @param  mixed  $queue
-     * @param  mixed  $delay
+     * @param  string|null  $queue
+     * @param  \DateInterval|\DateTimeInterface|int|null  $delay
      * @return mixed
      */
     #[\Override]
-    protected function pushBulkJobAlone(object|string $job, string $payload, mixed $queue, mixed $delay): mixed
+    protected function pushBulkJobAlone(object|string $job, string $payload, ?string $queue, \DateInterval|\DateTimeInterface|int|null $delay): mixed
     {
         if (!isset($delay)) {
             $this->lastPushed = $job;

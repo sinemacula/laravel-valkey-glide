@@ -29,6 +29,12 @@ trait PushesBulkJobsAtomically
     /** @var string Message for a job of the bulk that is neither an object nor a string. */
     private const string INVALID_BULK_JOB_MESSAGE = 'A job pushed in bulk must be an object or a string, [%s] given.';
 
+    /** @var string Message for a bulk whose queue is named by neither a string nor an enum. */
+    private const string INVALID_BULK_QUEUE_MESSAGE = 'A bulk must be pushed to a queue named by a string or an enum, [%s] given.';
+
+    /** @var string Message for a job of the bulk whose delay is neither seconds, a date nor an interval. */
+    private const string INVALID_BULK_DELAY_MESSAGE = 'A job pushed in bulk must be delayed by seconds, a date or an interval, [%s] given.';
+
     /**
      * Push an array of jobs onto the queue.
      *
@@ -44,6 +50,8 @@ trait PushesBulkJobsAtomically
     #[\Override]
     public function bulk(mixed $jobs, mixed $data = '', mixed $queue = null): void
     {
+        $jobs       = (array) $jobs;
+        $queue      = $this->bulkQueue($queue);
         $connection = $this->getConnection();
 
         if (!$connection instanceof ValkeyGlideConnection) {
@@ -55,7 +63,7 @@ trait PushesBulkJobsAtomically
         $bulk = new BulkPush;
 
         try {
-            foreach ((array) $jobs as $value) {
+            foreach ($jobs as $value) {
                 $job   = $this->bulkJob($value);
                 $delay = $this->bulkJobDelay($job);
 
@@ -64,7 +72,7 @@ trait PushesBulkJobsAtomically
                     $this->createBulkPayload($job, $data, $queue, $delay),
                     $queue,
                     $delay,
-                    fn (string $payload, mixed $queue, mixed $delay): mixed => $bulk->isOpen()
+                    fn (string $payload): mixed => $bulk->isOpen()
                         ? $this->gatherBulkJob($bulk, $job, $payload, $queue, $delay)
                         : $this->pushBulkJobAlone($job, $payload, $queue, $delay),
                 );
@@ -81,13 +89,13 @@ trait PushesBulkJobsAtomically
      *
      * @param  object|string  $job
      * @param  mixed  $data
-     * @param  mixed  $queue
-     * @param  mixed  $delay
+     * @param  string|null  $queue
+     * @param  \DateInterval|\DateTimeInterface|int|null  $delay
      * @return string
      *
      * @throws \Illuminate\Queue\InvalidPayloadException
      */
-    abstract protected function createBulkPayload(object|string $job, mixed $data, mixed $queue, mixed $delay): string;
+    abstract protected function createBulkPayload(object|string $job, mixed $data, ?string $queue, \DateInterval|\DateTimeInterface|int|null $delay): string;
 
     /**
      * Gather a job of the bulk to push with the others, and return its id.
@@ -95,11 +103,11 @@ trait PushesBulkJobsAtomically
      * @param  \SineMacula\Valkey\Queue\BulkPush  $bulk
      * @param  object|string  $job
      * @param  string  $payload
-     * @param  mixed  $queue
-     * @param  mixed  $delay
+     * @param  string|null  $queue
+     * @param  \DateInterval|\DateTimeInterface|int|null  $delay
      * @return mixed
      */
-    abstract protected function gatherBulkJob(BulkPush $bulk, object|string $job, string $payload, mixed $queue, mixed $delay): mixed;
+    abstract protected function gatherBulkJob(BulkPush $bulk, object|string $job, string $payload, ?string $queue, \DateInterval|\DateTimeInterface|int|null $delay): mixed;
 
     /**
      * Push a job of the bulk on its own, once its database transaction has
@@ -107,11 +115,11 @@ trait PushesBulkJobsAtomically
      *
      * @param  object|string  $job
      * @param  string  $payload
-     * @param  mixed  $queue
-     * @param  mixed  $delay
+     * @param  string|null  $queue
+     * @param  \DateInterval|\DateTimeInterface|int|null  $delay
      * @return mixed
      */
-    abstract protected function pushBulkJobAlone(object|string $job, string $payload, mixed $queue, mixed $delay): mixed;
+    abstract protected function pushBulkJobAlone(object|string $job, string $payload, ?string $queue, \DateInterval|\DateTimeInterface|int|null $delay): mixed;
 
     /**
      * Get a job of the bulk, which Laravel queues as an object or a string.
@@ -128,6 +136,29 @@ trait PushesBulkJobsAtomically
         }
 
         throw new \InvalidArgumentException(sprintf(self::INVALID_BULK_JOB_MESSAGE, get_debug_type($job)));
+    }
+
+    /**
+     * Get the name of the bulk's queue, which Laravel names by a string or an
+     * enum, whose value or name it reads as the name, or leaves null for the
+     * default queue.
+     *
+     * @param  mixed  $queue
+     * @return string|null
+     *
+     * @throws \InvalidArgumentException
+     */
+    private function bulkQueue(mixed $queue): ?string
+    {
+        if ($queue instanceof \UnitEnum) {
+            return $queue instanceof \BackedEnum ? (string) $queue->value : $queue->name;
+        }
+
+        if ($queue === null || is_string($queue)) {
+            return $queue;
+        }
+
+        throw new \InvalidArgumentException(sprintf(self::INVALID_BULK_QUEUE_MESSAGE, get_debug_type($queue)));
     }
 
     /**
@@ -149,9 +180,11 @@ trait PushesBulkJobsAtomically
      * that the job's `delay`.
      *
      * @param  object|string  $job
-     * @return mixed
+     * @return \DateInterval|\DateTimeInterface|int|null
+     *
+     * @throws \InvalidArgumentException
      */
-    private function bulkJobDelay(object|string $job): mixed
+    private function bulkJobDelay(object|string $job): \DateInterval|\DateTimeInterface|int|null
     {
         if (is_string($job)) {
             return null;
@@ -159,7 +192,13 @@ trait PushesBulkJobsAtomically
 
         // Reflection reads the installed framework, as static analysis only
         // sees the one it runs against.
-        return (new \ReflectionObject($this))->hasMethod('getAttributeValue') ? $this->getAttributeValue($job, Delay::class, 'delay') : $job->delay ?? null;
+        $delay = (new \ReflectionObject($this))->hasMethod('getAttributeValue') ? $this->getAttributeValue($job, Delay::class, 'delay') : $job->delay ?? null;
+
+        if ($delay === null || is_int($delay) || $delay instanceof \DateTimeInterface || $delay instanceof \DateInterval) {
+            return $delay;
+        }
+
+        throw new \InvalidArgumentException(sprintf(self::INVALID_BULK_DELAY_MESSAGE, get_debug_type($delay)));
     }
 
     /**
@@ -167,10 +206,10 @@ trait PushesBulkJobsAtomically
      * it: from Laravel 13.5 with `getQueueRedisKey()`, which hash-tags it on a
      * cluster, and before that with `getQueue()`.
      *
-     * @param  mixed  $queue
+     * @param  string|null  $queue
      * @return string
      */
-    private function bulkQueueKey(mixed $queue): string
+    private function bulkQueueKey(?string $queue): string
     {
         return (new \ReflectionObject($this))->hasMethod('getQueueRedisKey') ? $this->getQueueRedisKey($queue) : $this->getQueue($queue);
     }

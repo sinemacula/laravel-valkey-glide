@@ -16,6 +16,7 @@ use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use SineMacula\Valkey\Queue\Concerns\HashTagsClusterQueues;
 use SineMacula\Valkey\Queue\ValkeyGlideHorizonQueue;
 use SineMacula\Valkey\Queue\ValkeyGlideQueue;
+use Tests\Fakes\Enums\QueueFake;
 use Tests\Fakes\LaravelConnectionFake;
 use Tests\Fakes\RedisFactoryFake;
 use Tests\Fakes\RedisQueueBefore135Fake;
@@ -80,6 +81,33 @@ final class HashTagsClusterQueuesTest extends TestCase
     {
         self::assertSame('queues:emails', $this->queueBefore135(new ValkeyGlideConnection(new ValkeyGlideFake))->getQueue('emails'));
         self::assertSame('queues:emails', $this->queueBefore135(new LaravelConnectionFake)->getQueue('emails'));
+    }
+
+    /**
+     * Verify a queue named by an enum is the queue the enum names, as Laravel
+     * takes it.
+     *
+     * @return void
+     */
+    #[Test]
+    public function queueNamedByAnEnumIsTheQueueItNames(): void
+    {
+        self::assertSame('queues:mail', (new ValkeyGlideQueue($this->redis(new ValkeyGlideFake)))->getQueue(QueueFake::MAIL));
+    }
+
+    /**
+     * Verify a queue named by neither a string nor an enum is refused, rather
+     * than handed to Laravel.
+     *
+     * @return void
+     */
+    #[Test]
+    public function queueNamedByNeitherAStringNorAnEnumIsRefused(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('A queue must be named by a string or an enum, [int] given.');
+
+        $this->queueBefore135(new ValkeyGlideConnection(new ValkeyGlideClusterFake))->getQueue(1);
     }
 
     /**
