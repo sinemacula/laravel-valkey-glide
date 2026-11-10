@@ -46,7 +46,9 @@ trait HashTagsClusterQueues
 
         $key = parent::getQueue($queue);
 
-        if (method_exists($this, 'getQueueRedisKey')) {
+        // Reflection reads the installed framework, as static analysis only
+        // sees the one it runs against.
+        if ((new \ReflectionObject($this))->hasMethod('getQueueRedisKey')) {
             return $key;
         }
 
