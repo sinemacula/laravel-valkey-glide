@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres
 to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1](https://github.com/sinemacula/laravel-valkey-glide/compare/v1.3.0...v1.3.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* clear the qlty findings and drop configuration the shared source provides ([#133](https://github.com/sinemacula/laravel-valkey-glide/issues/133)) ([f1eea22](https://github.com/sinemacula/laravel-valkey-glide/commit/f1eea22f127f8327e7662fee607b1723ce6df707))
+
 ## [1.3.0](https://github.com/sinemacula/laravel-valkey-glide/compare/v1.2.0...v1.3.0) (2026-10-25)
 
 
