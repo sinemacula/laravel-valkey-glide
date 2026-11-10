@@ -180,6 +180,26 @@ final class ValkeyGlideServiceProviderTest extends TestCase
     }
 
     /**
+     * Verify serializable classes that are neither a list of classes nor a
+     * boolean are refused, rather than handed to the store.
+     *
+     * @return void
+     */
+    #[Test]
+    public function redisDriverRefusesSerializableClassesOfTheWrongType(): void
+    {
+        config([
+            'cache.serializable_classes' => \stdClass::class,
+            'cache.stores.glide'         => ['driver' => 'redis'],
+        ]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('The [cache.serializable_classes] option must be an array or a boolean, received [string].');
+
+        Cache::store('glide');
+    }
+
+    /**
      * Verify the driver is registered on a cache manager resolved before the
      * provider registers.
      *

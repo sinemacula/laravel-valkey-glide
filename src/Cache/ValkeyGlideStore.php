@@ -109,14 +109,14 @@ final class ValkeyGlideStore extends RedisStore
     protected function currentTags(mixed $chunkSize = 1000): LazyCollection
     {
         $connection = $this->connection();
+        $count      = Cast::toNonNegativeInt($chunkSize) ?? self::SCAN_COUNT;
 
         if (!$connection instanceof ValkeyGlideConnection) {
-            return parent::currentTags($chunkSize);
+            return parent::currentTags($count);
         }
 
         $prefix  = $connection->getPrefix() . $this->getPrefix();
         $pattern = self::escapeGlob($prefix) . self::TAG_SET_PATTERN;
-        $count   = Cast::toNonNegativeInt($chunkSize) ?? self::SCAN_COUNT;
 
         return (new LazyCollection(fn (): \Generator => $this->scanTagSets($connection, $pattern, $count)))
             ->map(static fn (string $tagKey): string => Str::match('/^' . preg_quote($prefix, '/') . 'tag:(.*):entries$/', $tagKey));
