@@ -16,7 +16,9 @@ use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use SineMacula\Valkey\Queue\Concerns\HashTagsClusterQueues;
 use SineMacula\Valkey\Queue\ValkeyGlideHorizonQueue;
 use SineMacula\Valkey\Queue\ValkeyGlideQueue;
+use Tests\Fakes\Enums\NumberedQueueFake;
 use Tests\Fakes\Enums\QueueFake;
+use Tests\Fakes\Enums\UnitQueueFake;
 use Tests\Fakes\LaravelConnectionFake;
 use Tests\Fakes\RedisFactoryFake;
 use Tests\Fakes\RedisQueueBefore135Fake;
@@ -84,15 +86,31 @@ final class HashTagsClusterQueuesTest extends TestCase
     }
 
     /**
-     * Verify a queue named by an enum is the queue the enum names, as Laravel
-     * takes it.
+     * Provide queues named by an enum, and the key of the queue each names, as
+     * Laravel reads an enum's value, or its case where it has no value.
      *
+     * @return iterable<string, array{\UnitEnum, string}>
+     */
+    public static function enumQueueProvider(): iterable
+    {
+        yield 'backed enum' => [QueueFake::MAIL, 'queues:mail'];
+        yield 'integer backed enum' => [NumberedQueueFake::MAIL, 'queues:1'];
+        yield 'unit enum' => [UnitQueueFake::MAIL, 'queues:MAIL'];
+    }
+
+    /**
+     * Verify a queue named by an enum is the queue the enum names, on every
+     * supported Laravel version.
+     *
+     * @param  \UnitEnum  $queue
+     * @param  string  $key
      * @return void
      */
+    #[DataProvider('enumQueueProvider')]
     #[Test]
-    public function queueNamedByAnEnumIsTheQueueItNames(): void
+    public function queueNamedByAnEnumIsTheQueueItNames(\UnitEnum $queue, string $key): void
     {
-        self::assertSame('queues:mail', (new ValkeyGlideQueue($this->redis(new ValkeyGlideFake)))->getQueue(QueueFake::MAIL));
+        self::assertSame($key, (new ValkeyGlideQueue($this->redis(new ValkeyGlideFake)))->getQueue($queue));
     }
 
     /**

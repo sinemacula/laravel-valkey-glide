@@ -40,7 +40,11 @@ trait HashTagsClusterQueues
     #[\Override]
     public function getQueue(mixed $queue): string
     {
-        if ($queue !== null && !is_string($queue) && !$queue instanceof \UnitEnum) {
+        if ($queue instanceof \UnitEnum) {
+            $queue = $queue instanceof \BackedEnum ? (string) $queue->value : $queue->name;
+        }
+
+        if ($queue !== null && !is_string($queue)) {
             throw new \InvalidArgumentException(sprintf(self::INVALID_QUEUE_MESSAGE, get_debug_type($queue)));
         }
 
