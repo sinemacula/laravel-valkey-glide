@@ -4,6 +4,7 @@ declare(strict_types = 1);
 
 namespace SineMacula\Valkey\Queue;
 
+use Illuminate\Contracts\Redis\Factory;
 use Laravel\Horizon\Events\JobPending;
 use Laravel\Horizon\Events\JobPushed;
 use Laravel\Horizon\JobPayload;
@@ -31,20 +32,44 @@ final class ValkeyGlideHorizonQueue extends RedisQueue
     use HashTagsClusterQueues, PushesBulkJobsAtomically;
 
     /**
+     * Create the queue, whose retry after is `null` when reserved jobs are
+     * never re-released, as Horizon's connector allows.
+     *
+     * @param  \Illuminate\Contracts\Redis\Factory  $redis
+     * @param  string  $default
+     * @param  ?string  $connection
+     * @param  ?int  $retryAfter
+     * @param  ?int  $blockFor
+     * @param  bool  $dispatchAfterCommit
+     */
+    public function __construct(
+        Factory $redis,
+        string $default,
+        ?string $connection,
+        ?int $retryAfter,
+        ?int $blockFor,
+        bool $dispatchAfterCommit,
+    ) {
+        parent::__construct($redis, $default, $connection, blockFor: $blockFor, dispatchAfterCommit: $dispatchAfterCommit);
+
+        $this->retryAfter = $retryAfter;
+    }
+
+    /**
      * Create the payload of a job in the bulk, as Horizon's push and later do:
      * a delayed job's payload is created for the queue as it was named, and
      * prepared before the job is queued.
      *
      * @param  object|string  $job
      * @param  mixed  $data
-     * @param  mixed  $queue
-     * @param  mixed  $delay
+     * @param  string|null  $queue
+     * @param  \DateInterval|\DateTimeInterface|int|null  $delay
      * @return string
      *
      * @throws \Illuminate\Queue\InvalidPayloadException
      */
     #[\Override]
-    protected function createBulkPayload(object|string $job, mixed $data, mixed $queue, mixed $delay): string
+    protected function createBulkPayload(object|string $job, mixed $data, ?string $queue, \DateInterval|\DateTimeInterface|int|null $delay): string
     {
         if (!isset($delay)) {
             return $this->createPayload($job, $this->getQueue($queue), $data);
@@ -62,12 +87,12 @@ final class ValkeyGlideHorizonQueue extends RedisQueue
      * @param  \SineMacula\Valkey\Queue\BulkPush  $bulk
      * @param  object|string  $job
      * @param  string  $payload
-     * @param  mixed  $queue
-     * @param  mixed  $delay
+     * @param  string|null  $queue
+     * @param  \DateInterval|\DateTimeInterface|int|null  $delay
      * @return mixed
      */
     #[\Override]
-    protected function gatherBulkJob(BulkPush $bulk, object|string $job, string $payload, mixed $queue, mixed $delay): mixed
+    protected function gatherBulkJob(BulkPush $bulk, object|string $job, string $payload, ?string $queue, \DateInterval|\DateTimeInterface|int|null $delay): mixed
     {
         $prepared = isset($delay) ? new JobPayload($payload) : (new JobPayload($payload))->prepare($job);
 
@@ -94,12 +119,12 @@ final class ValkeyGlideHorizonQueue extends RedisQueue
      *
      * @param  object|string  $job
      * @param  string  $payload
-     * @param  mixed  $queue
-     * @param  mixed  $delay
+     * @param  string|null  $queue
+     * @param  \DateInterval|\DateTimeInterface|int|null  $delay
      * @return mixed
      */
     #[\Override]
-    protected function pushBulkJobAlone(object|string $job, string $payload, mixed $queue, mixed $delay): mixed
+    protected function pushBulkJobAlone(object|string $job, string $payload, ?string $queue, \DateInterval|\DateTimeInterface|int|null $delay): mixed
     {
         if (!isset($delay)) {
             $this->lastPushed = $job;

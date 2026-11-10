@@ -144,18 +144,18 @@ trait RecordsLastError
     #[\Override]
     public function exec(): array|false
     {
-        $result = $this->recordConfiguredError('exec', parent::exec());
-
-        return is_array($result) ? $result : false;
+        return $this->recordConfiguredError('exec', parent::exec());
     }
 
     /**
      * Record the error configured for a method, unless the method was buffered
      * in batch mode, as it then returns the client.
      *
+     * @template TResult
+     *
      * @param  string  $method
-     * @param  mixed  $result
-     * @return mixed
+     * @param  TResult  $result
+     * @return TResult
      */
     private function recordConfiguredError(string $method, mixed $result): mixed
     {

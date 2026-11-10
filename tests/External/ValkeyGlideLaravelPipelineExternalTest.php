@@ -226,6 +226,7 @@ final class ValkeyGlideLaravelPipelineExternalTest extends TestCase
             self::assertTrue($cache->tags($tags)->put('second', 'two', 600));
         });
 
+        self::assertIsArray($results);
         self::assertCount(6, $results);
         self::assertSame('one', $cache->tags($tags)->get('first'));
         self::assertSame('two', $cache->tags($tags)->get('second'));

@@ -5,8 +5,8 @@ declare(strict_types = 1);
 namespace Tests\External;
 
 use Illuminate\Contracts\Events\Dispatcher;
-use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Redis\Factory as RedisFactory;
+use Illuminate\Foundation\Application;
 use Illuminate\Queue\CallQueuedClosure;
 use Illuminate\Queue\Jobs\RedisJob;
 use Illuminate\Queue\QueueManager;
@@ -376,11 +376,11 @@ final class ValkeyGlideBulkQueueExternalTest extends TestCase
     /**
      * Resolve the application.
      *
-     * @return \Illuminate\Contracts\Foundation\Application
+     * @return \Illuminate\Foundation\Application
      */
     private function application(): Application
     {
-        self::assertNotNull($this->app);
+        self::assertInstanceOf(Application::class, $this->app);
 
         return $this->app;
     }

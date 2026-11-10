@@ -82,15 +82,15 @@ final class ValkeyGlideTagSet extends RedisTagSet
     public function addEntry(string $key, ?int $ttl = null, mixed $updateWhen = null): void
     {
         $connection = $this->glideConnection();
+        $condition  = Cast::toNonEmptyString($updateWhen);
 
         if ($connection === null) {
-            parent::addEntry($key, $ttl, $updateWhen);
+            parent::addEntry($key, $ttl, $condition);
 
             return;
         }
 
-        $score     = $ttl === null ? -1 : Carbon::now()->addSeconds($ttl)->getTimestamp();
-        $condition = Cast::toNonEmptyString($updateWhen);
+        $score = $ttl === null ? -1 : Carbon::now()->addSeconds($ttl)->getTimestamp();
 
         foreach ($this->tagSetKeys() as $setKey) {
             $parameters = $condition !== null ? [$setKey, [$condition], $score, $key] : [$setKey, $score, $key];

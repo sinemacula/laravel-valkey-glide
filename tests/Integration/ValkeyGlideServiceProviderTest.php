@@ -7,7 +7,8 @@ namespace Tests\Integration;
 use Illuminate\Cache\CacheManager;
 use Illuminate\Cache\RedisStore;
 use Illuminate\Cache\Repository;
-use Illuminate\Container\Container;
+use Illuminate\Config\Repository as Config;
+use Illuminate\Foundation\Application;
 use Illuminate\Queue\QueueManager;
 use Illuminate\Redis\RedisManager;
 use Illuminate\Support\Facades\Cache;
@@ -40,12 +41,14 @@ final class ValkeyGlideServiceProviderTest extends TestCase
     #[Test]
     public function registerAddsValkeyGlideConnectorCreatorToRedisManager(): void
     {
-        $app = new Container;
+        $app = new Application;
+
+        $app->instance('config', new Config);
 
         $provider = new ValkeyGlideServiceProvider($app);
         $provider->register();
 
-        $app->singleton(RedisManager::class, fn (): RedisManager => new RedisManager(
+        $app->singleton('redis', fn (): RedisManager => new RedisManager(
             $app,
             'valkey-glide',
             [
@@ -177,6 +180,26 @@ final class ValkeyGlideServiceProviderTest extends TestCase
         ]);
 
         self::assertSame([\stdClass::class], $this->property(Cache::store('glide')->getStore(), 'serializableClasses'));
+    }
+
+    /**
+     * Verify serializable classes that are neither a list of classes nor a
+     * boolean are refused, rather than handed to the store.
+     *
+     * @return void
+     */
+    #[Test]
+    public function redisDriverRefusesSerializableClassesOfTheWrongType(): void
+    {
+        config([
+            'cache.serializable_classes' => \stdClass::class,
+            'cache.stores.glide'         => ['driver' => 'redis'],
+        ]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('The [cache.serializable_classes] option must be an array or a boolean, received [string].');
+
+        Cache::store('glide');
     }
 
     /**

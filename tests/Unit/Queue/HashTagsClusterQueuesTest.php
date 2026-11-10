@@ -4,7 +4,7 @@ declare(strict_types = 1);
 
 namespace Tests\Unit\Queue;
 
-use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Foundation\Application;
 use Illuminate\Queue\Jobs\RedisJob;
 use Illuminate\Queue\RedisQueue;
 use Illuminate\Redis\Connections\Connection;
@@ -16,6 +16,9 @@ use SineMacula\Valkey\Connections\ValkeyGlideConnection;
 use SineMacula\Valkey\Queue\Concerns\HashTagsClusterQueues;
 use SineMacula\Valkey\Queue\ValkeyGlideHorizonQueue;
 use SineMacula\Valkey\Queue\ValkeyGlideQueue;
+use Tests\Fakes\Enums\NumberedQueueFake;
+use Tests\Fakes\Enums\QueueFake;
+use Tests\Fakes\Enums\UnitQueueFake;
 use Tests\Fakes\LaravelConnectionFake;
 use Tests\Fakes\RedisFactoryFake;
 use Tests\Fakes\RedisQueueBefore135Fake;
@@ -83,6 +86,49 @@ final class HashTagsClusterQueuesTest extends TestCase
     }
 
     /**
+     * Provide queues named by an enum, and the key of the queue each names, as
+     * Laravel reads an enum's value, or its case where it has no value.
+     *
+     * @return iterable<string, array{\UnitEnum, string}>
+     */
+    public static function enumQueueProvider(): iterable
+    {
+        yield 'backed enum' => [QueueFake::MAIL, 'queues:mail'];
+        yield 'integer backed enum' => [NumberedQueueFake::MAIL, 'queues:1'];
+        yield 'unit enum' => [UnitQueueFake::MAIL, 'queues:MAIL'];
+    }
+
+    /**
+     * Verify a queue named by an enum is the queue the enum names, on every
+     * supported Laravel version.
+     *
+     * @param  \UnitEnum  $queue
+     * @param  string  $key
+     * @return void
+     */
+    #[DataProvider('enumQueueProvider')]
+    #[Test]
+    public function queueNamedByAnEnumIsTheQueueItNames(\UnitEnum $queue, string $key): void
+    {
+        self::assertSame($key, (new ValkeyGlideQueue($this->redis(new ValkeyGlideFake)))->getQueue($queue));
+    }
+
+    /**
+     * Verify a queue named by neither a string nor an enum is refused, rather
+     * than handed to Laravel.
+     *
+     * @return void
+     */
+    #[Test]
+    public function queueNamedByNeitherAStringNorAnEnumIsRefused(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('A queue must be named by a string or an enum, [int] given.');
+
+        $this->queueBefore135(new ValkeyGlideConnection(new ValkeyGlideClusterFake))->getQueue(1);
+    }
+
+    /**
      * Verify Laravel's and Horizon's queues are hash-tagged on a GLIDE cluster
      * before Laravel 13.5.
      *
@@ -98,7 +144,7 @@ final class HashTagsClusterQueuesTest extends TestCase
         $redis = $this->redis(new ValkeyGlideClusterFake);
 
         self::assertSame('queues:{emails}', (new ValkeyGlideQueue($redis))->getQueue('emails'));
-        self::assertSame('queues:{emails}', (new ValkeyGlideHorizonQueue($redis))->getQueue('emails'));
+        self::assertSame('queues:{emails}', (new ValkeyGlideHorizonQueue($redis, 'default', null, 60, null, false))->getQueue('emails'));
     }
 
     /**
@@ -117,7 +163,7 @@ final class HashTagsClusterQueuesTest extends TestCase
         $redis = $this->redis(new ValkeyGlideClusterFake);
 
         self::assertSame('queues:emails', (new ValkeyGlideQueue($redis))->getQueue('emails'));
-        self::assertSame('queues:emails', (new ValkeyGlideHorizonQueue($redis))->getQueue('emails'));
+        self::assertSame('queues:emails', (new ValkeyGlideHorizonQueue($redis, 'default', null, 60, null, false))->getQueue('emails'));
     }
 
     /**
@@ -189,13 +235,13 @@ final class HashTagsClusterQueuesTest extends TestCase
     /**
      * Resolve the application.
      *
-     * @return \Illuminate\Contracts\Foundation\Application
+     * @return \Illuminate\Foundation\Application
      */
     private function application(): Application
     {
         $app = $this->app;
 
-        self::assertNotNull($app);
+        self::assertInstanceOf(Application::class, $app);
 
         return $app;
     }

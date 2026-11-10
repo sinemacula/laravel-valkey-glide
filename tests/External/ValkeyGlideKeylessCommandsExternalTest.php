@@ -208,6 +208,7 @@ final class ValkeyGlideKeylessCommandsExternalTest extends TestCase
 
         $results = $connection->pipeline(static fn (ValkeyGlideBatch $pipe): ValkeyGlideBatch => $pipe->get($key)->dbsize()->echo('hello')->get($key));
 
+        self::assertIsArray($results);
         self::assertCount(4, $results);
         self::assertSame('1', $results[0]);
         self::assertGreaterThanOrEqual(1, $results[1]);

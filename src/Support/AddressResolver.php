@@ -82,7 +82,7 @@ final class AddressResolver
     /**
      * Normalize a host and port pair into the GLIDE address shape.
      *
-     * @param  array<string, mixed>  $address
+     * @param  array<array-key, mixed>  $address
      * @return array{host: string, port: int}
      */
     private static function normalizeAddress(array $address): array
@@ -148,7 +148,7 @@ final class AddressResolver
     /**
      * Determine whether the array shape resembles a host/port node definition.
      *
-     * @param  array<string, mixed>  $value
+     * @param  array<array-key, mixed>  $value
      * @return bool
      */
     private static function isNodeShape(array $value): bool

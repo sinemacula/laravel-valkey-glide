@@ -5,9 +5,9 @@ declare(strict_types = 1);
 namespace Tests\Integration\Pulse;
 
 use Illuminate\Config\Repository;
-use Illuminate\Container\Container;
 use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Redis\Factory;
+use Illuminate\Foundation\Application;
 use Illuminate\Redis\RedisManager;
 use Laravel\Pulse\Contracts\Ingest;
 use Laravel\Pulse\Ingests\NullIngest;
@@ -112,7 +112,7 @@ final class ValkeyGlideServiceProviderTest extends TestCase
     #[Test]
     public function pulseRedisIngestIsWrappedWhenThePackageRegistersFirst(): void
     {
-        $app    = new Container;
+        $app    = new Application;
         $config = new Repository;
         $redis  = new RedisManager($app, 'valkey-glide', []);
 

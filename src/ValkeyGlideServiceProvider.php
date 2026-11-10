@@ -38,6 +38,9 @@ use SineMacula\Valkey\Support\HorizonClusterConnection;
  */
 final class ValkeyGlideServiceProvider extends ServiceProvider
 {
+    /** @var string Message for serializable classes of the wrong type. */
+    private const string INVALID_SERIALIZABLE_CLASSES_MESSAGE = 'The [cache.serializable_classes] option must be an array or a boolean, received [%s].';
+
     /**
      * Register the application services.
      *
@@ -94,7 +97,7 @@ final class ValkeyGlideServiceProvider extends ServiceProvider
     {
         $this->callAfterResolving(QueueManager::class, function (QueueManager $queue): void {
             $queue->addConnector('redis', fn (): ValkeyGlideQueueConnector => new ValkeyGlideQueueConnector(
-                $this->app->make('redis'),
+                $this->app->make(RedisFactory::class),
                 horizon: $this->app->getProviders(HorizonServiceProvider::class) !== [],
             ));
         });
@@ -126,26 +129,48 @@ final class ValkeyGlideServiceProvider extends ServiceProvider
      * over the GLIDE-aware store.
      *
      * The closure is not static: Laravel 12 binds every driver closure to the
-     * manager, which a static closure refuses. Laravel before 12.53 takes no
-     * serializable classes, and ignores the argument.
+     * manager, which a static closure refuses. The binding also takes it out of
+     * this class's scope, so the private method it calls is captured as a
+     * callable. Laravel before 12.53 takes no serializable classes, and ignores
+     * the argument.
      *
      * @param  \Illuminate\Cache\CacheManager  $cache
      * @return \Closure(\Illuminate\Contracts\Container\Container, array<string, mixed>): \Illuminate\Cache\Repository
      */
     private function redisCacheDriver(CacheManager $cache): \Closure
     {
-        return function (Container $app, array $config) use ($cache): Repository {
+        $serializableClasses = self::serializableClasses(...);
+
+        return function (Container $app, array $config) use ($cache, $serializableClasses): Repository {
             $settings   = $app->make(Config::class);
             $connection = $config['connection'] ?? 'default';
 
             $store = new ValkeyGlideStore(
-                $app->make('redis'),
+                $app->make(RedisFactory::class),
                 $config['prefix'] ?? $settings->get('cache.prefix'),
                 $connection,
-                $settings->get('cache.serializable_classes'),
+                $serializableClasses($settings->get('cache.serializable_classes')),
             );
 
             return $cache->repository($store->setLockConnection($config['lock_connection'] ?? $connection), $config);
         };
+    }
+
+    /**
+     * Get the classes the cache may unserialize, as the store takes them: a
+     * list of classes, or whether any class may be, or null when not set.
+     *
+     * @param  mixed  $classes
+     * @return array<array-key, mixed>|bool|null
+     *
+     * @throws \InvalidArgumentException
+     */
+    private static function serializableClasses(mixed $classes): array|bool|null
+    {
+        if ($classes === null || is_array($classes) || is_bool($classes)) {
+            return $classes;
+        }
+
+        throw new \InvalidArgumentException(sprintf(self::INVALID_SERIALIZABLE_CLASSES_MESSAGE, get_debug_type($classes)));
     }
 }

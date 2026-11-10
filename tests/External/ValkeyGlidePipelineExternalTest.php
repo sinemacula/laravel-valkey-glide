@@ -1771,13 +1771,13 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
         $refusals   = [];
 
         $carryOn = static function () use ($connection, &$refusals): void {
-            foreach ([static fn (): mixed => $connection->command('set', ['b', '2']), static fn (): mixed => $connection->command('incr', ['n'])] as $call) {
-                try {
-                    $call();
-                } catch (\LogicException $exception) {
-                    $refusals[] = $exception->getMessage();
-                }
-            }
+            array_push(
+                $refusals,
+                ...self::logicRefusalsOf(
+                    static fn (): mixed => $connection->command('set', ['b', '2']),
+                    static fn (): mixed => $connection->command('incr', ['n']),
+                ),
+            );
         };
 
         $batches = [
@@ -1809,14 +1809,9 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
             }),
         ];
 
-        foreach ($batches as $batch) {
-            try {
-                $batch();
-                self::fail('Expected the ended batch to be refused.');
-            } catch (\LogicException $exception) {
-                self::assertSame('The batch ended inside its callback, so it was not executed; any of its commands not yet sent were discarded.', $exception->getMessage());
-            }
-        }
+        $unexecuted = 'The batch ended inside its callback, so it was not executed; any of its commands not yet sent were discarded.';
+
+        self::assertSame([$unexecuted, $unexecuted], self::logicRefusalsOf(...$batches));
 
         $ended = '[%s()] cannot be called once the pipeline or transaction has ended inside its callback; return or throw from the callback.';
 
@@ -2034,31 +2029,14 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
     #[Test]
     public function clusterPipelineAcrossSlotsRunsImmediateCommandsInCallOrder(): void
     {
-        $owners = $this->slotOwners();
-        $prefix = $this->uniquePrefix(false);
-        $router = new ClusterRouter;
-        $keys   = [];
-        $slots  = [];
-        $used   = [];
-
-        for ($index = 1; $index <= 1000 && (count($keys) < 12 || count($used) < count(array_unique($owners))); $index++) {
-            $slot = $router->slot($prefix . 'mixed:' . $index);
-
-            if (array_key_exists($slot, $slots)) {
-                continue;
-            }
-
-            $keys[]               = 'mixed:' . $index;
-            $slots[$slot]         = true;
-            $used[$owners[$slot]] = true;
-        }
-
-        self::assertCount(count(array_unique($owners)), $used, 'Every primary must own one of the keys.');
-
-        $connection       = $this->connect(self::CLUSTER, [...$keys, 'n'], $prefix);
-        $executed         = $this->recordExecutedCommands($connection);
-        [$first, $second] = array_chunk($keys, (int) ceil(count($keys) / 2));
-        $values           = array_map(static fn (string $key): string => 'v-' . $key, $keys);
+        $prefix     = $this->uniquePrefix(false);
+        $keys       = $this->keysOnEveryPrimary($prefix);
+        $connection = $this->connect(self::CLUSTER, [...$keys, 'n'], $prefix);
+        $executed   = $this->recordExecutedCommands($connection);
+        $half       = intdiv(count($keys) + 1, 2);
+        $first      = array_slice($keys, 0, $half);
+        $second     = array_slice($keys, $half);
+        $values     = array_map(static fn (string $key): string => 'v-' . $key, $keys);
 
         $results = $connection->pipeline(static function (ValkeyGlideBatch $pipe) use ($keys, $first, $second): void {
             foreach ($first as $key) {
@@ -2213,6 +2191,27 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
     }
 
     /**
+     * Run each call and return the messages of the LogicExceptions they throw.
+     *
+     * @param  \Closure(): mixed  ...$calls
+     * @return list<string>
+     */
+    private static function logicRefusalsOf(\Closure ...$calls): array
+    {
+        $refusals = [];
+
+        foreach ($calls as $call) {
+            try {
+                $call();
+            } catch (\LogicException $exception) {
+                $refusals[] = $exception->getMessage();
+            }
+        }
+
+        return $refusals;
+    }
+
+    /**
      * Create a connection for the topology and register its keys for cleanup.
      *
      * @param  string  $topology
@@ -2321,6 +2320,41 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
     }
 
     /**
+     * Pick at least twelve keys under the prefix, each in its own slot, that
+     * between them reach every primary of the cluster.
+     *
+     * @param  string  $prefix
+     * @return list<string>
+     *
+     * @throws \Throwable
+     */
+    private function keysOnEveryPrimary(string $prefix): array
+    {
+        $owners    = $this->slotOwners();
+        $primaries = count(array_unique($owners));
+        $router    = new ClusterRouter;
+        $keys      = [];
+        $slots     = [];
+        $used      = [];
+
+        for ($index = 1; $index <= 1000 && (count($keys) < 12 || count($used) < $primaries); $index++) {
+            $slot = $router->slot($prefix . 'mixed:' . $index);
+
+            if (array_key_exists($slot, $slots)) {
+                continue;
+            }
+
+            $keys[]               = 'mixed:' . $index;
+            $slots[$slot]         = true;
+            $used[$owners[$slot]] = true;
+        }
+
+        self::assertCount($primaries, $used, 'Every primary must own one of the keys.');
+
+        return $keys;
+    }
+
+    /**
      * Map every hash slot of the cluster to the address of the primary that
      * owns it.
      *
@@ -2342,7 +2376,11 @@ final class ValkeyGlidePipelineExternalTest extends TestCase
 
         foreach ($ranges as $range) {
             self::assertIsArray($range);
+            self::assertIsInt($range[0]);
+            self::assertIsInt($range[1]);
             self::assertIsArray($range[2]);
+            self::assertIsString($range[2][0]);
+            self::assertIsInt($range[2][1]);
 
             $address = sprintf('%s:%s', $range[2][0], $range[2][1]);
 

@@ -19,7 +19,7 @@ use Laravel\Pulse\Contracts\Storage;
  */
 final class PulseStorageFake implements Storage
 {
-    /** @var list<array<int, mixed>> The batches of items stored, in order. */
+    /** @var list<array<int, \Laravel\Pulse\Entry|\Laravel\Pulse\Value>> The batches of items stored, in order. */
     public array $stored = [];
 
     /**
