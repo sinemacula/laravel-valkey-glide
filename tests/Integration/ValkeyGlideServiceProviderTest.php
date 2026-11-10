@@ -7,7 +7,8 @@ namespace Tests\Integration;
 use Illuminate\Cache\CacheManager;
 use Illuminate\Cache\RedisStore;
 use Illuminate\Cache\Repository;
-use Illuminate\Container\Container;
+use Illuminate\Config\Repository as Config;
+use Illuminate\Foundation\Application;
 use Illuminate\Queue\QueueManager;
 use Illuminate\Redis\RedisManager;
 use Illuminate\Support\Facades\Cache;
@@ -40,12 +41,14 @@ final class ValkeyGlideServiceProviderTest extends TestCase
     #[Test]
     public function registerAddsValkeyGlideConnectorCreatorToRedisManager(): void
     {
-        $app = new Container;
+        $app = new Application;
+
+        $app->instance('config', new Config);
 
         $provider = new ValkeyGlideServiceProvider($app);
         $provider->register();
 
-        $app->singleton(RedisManager::class, fn (): RedisManager => new RedisManager(
+        $app->singleton('redis', fn (): RedisManager => new RedisManager(
             $app,
             'valkey-glide',
             [

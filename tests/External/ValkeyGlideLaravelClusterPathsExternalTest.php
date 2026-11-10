@@ -387,16 +387,18 @@ final class ValkeyGlideLaravelClusterPathsExternalTest extends TestCase
      */
     private function readBulkString(int $length): string
     {
-        $value = '';
+        $value     = '';
+        $remaining = $length + 2;
 
-        while (strlen($value) < $length + 2) {
-            $chunk = is_resource($this->subscriber) ? fread($this->subscriber, $length + 2 - strlen($value)) : false;
+        while ($remaining > 0) {
+            $chunk = is_resource($this->subscriber) ? fread($this->subscriber, $remaining) : false;
 
             if ($chunk === false || $chunk === '') {
                 throw new \UnexpectedValueException('The subscriber received a truncated reply.');
             }
 
             $value .= $chunk;
+            $remaining = $length + 2 - strlen($value);
         }
 
         return substr($value, 0, $length);

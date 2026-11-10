@@ -431,8 +431,8 @@ trait EmulatesBatchMode
      */
     private function writePendingScanCursors(): void
     {
-        foreach ($this->pendingScanCursors as $pending) {
-            $pending['iterator'] = $pending['cursor'];
+        foreach (array_keys($this->pendingScanCursors) as $index) {
+            $this->pendingScanCursors[$index]['iterator'] = $this->pendingScanCursors[$index]['cursor'];
         }
     }
 

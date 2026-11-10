@@ -5,8 +5,8 @@ declare(strict_types = 1);
 namespace Tests\Integration;
 
 use Illuminate\Contracts\Events\Dispatcher;
-use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\DatabaseTransactionsManager;
+use Illuminate\Foundation\Application;
 use Illuminate\Queue\Events\JobQueued;
 use Illuminate\Queue\LuaScripts;
 use Illuminate\Queue\Queue;
@@ -213,11 +213,11 @@ final class BulkValkeyGlideHorizonQueueTest extends TestCase
     /**
      * Resolve the application.
      *
-     * @return \Illuminate\Contracts\Foundation\Application
+     * @return \Illuminate\Foundation\Application
      */
     private function application(): Application
     {
-        self::assertNotNull($this->app);
+        self::assertInstanceOf(Application::class, $this->app);
 
         return $this->app;
     }

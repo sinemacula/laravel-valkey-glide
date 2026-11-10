@@ -166,6 +166,7 @@ final class CredentialResolverTest extends TestCase
             ],
         ]);
 
+        self::assertIsArray($credentials);
         self::assertArrayHasKey('iamConfig', $credentials);
         self::assertArrayNotHasKey('password', $credentials);
     }

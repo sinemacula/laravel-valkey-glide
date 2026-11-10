@@ -489,10 +489,15 @@ final class ClusterScanTest extends TestCase
 
             self::assertIsArray($page);
 
-            $keys      = [...$keys, ...$page];
+            foreach ($page as $key) {
+                self::assertIsString($key);
+
+                $keys[] = $key;
+            }
+
             $cursors[] = $cursor;
         } while ($cursor !== '0' && count($cursors) < 100);
 
-        return [array_values(array_map(strval(...), $keys)), $cursors];
+        return [$keys, $cursors];
     }
 }

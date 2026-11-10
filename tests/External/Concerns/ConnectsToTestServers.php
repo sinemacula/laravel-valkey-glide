@@ -113,7 +113,7 @@ trait ConnectsToTestServers
     /**
      * Build the standalone connection config from the environment.
      *
-     * @return array<string, mixed>
+     * @return array{host: string, port: int, tls: bool, username?: string, password?: string}
      */
     private function standaloneConfig(): array
     {

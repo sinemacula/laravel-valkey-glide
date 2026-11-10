@@ -944,6 +944,8 @@ final class ConfigTest extends TestCase
     {
         $resource = fopen('php://memory', 'r');
 
+        self::assertIsResource($resource);
+
         $arguments = Config::connectArguments(['context' => $resource]);
 
         self::assertArrayHasKey('context', $arguments);

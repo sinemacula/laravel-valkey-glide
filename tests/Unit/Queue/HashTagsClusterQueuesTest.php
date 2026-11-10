@@ -4,7 +4,7 @@ declare(strict_types = 1);
 
 namespace Tests\Unit\Queue;
 
-use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Foundation\Application;
 use Illuminate\Queue\Jobs\RedisJob;
 use Illuminate\Queue\RedisQueue;
 use Illuminate\Redis\Connections\Connection;
@@ -217,13 +217,13 @@ final class HashTagsClusterQueuesTest extends TestCase
     /**
      * Resolve the application.
      *
-     * @return \Illuminate\Contracts\Foundation\Application
+     * @return \Illuminate\Foundation\Application
      */
     private function application(): Application
     {
         $app = $this->app;
 
-        self::assertNotNull($app);
+        self::assertInstanceOf(Application::class, $app);
 
         return $app;
     }
