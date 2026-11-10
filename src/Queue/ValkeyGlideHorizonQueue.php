@@ -4,6 +4,7 @@ declare(strict_types = 1);
 
 namespace SineMacula\Valkey\Queue;
 
+use Illuminate\Contracts\Redis\Factory;
 use Laravel\Horizon\Events\JobPending;
 use Laravel\Horizon\Events\JobPushed;
 use Laravel\Horizon\JobPayload;
@@ -29,6 +30,30 @@ use SineMacula\Valkey\Queue\Concerns\PushesBulkJobsAtomically;
 final class ValkeyGlideHorizonQueue extends RedisQueue
 {
     use HashTagsClusterQueues, PushesBulkJobsAtomically;
+
+    /**
+     * Create the queue, whose retry after is `null` when reserved jobs are
+     * never re-released, as Horizon's connector allows.
+     *
+     * @param  \Illuminate\Contracts\Redis\Factory  $redis
+     * @param  string  $default
+     * @param  ?string  $connection
+     * @param  ?int  $retryAfter
+     * @param  ?int  $blockFor
+     * @param  bool  $dispatchAfterCommit
+     */
+    public function __construct(
+        Factory $redis,
+        string $default,
+        ?string $connection,
+        ?int $retryAfter,
+        ?int $blockFor,
+        bool $dispatchAfterCommit,
+    ) {
+        parent::__construct($redis, $default, $connection, blockFor: $blockFor, dispatchAfterCommit: $dispatchAfterCommit);
+
+        $this->retryAfter = $retryAfter;
+    }
 
     /**
      * Create the payload of a job in the bulk, as Horizon's push and later do:

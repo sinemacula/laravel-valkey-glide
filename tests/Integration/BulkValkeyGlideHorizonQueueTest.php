@@ -202,7 +202,7 @@ final class BulkValkeyGlideHorizonQueueTest extends TestCase
      */
     private function queue(): ValkeyGlideHorizonQueue
     {
-        $queue = new ValkeyGlideHorizonQueue(new RedisFactoryFake(new ValkeyGlideConnection($this->client)));
+        $queue = new ValkeyGlideHorizonQueue(new RedisFactoryFake(new ValkeyGlideConnection($this->client)), 'default', null, 60, null, false);
 
         $queue->setContainer($this->application());
         $queue->setConnectionName('redis');

@@ -144,7 +144,7 @@ final class HashTagsClusterQueuesTest extends TestCase
         $redis = $this->redis(new ValkeyGlideClusterFake);
 
         self::assertSame('queues:{emails}', (new ValkeyGlideQueue($redis))->getQueue('emails'));
-        self::assertSame('queues:{emails}', (new ValkeyGlideHorizonQueue($redis))->getQueue('emails'));
+        self::assertSame('queues:{emails}', (new ValkeyGlideHorizonQueue($redis, 'default', null, 60, null, false))->getQueue('emails'));
     }
 
     /**
@@ -163,7 +163,7 @@ final class HashTagsClusterQueuesTest extends TestCase
         $redis = $this->redis(new ValkeyGlideClusterFake);
 
         self::assertSame('queues:emails', (new ValkeyGlideQueue($redis))->getQueue('emails'));
-        self::assertSame('queues:emails', (new ValkeyGlideHorizonQueue($redis))->getQueue('emails'));
+        self::assertSame('queues:emails', (new ValkeyGlideHorizonQueue($redis, 'default', null, 60, null, false))->getQueue('emails'));
     }
 
     /**
