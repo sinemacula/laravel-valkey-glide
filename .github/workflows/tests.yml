@@ -182,7 +182,7 @@ jobs:
 
         services:
             valkey:
-                image: valkey/valkey:9.2@sha256:247b5e730bdc9dc29fddb8274d1731b203a1a1a46af63eae3a9d55b4bf74853f
+                image: valkey/valkey:9.2@sha256:13010f40f0623c52f0d3527a48bbf059870e6864b4eee642cdabad3f5e240e69
                 ports:
                     - 6379:6379
                 options: >-
